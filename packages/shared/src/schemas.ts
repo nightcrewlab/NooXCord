@@ -60,6 +60,7 @@ export const Methods = {
   "read.mark": z.object({ channelId: id, messageId: id }),
   "invite.create": z.object({ guildId: id, maxUses: z.number().int().min(1).max(1000).nullable().optional(), expiresInHours: z.number().min(1).max(24 * 30).nullable().optional() }),
   "invite.join": z.object({ code: z.string().trim().min(4).max(32) }),
+  "dm.open": z.object({ userId: id }),
   "role.create": z.object({ guildId: id, name: z.string().trim().min(1).max(32), color: color.optional(), perms: z.number().int().nonnegative().optional() }),
   "role.update": z.object({ roleId: id, name: z.string().trim().min(1).max(32).optional(), color: color.optional(), perms: z.number().int().nonnegative().optional() }),
   "role.delete": z.object({ roleId: id }),
@@ -81,5 +82,19 @@ export const Methods = {
   "stream.stop": z.object({}),
   "stream.watch": z.object({ userId: id, watching: z.boolean() }),
   "member.ban": z.object({ guildId: id, userId: id }),
+  "remote.request": z.object({ userId: id }),
+  "remote.respond": z.object({ userId: id, allow: z.boolean() }),
+  "remote.stop": z.object({ streamerId: id }),
 } as const;
+
+const unit = z.number().min(0).max(1);
+export const RemoteInput = z.object({
+  to: id,
+  ev: z.array(z.discriminatedUnion("k", [
+    z.object({ k: z.literal("m"), x: unit, y: unit }),
+    z.object({ k: z.literal("b"), b: z.number().int().min(0).max(4), d: z.boolean() }),
+    z.object({ k: z.literal("w"), dx: z.number().int().min(-2400).max(2400), dy: z.number().int().min(-2400).max(2400) }),
+    z.object({ k: z.literal("k"), c: z.string().regex(/^[A-Za-z0-9]{1,24}$/), d: z.boolean() }),
+  ])).min(1).max(LIMITS.remoteBatch),
+});
 

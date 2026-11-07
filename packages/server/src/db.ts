@@ -117,7 +117,41 @@ const MIGRATIONS: string[] = [
     value TEXT NOT NULL
   );
   `,
+  /* 2: direct messages. Channels may have no guild (kind 'dm'); rebuilt per SQLite's ALTER TABLE recipe. */ `
+  CREATE TABLE channels_new (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT REFERENCES guilds(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('text','voice','dm')),
+    topic TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO channels_new (id, guild_id, name, kind, topic, position, created_at)
+    SELECT id, guild_id, name, kind, topic, position, created_at FROM channels;
+  DROP TABLE channels;
+  ALTER TABLE channels_new RENAME TO channels;
+  CREATE INDEX channels_guild ON channels(guild_id);
+  CREATE TABLE dm_members (
+    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (channel_id, user_id)
+  );
+  CREATE INDEX dm_members_user ON dm_members(user_id);
+  `,
 ];
+
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
+/** Schema version of an existing database file (0 when missing/unreadable). */
+export function fileVersion(file: string): number {
+  try {
+    const d = new DatabaseSync(file, { readOnly: true });
+    try { return Number((d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version); } finally { d.close(); }
+  } catch {
+    return 0;
+  }
+}
 
 export type Row = Record<string, SQLInputValue>;
 
@@ -133,11 +167,20 @@ export class Db {
 
   private migrate(): void {
     const version = Number((this.raw.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-    for (let v = version; v < MIGRATIONS.length; v++) {
-      this.tx(() => {
-        this.raw.exec(MIGRATIONS[v]!);
-        this.raw.exec(`PRAGMA user_version = ${v + 1}`);
-      });
+    if (version >= MIGRATIONS.length) return;
+    // Table rebuilds must not cascade: foreign keys are off while migrating, then verified.
+    this.raw.exec("PRAGMA foreign_keys = OFF");
+    try {
+      for (let v = version; v < MIGRATIONS.length; v++) {
+        this.tx(() => {
+          this.raw.exec(MIGRATIONS[v]!);
+          const bad = this.raw.prepare("PRAGMA foreign_key_check").all();
+          if (bad.length) throw new Error(`migration ${v + 1}: foreign key check failed`);
+          this.raw.exec(`PRAGMA user_version = ${v + 1}`);
+        });
+      }
+    } finally {
+      this.raw.exec("PRAGMA foreign_keys = ON");
     }
   }
 

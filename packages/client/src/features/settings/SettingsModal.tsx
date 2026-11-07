@@ -6,10 +6,11 @@ import { squareWebp } from "../../lib/image";
 import { useStore } from "../../state/store";
 import { Avatar, Button, Field, IconButton, Modal, cx, useConfirm } from "../../ui";
 import s from "./settings.module.css";
+import { AppTab } from "./AppTab";
 import { ConnectionTab } from "./ConnectionTab";
 import { VoiceTab } from "./VoiceTab";
 
-type Tab = "profile" | "account" | "voice" | "connection";
+type Tab = "profile" | "account" | "voice" | "connection" | "app";
 const STATUSES: { id: UserStatus; color: string }[] = [
   { id: "online", color: "var(--nx-speaking)" },
   { id: "idle", color: "var(--nx-warn)" },
@@ -26,9 +27,9 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     <Modal wide onClose={onClose}>
       <nav className={s.nav}>
         <div className={s.navTitle}>{t("settings.title")}</div>
-        {(["profile", "account", "voice", "connection"] as const).map((id) => (
+        {(["profile", "account", "voice", "connection", "app"] as const).map((id) => (
           <button key={id} className={cx(s.navItem, tab === id && s.navOn)} onClick={() => setTab(id)}>
-            <Icon name={id === "profile" ? "user" : id === "account" ? "lock" : id === "voice" ? "headphones" : "globe"} size={18} />
+            <Icon name={id === "profile" ? "user" : id === "account" ? "lock" : id === "voice" ? "headphones" : id === "app" ? "sliders" : "globe"} size={18} />
             <span>{t(`settings.${id}`)}</span>
           </button>
         ))}
@@ -49,6 +50,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         {tab === "account" && <AccountTab />}
         {tab === "voice" && <VoiceTab />}
         {tab === "connection" && <ConnectionTab />}
+        {tab === "app" && <AppTab />}
       </section>
     </Modal>
   );

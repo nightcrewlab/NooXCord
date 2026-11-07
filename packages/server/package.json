@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit -p .",
     "dev": "tsx watch --clear-screen=false src/dev.ts",
     "start": "tsx src/dev.ts",
-    "test": "tsx test/smoke.ts && tsx test/unfurl.ts"
+    "test": "tsx test/smoke.ts && tsx test/remote.ts && tsx test/backup.ts && tsx test/unfurl.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.8",

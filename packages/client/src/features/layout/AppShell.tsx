@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Channel } from "@nooxcord/shared";
 import { Icon } from "@nooxcord/icons";
 import { t } from "../../i18n";
-import { useStore } from "../../state/store";
+import { DM_HOME, useStore } from "../../state/store";
 import { Button, Spinner, cx } from "../../ui";
 import { ChannelPanel } from "../channels/ChannelPanel";
 import { ChatView } from "../chat/ChatView";
@@ -13,6 +13,7 @@ import { SettingsModal } from "../settings/SettingsModal";
 import { useVoice } from "../../media/engine";
 import { ShareModal } from "../voice/ShareModal";
 import { VoiceStage } from "../voice/VoiceStage";
+import { DmPanel } from "../dm/DmPanel";
 import { openShareModal, useShareModal } from "../voice/common";
 import s from "./layout.module.css";
 
@@ -57,11 +58,16 @@ export function AppShell() {
   }
 
   return (
-    <div className={s.shell} style={{ gridTemplateColumns: `72px ${gs ? "248px" : ""} minmax(0, 1fr) ${gs && showMembers ? "auto" : ""}` }}>
+    <div className={s.shell} style={{ gridTemplateColumns: `72px ${gs || selectedGuild === DM_HOME ? "248px" : ""} minmax(0, 1fr) ${gs && showMembers ? "auto" : ""}` }}>
       {connStatus === "reconnecting" && <div className={s.banner} role="status">{t("conn.reconnecting")}</div>}
       <GuildRail />
       {shareOpen && <ShareModal onClose={() => useShareModal.setState({ open: false })} />}
-      {gs && selectedGuild ? (
+      {selectedGuild === DM_HOME ? (
+        <>
+          <DmPanel />
+          <ChatView guildId={DM_HOME} channelId={selectedChannel} />
+        </>
+      ) : gs && selectedGuild ? (
         <>
           <ChannelPanel guildId={selectedGuild} />
           {selected?.kind === "voice" ? <VoiceStage guildId={selectedGuild} channel={selected} onShare={openShareModal} /> : <ChatView guildId={selectedGuild} channelId={selectedChannel} />}
@@ -115,6 +121,10 @@ function MobileShell({ selected, onCreate }: { selected: Channel | undefined; on
   useEffect(() => {
     if (selected?.kind === "text" && selectedGuild) setLastText({ guildId: selectedGuild, channelId: selected.id });
   }, [selected, selectedGuild]);
+  const dmSelected = useStore((st) => st.selectedChannel[DM_HOME]);
+  useEffect(() => {
+    if (selectedGuild === DM_HOME && dmSelected) setLastText({ guildId: DM_HOME, channelId: dmSelected });
+  }, [selectedGuild, dmSelected]);
   // Tapping a channel in the list opens it.
   useEffect(() => {
     const open = (e: Event) => setTab((e as CustomEvent<"text" | "voice">).detail === "voice" ? "voice" : "chat");
@@ -131,7 +141,7 @@ function MobileShell({ selected, onCreate }: { selected: Channel | undefined; on
     body = (
       <div className={s.mNav}>
         <GuildRail />
-        {selectedGuild ? <ChannelPanel guildId={selectedGuild} /> : (
+        {selectedGuild === DM_HOME ? <DmPanel /> : selectedGuild ? <ChannelPanel guildId={selectedGuild} /> : (
           <main className={s.card}>
             <div className={s.empty}><div className={s.emptyInner}>
               <div className={s.emptyIcon}><Icon name="server" size={30} /></div>

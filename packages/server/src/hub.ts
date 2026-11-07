@@ -5,6 +5,8 @@ export interface Conn {
   ws: WebSocket;
   userId: string;
   lastSeen: number;
+  /** Desktop app (self-reported at auth); browsers never take part in remote control. */
+  desktop: boolean;
 }
 
 /** Tracks authenticated sockets and fans out events. */

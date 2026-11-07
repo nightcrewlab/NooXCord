@@ -4,7 +4,7 @@ import { LIMITS, P, has, type Attachment, type Channel, type GuildState, type Me
 import { t } from "../../i18n";
 import { formatBytes } from "../../lib/format";
 import { imageSize } from "../../lib/image";
-import { useStore } from "../../state/store";
+import { DM_HOME, useStore } from "../../state/store";
 import { IconButton, cx } from "../../ui";
 import s from "./chat.module.css";
 
@@ -171,11 +171,11 @@ export function Composer({ channel, gs, replyTo, clearReply, onEditLast }: { cha
             rows={1}
             value={text}
             maxLength={LIMITS.messageMax}
-            placeholder={t("chat.placeholder", { channel: channel.name })}
+            placeholder={(channel.guildId === DM_HOME ? t("dm.placeholder", { user: channel.name }) : t("chat.placeholder", { channel: channel.name }))}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
             onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); addFiles(e.clipboardData.files); } }}
-            aria-label={t("chat.placeholder", { channel: channel.name })}
+            aria-label={(channel.guildId === DM_HOME ? t("dm.placeholder", { user: channel.name }) : t("chat.placeholder", { channel: channel.name }))}
           />
           <IconButton icon="send" label={t("chat.send")} onClick={submit} disabled={busy || (!text.trim() && !uploads.some((u) => u.result))} />
         </div>

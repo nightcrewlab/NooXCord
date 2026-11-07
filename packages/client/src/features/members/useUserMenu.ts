@@ -19,6 +19,7 @@ export function useUserMenu(gs: GuildState | undefined) {
       const user = useStore.getState().users[userId];
       const member = gs.members.find((m) => m.userId === userId);
       const items: MenuItem[] = [{ label: user?.nickname ?? "?", icon: "user", disabled: true }];
+      if (userId !== me.id) items.push({ label: t("dm.send"), icon: "mail", onSelect: () => void useStore.getState().openDm(userId) });
       const isOwnerTarget = gs.guild.ownerId === userId;
       if (member && has(gs.myPerms, P.MANAGE_ROLES) && !(isOwnerTarget && me.id !== userId)) {
         const roles = gs.roles.filter((r) => !r.isDefault).sort((a, b) => b.position - a.position);

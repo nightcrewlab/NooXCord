@@ -19,6 +19,13 @@ port.on("message", async ({ data }) => {
       const err = e as NodeJS.ErrnoException;
       port.postMessage({ type: "error", code: err.code ?? "ERR", message: err.message });
     }
+  } else if (msg.type === "backup") {
+    try {
+      if (!running) throw new Error("host not running");
+      port.postMessage({ type: "backup", ok: true, info: running.backup((msg as { tag?: string }).tag) });
+    } catch (e) {
+      port.postMessage({ type: "backup", ok: false, error: (e as Error).message });
+    }
   } else if (msg.type === "config") {
     running?.setConfig(msg.config ?? {});
   } else if (msg.type === "stop") {

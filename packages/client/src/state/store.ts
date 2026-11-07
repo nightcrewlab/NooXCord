@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import {
   LIMITS,
-  type Channel, type EventName, type Events, type GuildState, type HostInfo, type Message, type PublicUser, type SelfUser,
+  type Channel, type DmChannel, type EventName, type Events, type GuildState, type HostInfo, type Message, type PublicUser, type SelfUser,
 } from "@nooxcord/shared";
 import { HostConnection, HostHttp, RpcError, type ConnStatus } from "../net/connection";
 import { platform } from "../platform";
+import { t } from "../i18n";
 
 export interface ChannelMessages {
   items: Message[];
@@ -21,6 +22,9 @@ export interface PendingMessage extends Message {
 
 export type Screen = "hosts" | "auth" | "app";
 
+/** selectedGuild value for the direct-message home (selectedChannel[DM_HOME] = open DM). */
+export const DM_HOME = "@me";
+
 interface Toast { id: number; text: string; kind: "info" | "error" }
 
 interface State {
@@ -35,6 +39,7 @@ interface State {
   users: Record<string, PublicUser>;
   guilds: Record<string, GuildState>;
   guildOrder: string[];
+  dms: Record<string, DmChannel>;
   messages: Record<string, ChannelMessages>;
   pending: Record<string, PendingMessage[]>; // channelId -> pending
   readStates: Record<string, string>;
@@ -60,6 +65,8 @@ interface Actions {
   toggleMembers(): void;
   toast(text: string, kind?: Toast["kind"]): void;
   setMe(me: SelfUser): void;
+  /** Opens (creating if needed) the DM with a user and shows it. */
+  openDm(userId: string): Promise<void>;
 }
 
 export type Store = State & Actions;
@@ -75,6 +82,7 @@ const initial: State = {
   users: {},
   guilds: {},
   guildOrder: [],
+  dms: {},
   messages: {},
   pending: {},
   readStates: {},
@@ -104,7 +112,8 @@ export const useStore = create<Store>()((set, get) => {
         const prev = get().selectedGuild;
         set({
           me: d.user, users, guilds, guildOrder: order, readStates: d.readStates, hostInfo: d.host,
-          selectedGuild: prev && guilds[prev] ? prev : order[0] ?? null,
+          dms: Object.fromEntries((d.dms ?? []).map((x) => [x.id, x])),
+          selectedGuild: prev && (guilds[prev] || prev === DM_HOME) ? prev : order[0] ?? null,
           // After a reconnect, cached channel pages may be stale: drop them and refetch on view.
           messages: {}, screen: "app", speaking: {},
         });
@@ -190,6 +199,14 @@ export const useStore = create<Store>()((set, get) => {
         set((s) => ({ users: { ...s.users, [u.id]: u }, me: s.me?.id === u.id ? { ...s.me, ...u, email: s.me.email } : s.me }));
         break;
       }
+      case "dm.create": {
+        const d = raw as Events["dm.create"];
+        set((s) => ({
+          dms: { ...s.dms, [d.dm.id]: d.dm },
+          users: { ...Object.fromEntries(d.users.map((u) => [u.id, u])), ...s.users },
+        }));
+        break;
+      }
       case "message.create": {
         const m = raw as Message;
         set((s) => {
@@ -209,6 +226,8 @@ export const useStore = create<Store>()((set, get) => {
           return out;
         });
         // bump lastMessageId for unread badges
+        const dm = get().dms[m.channelId];
+        if (dm) set((s) => ({ dms: { ...s.dms, [dm.id]: { ...dm, lastMessageId: m.id } } }));
         for (const gs of Object.values(get().guilds)) {
           if (gs.channels.some((c) => c.id === m.channelId)) {
             updGuild(gs.guild.id, (g) => ({ ...g, channels: g.channels.map((c) => (c.id === m.channelId ? { ...c, lastMessageId: m.id } : c)) }));
@@ -276,7 +295,7 @@ export const useStore = create<Store>()((set, get) => {
         void platform.hosts.setToken(http.base, null);
         http.token = null;
         set({ screen: "auth", conn: null, me: null });
-        get().toast("Oturumun sona erdi, tekrar giriş yap.", "error");
+        get().toast(t("conn.sessionExpired"), "error");
       }
     });
     set({ conn, connStatus: "connecting" });
@@ -327,6 +346,18 @@ export const useStore = create<Store>()((set, get) => {
       set({ selectedGuild: id });
     },
 
+    async openDm(userId) {
+      const { conn } = get();
+      if (!conn) return;
+      try {
+        const dm = await conn.call("dm.open", { userId });
+        set((s) => ({ dms: { ...s.dms, [dm.id]: dm }, selectedGuild: DM_HOME, selectedChannel: { ...s.selectedChannel, [DM_HOME]: dm.id } }));
+        window.dispatchEvent(new CustomEvent("nx:channel-open", { detail: "text" }));
+      } catch (e) {
+        get().toast((e as Error).message, "error");
+      }
+    },
+
     selectChannel(guildId, channelId) {
       set((s) => ({ selectedGuild: guildId, selectedChannel: { ...s.selectedChannel, [guildId]: channelId } }));
     },
@@ -364,7 +395,7 @@ export const useStore = create<Store>()((set, get) => {
         // the message.create event replaces the optimistic entry
       } catch (e) {
         set((s) => ({ pending: { ...s.pending, [channelId]: (s.pending[channelId] ?? []).map((p) => (p.nonce === nonce ? { ...p, failed: true } : p)) } }));
-        get().toast(e instanceof RpcError ? e.message : "Mesaj gönderilemedi.", "error");
+        get().toast(e instanceof RpcError ? e.message : t("err.sendFailed"), "error");
       }
     },
 

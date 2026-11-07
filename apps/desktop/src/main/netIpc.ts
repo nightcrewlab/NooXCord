@@ -3,6 +3,7 @@ import { hosts } from "./hosts";
 import * as localHost from "./localHost";
 import { addresses, checkPort, hamachiService, suggestPort } from "./network";
 import { TunnelManager, type TunnelProviderId } from "./tunnel";
+import { s } from "./strings";
 
 /* Settings → Connection: port, guests, Hamachi and tunnels (CLAUDE.md §10). */
 
@@ -26,7 +27,7 @@ export function registerNetIpc(): void {
     onUrl: (url) => {
       if (hosts.localHostPrefs().copyTunnelUrl) clipboard.writeText(url);
       if (Notification.isSupported()) {
-        new Notification({ title: "NooXCord tüneli açık", body: hosts.localHostPrefs().copyTunnelUrl ? `${url}\nBağlantı panoya kopyalandı.` : url, silent: true }).show();
+        new Notification({ title: s("main.tunnel.openTitle"), body: hosts.localHostPrefs().copyTunnelUrl ? `${url}\n${s("main.tunnel.copied")}` : url, silent: true }).show();
       }
     },
   });
@@ -70,7 +71,7 @@ export function registerNetIpc(): void {
   });
   ipcMain.handle("tunnel:start", async () => {
     const st = localHost.status();
-    if (!st.running || !st.port) throw new Error("Önce bu bilgisayarda sunucuyu başlat.");
+    if (!st.running || !st.port) throw new Error(s("main.err.startHostFirst"));
     await tunnel!.start(st.port);
   });
   ipcMain.handle("tunnel:stop", () => tunnel!.stop());
@@ -92,7 +93,7 @@ function copyUrl(): boolean {
 /** Ctrl+Shift+L copies the public URL from anywhere. */
 export function registerNetShortcuts(): void {
   globalShortcut.register("CommandOrControl+Shift+L", () => {
-    if (copyUrl() && Notification.isSupported()) new Notification({ title: "NooXCord", body: "Tünel bağlantısı panoya kopyalandı.", silent: true }).show();
+    if (copyUrl() && Notification.isSupported()) new Notification({ title: "NooXCord", body: s("main.tunnel.copied"), silent: true }).show();
   });
 }
 

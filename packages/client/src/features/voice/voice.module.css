@@ -55,7 +55,7 @@
 .tile.big { aspect-ratio: auto; height: min(62vh, calc((100vw - 640px) * 9 / 16)); min-height: 240px; }
 .tileBar {
   position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, .75)); opacity: 0; transition: opacity var(--nx-fast);
+  background: linear-gradient(transparent, rgba(0, 0, 0, .75)); opacity: 0; transition: opacity var(--nx-fast); z-index: 3;
 }
 .tile:hover .tileBar, .tile:focus-within .tileBar { opacity: 1; }
 .tileName { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-weight: 650; font-size: 13px; text-shadow: 0 1px 2px #000; overflow: hidden; }
@@ -153,3 +153,22 @@
   .ringOn, .person { transition: none; }
 }
 .tunnelTag { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: var(--nx-bg-3); color: var(--nx-warn); font: 700 10px var(--nx-font); letter-spacing: .04em; text-transform: uppercase; }
+
+.tileBtnOn { color: var(--nx-live); }
+.tileBtn:disabled { opacity: 0.5; cursor: default; }
+
+.viewerList { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 12px; }
+.viewer {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--nx-live);
+  cursor: pointer;
+}
+.viewer:hover { background: var(--nx-bg-3); }
+.viewerCtl { border-color: var(--nx-live); padding-right: 6px; }

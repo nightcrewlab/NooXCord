@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import type { Methods } from "./schemas";
 import type {
-  Channel, ConsumerParams, Guild, GuildState, Invite, Member, Message, PublicUser, ReadyPayload, RemoteProducer, Role, SelfUser,
+  Channel, ConsumerParams, DmChannel, Guild, GuildState, Invite, Member, Message, PublicUser, ReadyPayload, RemoteInputEvent, RemoteProducer, Role, SelfUser,
   VoiceJoinResult, VoiceState,
 } from "./models";
 
@@ -27,6 +27,9 @@ export const LIMITS = {
   avatarMaxBytes: 2 * 1024 * 1024,
   messagePage: 50,
   thumbnailMaxBytes: 300 * 1024,
+  remoteBatch: 64,
+  /** Remote control ends after this long without input (CLAUDE.md §7.3). */
+  remoteIdleMs: 10 * 60_000,
 } as const;
 
 /** Screen share quality presets (CLAUDE.md §6.2). "source" uses the monitor's own size. */
@@ -44,7 +47,7 @@ export interface AuthResponse { token: string; user: SelfUser }
 export type MethodName = keyof typeof Methods;
 export type MethodParams<M extends MethodName> = z.input<(typeof Methods)[M]>;
 /** Methods handled by the media (voice/stream) service instead of the chat API. */
-export type MediaMethodName = Extract<MethodName, `voice.${string}` | `media.${string}` | `stream.${string}`>;
+export type MediaMethodName = Extract<MethodName, `voice.${string}` | `media.${string}` | `stream.${string}` | `remote.${string}`>;
 export type ChatMethodName = Exclude<MethodName, MediaMethodName>;
 
 export interface MethodResults {
@@ -64,6 +67,7 @@ export interface MethodResults {
   "read.mark": null;
   "invite.create": Invite;
   "invite.join": GuildState;
+  "dm.open": DmChannel;
   "role.create": Role;
   "role.update": Role;
   "role.delete": null;
@@ -85,6 +89,9 @@ export interface MethodResults {
   "stream.start": VoiceState;
   "stream.stop": null;
   "stream.watch": RemoteProducer[];
+  "remote.request": null;
+  "remote.respond": null;
+  "remote.stop": null;
 }
 
 // ---------- Server events ----------
@@ -103,6 +110,8 @@ export interface Events {
   "member.update": Member;
   "member.remove": { guildId: string; userId: string };
   "message.create": Message;
+  /** A DM conversation now exists (you opened it or someone wrote to you). */
+  "dm.create": { dm: DmChannel; users: PublicUser[] };
   "message.update": Message;
   "message.delete": { channelId: string; messageId: string };
   typing: { channelId: string; userId: string };
@@ -117,11 +126,19 @@ export interface Events {
   "media.producerClosed": { producerId: string };
   "media.producerPaused": { producerId: string; paused: boolean };
   "media.consumerClosed": { consumerId: string };
+  /** Someone watching your stream asks to control it. */
+  "remote.request": { userId: string };
+  /** The streamer answered your control request. */
+  "remote.answer": { streamerId: string; allow: boolean };
+  /** Input from your current controller (streamer side only). */
+  "remote.input": { from: string; ev: RemoteInputEvent[] };
 }
 export type EventName = keyof Events;
 
 export type ClientFrame =
-  | { t: "auth"; d: { token: string } }
+  | { t: "auth"; d: { token: string; client?: "desktop" | "web" } }
+  /** Remote-control input for the stream of user `to` (no response; rate limited separately). */
+  | { t: "rc"; to: string; ev: RemoteInputEvent[] }
   | { t: "req"; id: number; m: MethodName; d: unknown }
   | { t: "ping" }
   | { t: "pong" };

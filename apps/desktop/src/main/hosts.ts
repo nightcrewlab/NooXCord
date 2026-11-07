@@ -12,7 +12,15 @@ interface FileShape {
   tokens: Record<string, string>; // url -> base64 encrypted token
   last: string | null;
   localHost: LocalHostPrefs;
+  app: AppPrefs;
 }
+
+export interface AppPrefs {
+  /** Closing the window keeps NooXCord running in the tray. */
+  closeToTray: boolean;
+  lang: "tr" | "en";
+}
+const DEFAULT_APP: AppPrefs = { closeToTray: true, lang: "tr" };
 
 export interface LocalHostPrefs {
   autoStart: boolean;
@@ -37,9 +45,9 @@ function load(): FileShape {
   if (cache) return cache;
   try {
     const raw = JSON.parse(fs.readFileSync(file(), "utf8")) as Partial<FileShape>;
-    cache = { hosts: [], tokens: {}, last: null, ...raw, localHost: { ...DEFAULT_LOCAL, ...raw.localHost } };
+    cache = { hosts: [], tokens: {}, last: null, ...raw, localHost: { ...DEFAULT_LOCAL, ...raw.localHost }, app: { ...DEFAULT_APP, ...raw.app } };
   } catch {
-    cache = { hosts: [], tokens: {}, last: null, localHost: { ...DEFAULT_LOCAL } };
+    cache = { hosts: [], tokens: {}, last: null, localHost: { ...DEFAULT_LOCAL }, app: { ...DEFAULT_APP } };
   }
   return cache!;
 }
@@ -99,6 +107,12 @@ export const hosts = {
   getLast: (): string | null => load().last,
   setLast(url: unknown): void {
     load().last = validUrl(url) ? url : null;
+    save();
+  },
+  appPrefs: () => load().app,
+  setAppPrefs(p: Partial<AppPrefs>): void {
+    const d = load();
+    d.app = { ...d.app, ...p };
     save();
   },
   localHostPrefs: () => load().localHost,

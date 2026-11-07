@@ -52,7 +52,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
       onClose();
     } catch (e) {
       const err = e as DOMException;
-      if (err.name !== "NotAllowedError" && err.name !== "AbortError") toast(err.message || "Yayın başlatılamadı.", "error");
+      if (err.name !== "NotAllowedError" && err.name !== "AbortError") toast(err.message || t("err.streamStart"), "error");
       setBusy(false);
     }
   }

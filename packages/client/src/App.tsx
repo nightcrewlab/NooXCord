@@ -6,6 +6,31 @@ import { t } from "./i18n";
 import { platform } from "./platform";
 import { useStore } from "./state/store";
 import { ConfirmProvider, MenuProvider, Spinner, Toasts } from "./ui";
+import { RemoteLayer } from "./features/remote/Remote";
+import { initNotifications } from "./features/notify/notify";
+import { useVoice, voice } from "./media/engine";
+
+initNotifications();
+
+/** Desktop tray mirrors the call state and can mute/deafen. */
+if (platform.app) {
+  const app = platform.app;
+  let last = "";
+  const push = () => {
+    const v = useVoice.getState();
+    const st = { inVoice: !!v.channelId, muted: v.muted, deafened: v.deafened, live: !!v.sharing };
+    const key = JSON.stringify(st);
+    if (key !== last) app.setTrayState(st); // the voice store also changes for mic levels: send only real changes
+    last = key;
+  };
+  push();
+  useVoice.subscribe(push);
+  app.onTrayAction((a) => {
+    const v = useVoice.getState();
+    if (a === "mute") void voice.setMuted(!v.muted);
+    else void voice.setDeafened(!v.deafened);
+  });
+}
 
 /** Invite code from ?invite=… (web links), consumed once after login. */
 const pendingInvite = new URLSearchParams(location.search).get("invite");
@@ -49,6 +74,7 @@ export function App() {
           <AppShell />
         )}
         <Toasts />
+        <RemoteLayer />
       </MenuProvider>
     </ConfirmProvider>
   );

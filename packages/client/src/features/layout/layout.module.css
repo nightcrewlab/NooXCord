@@ -79,3 +79,6 @@
 @media (max-width: 767px) {
   .chan { height: 44px; }
 }
+
+.dmItem { gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+.dmEmpty { padding: 12px 8px; color: var(--nx-text-3); font-size: 13px; line-height: 1.5; }

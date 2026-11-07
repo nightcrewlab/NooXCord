@@ -11,8 +11,31 @@ import { SettingsModal } from "../settings/SettingsModal";
 import { ChannelModal } from "./ChannelModal";
 import { useVoice, voice as engine } from "../../media/engine";
 import { openShareModal } from "../voice/common";
+import { useNotify } from "../notify/notify";
 import { VoiceBar, VoiceChannelUsers } from "../voice/VoiceSidebar";
 import vs from "../voice/voice.module.css";
+
+/** Bottom bar of the side panel: you, mute/deafen, settings. */
+export function MeBar() {
+  const me = useStore((st) => st.me);
+  const muted = useVoice((v) => v.muted);
+  const deafened = useVoice((v) => v.deafened);
+  const [open, setOpen] = useState(false);
+  if (!me) return null;
+  return (
+    <div className={s.me}>
+      <Avatar user={me} size={34} presence />
+      <button className={s.meInfo} onClick={() => setOpen(true)}>
+        <div className={s.meName}>{me.nickname}</div>
+        <div className={s.meStatus}>{t(`status.${me.status}`)}</div>
+      </button>
+      <IconButton icon={muted ? "mic-off" : "mic"} className={muted ? vs.meBtnOff : undefined} label={muted ? t("voice.unmute") : t("voice.mute")} aria-pressed={muted} onClick={() => void engine.setMuted(!muted)} />
+      <IconButton icon={deafened ? "headphones-off" : "headphones"} className={deafened ? vs.meBtnOff : undefined} label={deafened ? t("voice.undeafen") : t("voice.deafen")} aria-pressed={deafened} onClick={() => void engine.setDeafened(!deafened)} />
+      <IconButton icon="settings" label={t("rail.settings")} onClick={() => setOpen(true)} />
+      {open && <SettingsModal onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
 
 export function ChannelPanel({ guildId }: { guildId: string }) {
   const gs = useStore((st) => st.guilds[guildId]);
@@ -22,12 +45,10 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
   const selectedChannel = useStore((st) => st.selectedChannel[guildId]);
   const selectChannel = useStore((st) => st.selectChannel);
   const toast = useStore((st) => st.toast);
-  const muted = useVoice((v) => v.muted);
-  const deafened = useVoice((v) => v.deafened);
   const inVoice = useVoice((v) => v.channelId);
   const openMenu = useMenu();
   const confirm = useConfirm();
-  const [modal, setModal] = useState<null | { kind: "invite" } | { kind: "settings" } | { kind: "user" } | { kind: "channel"; create?: ChannelKind; channel?: Channel }>(null);
+  const [modal, setModal] = useState<null | { kind: "invite" } | { kind: "settings" } | { kind: "channel"; create?: ChannelKind; channel?: Channel }>(null);
   if (!gs || !me) return null;
 
   const perms = gs.myPerms;
@@ -65,6 +86,10 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
 
   function channelMenu(e: React.MouseEvent, c: Channel) {
     const items: MenuItem[] = [];
+    if (c.kind === "text") {
+      const off = useNotify.getState().muted.includes(c.id);
+      items.push({ label: off ? t("notify.unmuteChannel") : t("notify.muteChannel"), icon: "bell-off", checked: off, onSelect: () => useNotify.getState().toggleChannel(c.id) });
+    }
     if (canManageChannels) {
       items.push({ label: t("channel.edit"), icon: "edit", onSelect: () => setModal({ kind: "channel", channel: c }) });
       items.push({
@@ -119,19 +144,9 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
         {renderGroup("voice", voice)}
       </div>
       <VoiceBar onShare={openShareModal} />
-      <div className={s.me}>
-        <Avatar user={me} size={34} presence />
-        <button className={s.meInfo} onClick={() => setModal({ kind: "user" })}>
-          <div className={s.meName}>{me.nickname}</div>
-          <div className={s.meStatus}>{t(`status.${me.status}`)}</div>
-        </button>
-        <IconButton icon={muted ? "mic-off" : "mic"} className={muted ? vs.meBtnOff : undefined} label={muted ? t("voice.unmute") : t("voice.mute")} aria-pressed={muted} onClick={() => void engine.setMuted(!muted)} />
-        <IconButton icon={deafened ? "headphones-off" : "headphones"} className={deafened ? vs.meBtnOff : undefined} label={deafened ? t("voice.undeafen") : t("voice.deafen")} aria-pressed={deafened} onClick={() => void engine.setDeafened(!deafened)} />
-        <IconButton icon="settings" label={t("rail.settings")} onClick={() => setModal({ kind: "user" })} />
-      </div>
+      <MeBar />
       {modal?.kind === "invite" && <InviteModal guildId={guildId} onClose={() => setModal(null)} />}
       {modal?.kind === "settings" && <GuildSettingsModal guildId={guildId} onClose={() => setModal(null)} />}
-      {modal?.kind === "user" && <SettingsModal onClose={() => setModal(null)} />}
       {modal?.kind === "channel" && <ChannelModal guildId={guildId} kind={modal.create} channel={modal.channel} onClose={() => setModal(null)} />}
     </aside>
   );

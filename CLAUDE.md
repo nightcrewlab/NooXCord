@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 3 (ağ & web) tamamlandı; gerçek tünel + telefon testi kullanıcı tarafından geçti (2026-11-07). Sıradaki: Faz 4 (kontrol & cila). Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 4 (kontrol & cila) kodlandı ve otomatik testleri geçti (2026-11-07); uzaktan kontrolün iki PC ile gerçek testi kullanıcıda. Sıradaki: Faz 5 (paketleme). Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -141,7 +141,7 @@ pnpm dev            # Electron + Vite HMR (uygulama içinden "Bu bilgisayarda ba
 pnpm dev:host       # yalnızca host sunucusu (tsx watch) → http://localhost:47820 (web istemcisini de sunar; önce client build)
 pnpm dev:web        # yalnızca web istemcisi (Vite :5173, VITE_NX_HOST ile host seçilir; varsayılan localhost:47820)
 pnpm typecheck      # tüm paketler
-pnpm test           # host uçtan uca testi (22 kontrol, misafir dahil) + link önizleme SSRF / resim proxy testi
+pnpm test           # host uçtan uca (22) + uzaktan kontrol & DM kuralları (12) + yedekleme (4) + link önizleme SSRF / resim proxy
 pnpm build          # client (vite) + desktop main/preload/host (esbuild)
 pnpm brand          # assets/brand/*.svg → icon.ico, favicon, PWA ikonları
 pnpm icons          # ikon tablosu → packages/icons/svg/*.svg + sheet.svg
@@ -234,8 +234,8 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 - Aynı anda **yalnızca bir** kontrolcü. Yayıncı istediği an geri alır.
 
 ### 7.2 Teknik
-- Girdi olayları WebRTC **DataChannel** (reliable, ordered) üzerinden; NXM-WS modunda WebSocket üzerinden. Koordinatlar **normalize** (0–1) gönderilir, yayıncı tarafında yayınlanan monitörün sınırlarına eşlenir (çoklu monitör + DPI ölçeklemesi hesaba katılır).
-- Yayıncı tarafında `packages/native` → Win32 **`SendInput`** (fare hareketi/tık/tekerlek, klavye scan code'ları).
+- Girdi olayları ana WebSocket üzerinden host'a gider (`{t:"rc"}` çerçevesi, yanıtsız, kendi hız sınırı 120/sn) ve host yalnızca **o anki kontrolcüden** gelenleri yayıncıya iletir (Faz 4 kararı: DataChannel yerine WS — her iki medya modunda aynı yol, host her olayı doğrular). Koordinatlar **normalize** (0–1) gönderilir, yayıncı tarafında yayınlanan monitörün fiziksel piksel sınırlarına eşlenir (`screen.dipToScreenRect`, çoklu monitör + DPI).
+- Yayıncı tarafında `packages/native` → Win32 **`SendInput`** (fare hareketi/tık/tekerlek, klavye VK + scan code). Enjekte edilen olaylar `dwExtraInfo` etiketi taşır; düşük seviyeli kancalar (WH_KEYBOARD_LL / WH_MOUSE_LL) etiketsiz = fiziksel girdiyi algılar. Kod: `apps/desktop/src/main/remote.ts`, `packages/native/src/input.rs`, `packages/client/src/media/remote.ts`.
 - Pencere paylaşımında girdi yalnızca o pencerenin sınırları içinde kabul edilir.
 
 ### 7.3 Güvenlik kuralları (pazarlık konusu değil)
@@ -416,7 +416,7 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 | **1 — Çekirdek** | Hesaplar (kayıt/giriş/kalıcı oturum/avatar) ✅, guild + davet ✅, metin kanalları ✅, mesaj (Markdown, yanıt, düzenle, sil, yazıyor, okunmadı) ✅, dosya/resim/video ✅, link önizleme ✅, roller + yetkiler + at/yasakla ✅, tasarım sistemi + 62 ikon + logo/ico ✅, masaüstü host süreci + şifreli oturum ✅ | İki istemci tek host'ta sohbet ✅ (tarayıcıda iki farklı kaynakla test edildi) · **iki ayrı PC ile LAN testi ⏳ kullanıcıda** |
 | **2 — Ses & Yayın** | Sesli kanal (katıl/ayrıl, sustur/sağırlaştır, kişi başı ses, aygıt seçimi, ses etkinliği + otomatik hassasiyet, bas-konuş — masaüstünde global) ✅, konuşan göstergesi ✅, ekran yayını (monitör/pencere seçici, 5 kalite ön ayarı, akıcılık/netlik, H.264 + 2 katman simulcast) ✅, sistem sesi kendi sesi hariç (native WASAPI process loopback) ✅, çoklu yayın + tek seferlik thumbnail + çoklu izleme (ızgara/odak, tam ekran) ✅, overlay gerçek veriyle ✅. RNNoise → Faz 4 (şimdilik Chromium gürültü bastırma) | 3 kişi aynı anda 2 yayını izleyebiliyor ✅ (`NX_SELFTEST=voice`, 15 kontrol) · yayında yankı yok: exclude modu P3'te doğrulandı, **gerçek iki PC testi ⏳ kullanıcıda** |
 | **3 — Ağ & Web** | Ayarlar → Bağlantı: port + canlı kontrol (IPv4/IPv6, kullanan süreç) + boş port öner + yeniden başlat ✅, LAN/Hamachi adresleri + Hamachi servis aç/kapa (UAC) ✅, tünel: Cloudflare Quick Tunnel + Dev Tunnels (indir+imza kontrolü, GitHub girişi, sabit URL, yenile, aç/kapat), kopyala/QR/Ctrl+Shift+L/bildirim ✅, misafir girişi + misafir şifresi + misafir kısıtları ✅, mobil arayüz (alt sekmeler) ✅, NXM-WS tünel modu (ses+mikrofon+yayın izleme, WebRTC başarısızsa otomatik geçiş) ✅, overlay özel tam ekran ipucu ✅, link önizleme DNS sabitleme + resim proxy ✅ | Tünel modunda sese katılma + 2 yayın izleme ✅ (`pnpm test:voice`, C kullanıcısı) · gerçek telefon + tünel testi ✅ (NooXRii, 2026-11-07) — **Faz 3 TAMAMLANDI** |
-| **4 — Kontrol & Cila** | Uzaktan kontrol, DM, bildirimler, tray, auto-update, yedekleme, i18n EN | Tüm §7.3 kuralları test edildi |
+| **4 — Kontrol & Cila** | Uzaktan kontrol (istek/kabul/her zaman/sağ tık ver, kırmızı çerçeve + rozet — yakalamadan hariç, panik kısayolu, yerel girdi 2 sn öncelik, Win tuşu engeli, pencere paylaşımında odak şartı, 10 dk boşta bitiş, host logu) ✅, DM (migration 2, `dm.open`, yalnızca ortak sunucudakiler) ✅, bildirimler (DM + @bahsetme, kanal/DM sessize alma, rahatsız etmeyin, görev çubuğu yanıp sönme) ✅, tepsi (sustur/sağırlaştır, kapatınca tepsiye, Windows ile başlat) ✅, auto-update (`electron-updater`, yalnızca kurulu uygulama) ✅, günlük DB yedeği (son 7, migration öncesi kopya, dışa/içe aktar, geri yükle) ✅, İngilizce + ana süreç metinleri i18n'de ✅. RNNoise → Faz 5 | Sunucu tarafı §7.3 kuralları test edildi ✅ (`pnpm test`, misafir/tarayıcı reddi, yalnızca kontrolcü girdisi, bırak/geri al/izlemeyi bırak/yayın bitti) · **gerçek iki PC'de SendInput + panik + çerçeve testi ⏳ kullanıcıda** |
 | **5 — Paketleme & Deneysel** | NSIS installer son hali, imzalama, firewall, opsiyonel exclusive fullscreen overlay hook | Temiz Windows 10 VM'de setup → çalıştır başarılı |
 
 ---
@@ -477,5 +477,9 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 12. Medya portu (ana port + 1) LAN'da açık olmalı; WebRTC ICE başarısız olursa istemci "medya portu erişilebilir olmalı" uyarısı verir. Host yeni bir ağ arayüzü (ör. Hamachi sonradan bağlandı) için ses sunucusunu yeniden başlatmalı — şimdilik adresler ilk sese katılmada alınır.
 13. Global bas-konuş `GetAsyncKeyState` ile 15 ms'de bir yoklanır (yalnızca bas-konuş modunda ve sesteyken). Fare yan tuşları kod tarafında destekli ama ayar ekranından henüz seçilemiyor.
 14. Tünel modu (NXM-WS) sınırları: tünelden giren yayın **açamaz**, yalnızca izler; video her zaman düşük simulcast katmanı; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
-15. Ana süreçteki birkaç bildirim/hata metni (tünel, overlay ipucu, port hataları) henüz i18n dosyasında değil; Faz 4'te İngilizce ile birlikte taşınacak.
+15. ~~Ana süreç metinleri~~ → Faz 4'te `main.*` anahtarlarına taşındı (ana süreç `tr.json`/`en.json`'u derleme anında paketler, dil renderer ayarını izler). **Kalan:** host'un döndürdüğü hata mesajları (`fail(...)`) Türkçe; İngilizce arayüzde de Türkçe görünür → hata kodu + anahtar ile çevrilmeli.
 16. Tünel açılışta otomatik başlamaz (bilinçli: herkese açık bağlantı kullanıcı istemeden açılmasın); her seferinde Ayarlar → Bağlantı'dan açılır.
+17. Uzaktan kontrol: panik kısayolu sabit (`Ctrl+Alt+Shift+Esc`), ek engellenecek kombinasyon ayarı yok (yalnızca Win tuşları engelli) — ayar ekranı sonraya. Yönetici yetkili pencereler girdi almaz (UIPI), istek kartında yazıyor.
+18. Auto-update besleme adresi (GitHub owner/repo) Faz 5'te `electron-builder.yml` `publish` ile verilecek; o zamana kadar "yalnızca kurulu uygulamada" durumunda.
+19. Yedekler yalnızca veritabanını kapsar (`%APPDATA%/NooXCord/host/backups`), yüklenen dosyalar dahil değil.
+20. Migration 2 `channels` tablosunu yeniden kurar (DM için `guild_id` boş olabilir); migration sırasında foreign key kapalı, sonra `foreign_key_check`. Eski şema dosyası önce `backups/…-v1.db` olarak kopyalanır.

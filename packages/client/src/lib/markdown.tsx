@@ -5,7 +5,7 @@ import { platform } from "../platform";
  * Tiny, safe Markdown subset → React nodes (never innerHTML):
  * ```code block```, `inline code`, **bold**, *italic* / _italic_, ~~strike~~, ||spoiler||, links, > quote.
  */
-const INLINE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(~~[^~\n]+~~)|(\|\|[^|\n]+\|\|)|(\*[^*\n]+\*)|(\b_[^_\n]+_\b)|(https?:\/\/[^\s<>"'`]+)/g;
+const INLINE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(~~[^~\n]+~~)|(\|\|[^|\n]+\|\|)|(\*[^*\n]+\*)|(\b_[^_\n]+_\b)|(https?:\/\/[^\s<>"'`]+)|((?<![\p{L}\p{N}_])@[\p{L}\p{N}_.-]{2,32})/gu;
 
 function openLink(e: React.MouseEvent, href: string) {
   e.preventDefault();
@@ -26,6 +26,7 @@ function inline(text: string, key: string): ReactNode[] {
     else if (m[3]) out.push(<s key={k}>{inline(tok.slice(2, -2), k)}</s>);
     else if (m[4]) out.push(<Spoiler key={k}>{inline(tok.slice(2, -2), k)}</Spoiler>);
     else if (m[5] || m[6]) out.push(<em key={k}>{inline(tok.slice(1, -1), k)}</em>);
+    else if (m[8]) out.push(<span key={k} className="md-mention">{tok}</span>);
     else if (m[7]) {
       const href = tok.replace(/[),.!?;:]+$/, "");
       out.push(

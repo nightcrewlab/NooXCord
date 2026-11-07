@@ -36,6 +36,7 @@ a:hover { text-decoration: underline; }
 code { font: 0.88em var(--nx-mono); background: var(--nx-bg-0); border: 1px solid var(--nx-line); border-radius: 4px; padding: 1px 4px; }
 .md-pre code { background: none; border: 0; padding: 0; font-size: inherit; }
 .md-quote { margin: 2px 0; padding-left: 10px; border-left: 3px solid var(--nx-text-3); color: var(--nx-text-2); }
+.md-mention { background: rgba(255, 122, 69, .14); color: var(--nx-accent-2); border-radius: 4px; padding: 0 3px; font-weight: 600; }
 .md-spoiler { background: var(--nx-bg-3); color: transparent; border-radius: 4px; cursor: pointer; transition: color var(--nx-fast); }
 .md-spoiler.revealed { color: inherit; background: rgba(255, 255, 255, .06); cursor: auto; }
 

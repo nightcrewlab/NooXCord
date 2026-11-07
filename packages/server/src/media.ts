@@ -3,11 +3,11 @@ import * as mediasoup from "mediasoup";
 import type { WebSocket } from "ws";
 import type { types as ms } from "mediasoup";
 import {
-  P, has,
+  LIMITS, P, has,
   type ConsumerParams, type EventName, type Events, type MediaMethodName, type MediaSource, type MethodName, type MethodResults,
   type RemoteProducer, type TransportParams, type VoiceJoinResult, type VoiceState,
 } from "@nooxcord/shared";
-import { Methods } from "@nooxcord/shared/schemas";
+import { Methods, RemoteInput } from "@nooxcord/shared/schemas";
 import type { Conn, Hub } from "./hub";
 import type { Store } from "./store";
 import { FRAME_MIC, FrameAssembler, audioFrame, buildRtp, parseRtp, videoFrame } from "./rtp";
@@ -89,13 +89,18 @@ export class Media {
   private thumbs = new Map<string, Thumb>(); // userId -> latest stream thumbnail
   private tickets = new Map<string, Peer>();
   private closed = false;
+  /** Remote control: last input per streamer, last request per viewer>streamer pair, input rate per viewer. */
+  private rcLastInput = new Map<string, number>();
+  private rcLastRequest = new Map<string, number>();
+  private rcRate = new Map<string, { at: number; n: number }>();
+  private rcTimer = setInterval(() => this.rcSweep(), 30_000);
 
   constructor(private store: Store, private hub: Hub, private port: number, private bind?: string, private log: (...a: unknown[]) => void = () => {}) {}
 
   // ---------- public API used by the host ----------
 
   isMediaMethod(m: string): boolean {
-    return m.startsWith("voice.") || m.startsWith("media.") || m.startsWith("stream.");
+    return m.startsWith("voice.") || m.startsWith("media.") || m.startsWith("stream.") || m.startsWith("remote.");
   }
 
   async call<M extends MethodName>(conn: Conn, method: M, raw: unknown): Promise<MethodResults[M]> {
@@ -145,8 +150,27 @@ export class Media {
           this.broadcastState(p);
         }
         if (!has(perms, P.STREAM) && p.state.stream) this.stopStream(p);
+        if (!has(perms, P.REQUEST_REMOTE_CONTROL)) {
+          for (const s of r.peers.values()) if (s.state.stream?.controllerId === p.userId) this.setController(s, null, "permission");
+        }
       }
     }
+  }
+
+  /** Remote-control input frame ({t:"rc"}): forwarded to the streamer only from their current controller. */
+  remoteInput(conn: Conn, frame: unknown): void {
+    const parsed = RemoteInput.safeParse(frame);
+    if (!parsed.success) return;
+    const peer = this.peers.get(conn.userId);
+    if (!peer || peer.conn !== conn) return;
+    const streamer = peer.room.peers.get(parsed.data.to);
+    if (!streamer || streamer.state.stream?.controllerId !== peer.userId) return;
+    const now = Date.now();
+    const r = this.rcRate.get(peer.userId);
+    if (!r || now - r.at >= 1000) this.rcRate.set(peer.userId, { at: now, n: 1 });
+    else if (++r.n > 120) return; // 120 batches/s covers 60 Hz pointer + keys
+    this.rcLastInput.set(streamer.userId, now);
+    this.toConn(streamer.conn, "remote.input", { from: peer.userId, ev: parsed.data.ev });
   }
 
   /** A /media WebSocket connected: the first message must be {"ticket": "..."} from voice.join. */
@@ -220,6 +244,7 @@ export class Media {
 
   async close(): Promise<void> {
     this.closed = true;
+    clearInterval(this.rcTimer);
     for (const p of [...this.peers.values()]) this.leave(p, "error", true);
     this.worker?.close();
     this.worker = null;
@@ -337,11 +362,44 @@ export class Media {
     for (const other of p.room.peers.values()) if (other !== p) this.toConn(other.conn, "media.producerClosed", { producerId });
   }
 
+  /** May this peer control or be controlled? Never guests, never browser clients (CLAUDE.md 7.3). */
+  private rcEligible(p: Peer): boolean {
+    return p.conn.desktop && this.store.userRow(p.userId)?.guest !== 1;
+  }
+
+  private name(userId: string): string {
+    return this.store.userRow(userId)?.nickname ?? userId;
+  }
+
+  private setController(streamer: Peer, controllerId: string | null, why: string): void {
+    const s = streamer.state.stream;
+    if (!s || s.controllerId === controllerId) return;
+    if (s.controllerId) this.log(`[remote] ${this.name(s.controllerId)} stopped controlling ${this.name(streamer.userId)} (${why})`);
+    if (controllerId) {
+      this.log(`[remote] ${this.name(controllerId)} controls ${this.name(streamer.userId)}`);
+      this.rcLastInput.set(streamer.userId, Date.now());
+    } else this.rcLastInput.delete(streamer.userId);
+    streamer.state = { ...streamer.state, stream: { ...s, controllerId } };
+    this.broadcastState(streamer);
+  }
+
+  /** Ends control sessions idle for longer than LIMITS.remoteIdleMs. */
+  private rcSweep(): void {
+    const now = Date.now();
+    for (const p of this.peers.values()) {
+      if (p.state.stream?.controllerId && now - (this.rcLastInput.get(p.userId) ?? 0) > LIMITS.remoteIdleMs) this.setController(p, null, "idle");
+    }
+    for (const [k, at] of this.rcLastRequest) if (now - at > 60_000) this.rcLastRequest.delete(k);
+    for (const [k, r] of this.rcRate) if (now - r.at > 60_000) this.rcRate.delete(k);
+  }
+
   private stopStream(p: Peer): void {
     this.closeSource(p, "screen");
     this.closeSource(p, "screen-audio");
     this.thumbs.delete(p.userId);
     if (!p.state.stream) return;
+    if (p.state.stream.controllerId) this.log(`[remote] control of ${this.name(p.userId)} ended (stream stopped)`);
+    this.rcLastInput.delete(p.userId);
     p.state = { ...p.state, stream: null };
     for (const other of p.room.peers.values()) other.watching.delete(p.userId);
     this.broadcastState(p);
@@ -368,7 +426,10 @@ export class Media {
     for (const streamer of p.watching) {
       const s = room.peers.get(streamer);
       if (s?.state.stream) {
-        s.state = { ...s.state, stream: { ...s.state.stream, viewers: s.state.stream.viewers.filter((v) => v !== p.userId) } };
+        const was = s.state.stream.controllerId;
+        const controllerId = was === p.userId ? null : was;
+        if (controllerId !== was) this.log(`[remote] ${this.name(p.userId)} stopped controlling ${this.name(s.userId)} (left)`);
+        s.state = { ...s.state, stream: { ...s.state.stream, viewers: s.state.stream.viewers.filter((v) => v !== p.userId), controllerId } };
         if (!silent) this.broadcastState(s);
       }
     }
@@ -605,6 +666,7 @@ export class Media {
           width: p.width, height: p.height, fps: p.fps, audio: p.audio,
           thumbnail: peer.state.stream?.thumbnail ?? (thumb ? `/thumbs/${thumb.id}.jpg` : null),
           viewers: peer.state.stream?.viewers ?? [],
+          controllerId: peer.state.stream?.controllerId ?? null,
         },
       };
       this.broadcastState(peer);
@@ -613,6 +675,47 @@ export class Media {
 
     "stream.stop": (conn) => {
       this.stopStream(this.peerOf(conn));
+      return null;
+    },
+
+    "remote.request": (conn, p) => {
+      const peer = this.peerOf(conn);
+      const target = peer.room.peers.get(p.userId);
+      if (!target?.state.stream) fail("not_found", "Bu yayın artık yok.");
+      if (target === peer || !peer.watching.has(target!.userId)) fail("bad_request", "Önce yayını izlemelisin.");
+      if (!this.rcEligible(peer) || !has(this.store.perms(peer.room.guildId, peer.userId), P.REQUEST_REMOTE_CONTROL)) fail("forbidden", "Uzaktan kontrol isteyemezsin.");
+      if (!this.rcEligible(target!)) fail("forbidden", "Bu yayın uzaktan kontrolü desteklemiyor.");
+      if (target!.state.stream!.controllerId === peer.userId) return null;
+      const key = `${peer.userId}>${target!.userId}`;
+      if (Date.now() - (this.rcLastRequest.get(key) ?? 0) < 5000) fail("rate_limited", "Biraz bekle.");
+      this.rcLastRequest.set(key, Date.now());
+      this.toConn(target!.conn, "remote.request", { userId: peer.userId });
+      return null;
+    },
+
+    "remote.respond": (conn, p) => {
+      const peer = this.peerOf(conn);
+      if (!peer.state.stream) fail("bad_request", "Yayın açık değil.");
+      const viewer = peer.room.peers.get(p.userId);
+      if (!viewer || viewer === peer) fail("not_found", "Bu kişi kanalda değil.");
+      if (p.allow) {
+        if (!viewer!.watching.has(peer.userId)) fail("bad_request", "Bu kişi yayını izlemiyor.");
+        if (!this.rcEligible(peer) || !this.rcEligible(viewer!) || !has(this.store.perms(peer.room.guildId, viewer!.userId), P.REQUEST_REMOTE_CONTROL)) {
+          fail("forbidden", "Bu kişiye kontrol verilemez.");
+        }
+        this.setController(peer, viewer!.userId, "granted");
+      }
+      this.toConn(viewer!.conn, "remote.answer", { streamerId: peer.userId, allow: p.allow });
+      return null;
+    },
+
+    "remote.stop": (conn, p) => {
+      const peer = this.peerOf(conn);
+      const streamer = peer.room.peers.get(p.streamerId);
+      const c = streamer?.state.stream?.controllerId;
+      if (!streamer || !c) return null;
+      if (peer !== streamer && peer.userId !== c) fail("forbidden", "Bu kontrol oturumu senin değil.");
+      this.setController(streamer, null, peer === streamer ? "revoked" : "released");
       return null;
     },
 
@@ -636,7 +739,9 @@ export class Media {
           c.close();
         }
       }
-      target!.state = { ...target!.state, stream: { ...s, viewers } };
+      const controllerId = !p.watching && s.controllerId === peer.userId ? null : s.controllerId;
+      if (controllerId !== s.controllerId) this.log(`[remote] ${this.name(peer.userId)} stopped controlling ${this.name(target!.userId)} (stopped watching)`);
+      target!.state = { ...target!.state, stream: { ...s, viewers, controllerId } };
       this.broadcastState(target!);
       return p.watching ? [...target!.producers.values()].filter((e) => e.source !== "mic").map((e) => this.remote(target!, e)) : [];
     },

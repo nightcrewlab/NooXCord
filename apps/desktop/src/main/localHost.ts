@@ -2,6 +2,7 @@ import { app, utilityProcess, type UtilityProcess } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { hosts } from "./hosts";
+import { s } from "./strings";
 
 /** Runs the NooXCord host server in a separate utility process so the UI never blocks. */
 export interface LocalHostStatus {
@@ -43,12 +44,12 @@ export function status(): LocalHostStatus {
 
 export function start(port: unknown): Promise<LocalHostStatus> {
   const p = Number(port);
-  if (!Number.isInteger(p) || p < 1024 || p > 65535) return Promise.resolve({ ...current, error: "Port 1024–65535 arasında olmalı." });
+  if (!Number.isInteger(p) || p < 1024 || p > 65535) return Promise.resolve({ ...current, error: s("main.err.portRange") });
   if (child) return Promise.resolve(current);
   return new Promise((resolve) => {
     const proc = utilityProcess.fork(path.join(__dirname, "host.cjs"), [], { serviceName: "NooXCord Host", stdio: "inherit" });
     child = proc;
-    const timer = setTimeout(() => finish({ running: false, port: null, lanAddresses: [], error: "Sunucu başlatılamadı (zaman aşımı)." }), 15_000);
+    const timer = setTimeout(() => finish({ running: false, port: null, lanAddresses: [], error: s("main.err.hostTimeout") }), 15_000);
     const finish = (st: LocalHostStatus) => {
       clearTimeout(timer);
       current = st;
@@ -63,7 +64,7 @@ export function start(port: unknown): Promise<LocalHostStatus> {
         hosts.setLocalHostPrefs({ autoStart: true, port: m.port! });
         finish({ running: true, port: m.port!, lanAddresses: lanAddresses(m.port!) });
       } else if (m.type === "error") {
-        finish({ running: false, port: null, lanAddresses: [], error: m.code === "EADDRINUSE" ? `Port ${p} kullanımda. Başka bir port deneyin.` : `Sunucu hatası: ${m.message}` });
+        finish({ running: false, port: null, lanAddresses: [], error: m.code === "EADDRINUSE" ? s("main.err.portBusy", { port: p }) : s("main.err.host", { msg: m.message ?? "" }) });
       }
     });
     proc.on("exit", () => {
@@ -72,7 +73,7 @@ export function start(port: unknown): Promise<LocalHostStatus> {
         current = { running: false, port: null, lanAddresses: [] };
       }
     });
-    proc.postMessage({ type: "start", port: p, dataDir: path.join(app.getPath("userData"), "host"), webDir: webDir(), config: hostConfig() });
+    proc.postMessage({ type: "start", port: p, dataDir: hostDataDir(), webDir: webDir(), config: hostConfig() });
   });
 }
 
@@ -89,6 +90,26 @@ export function stop(): Promise<LocalHostStatus> {
     const kill = setTimeout(() => { proc.kill(); done(); }, 4000);
     proc.once("exit", () => { clearTimeout(kill); done(); });
     proc.postMessage({ type: "stop" });
+  });
+}
+
+export const hostDataDir = (): string => path.join(app.getPath("userData"), "host");
+
+/** Asks the running host for a database snapshot; null when the host is not running. */
+export function requestBackup(tag?: string): Promise<{ name: string; size: number; at: number } | null> {
+  const proc = child;
+  if (!proc || !current.running) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const onMsg = (m: { type: string; ok?: boolean; info?: { name: string; size: number; at: number }; error?: string }) => {
+      if (m.type !== "backup") return;
+      proc.off("message", onMsg);
+      clearTimeout(timer);
+      if (m.ok && m.info) resolve(m.info);
+      else reject(new Error(m.error ?? "backup failed"));
+    };
+    const timer = setTimeout(() => { proc.off("message", onMsg); reject(new Error("backup timed out")); }, 30_000);
+    proc.on("message", onMsg);
+    proc.postMessage({ type: "backup", tag });
   });
 }
 

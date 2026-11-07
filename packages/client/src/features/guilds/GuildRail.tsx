@@ -5,7 +5,7 @@ import logoUrl from "../../assets/logo.svg";
 import { t } from "../../i18n";
 import { initials } from "../../lib/format";
 import { platform } from "../../platform";
-import { useStore } from "../../state/store";
+import { DM_HOME, useStore } from "../../state/store";
 import { cx, useMenu } from "../../ui";
 import s from "../layout/layout.module.css";
 import { CreateGuildModal } from "./CreateGuildModal";
@@ -26,6 +26,7 @@ export function GuildRail() {
   const openMenu = useMenu();
   const [creating, setCreating] = useState(false);
   const guest = useStore((st) => !!st.me?.guest);
+  const dmUnread = useStore((st) => Object.values(st.dms).some((d) => !!d.lastMessageId && d.lastMessageId > (st.readStates[d.id] ?? "")));
 
   return (
     <nav className={s.rail} aria-label={t("rail.home")}>
@@ -41,6 +42,12 @@ export function GuildRail() {
           }
         >
           <img src={logoUrl} alt="NooXCord" />
+        </button>
+      </div>
+      <div className={cx(s.railItem, selected === DM_HOME && s.active, selected !== DM_HOME && dmUnread && s.unread)}>
+        <span className={s.pill} />
+        <button className={s.railBtn} title={t("dm.title")} aria-label={t("dm.title")} aria-current={selected === DM_HOME} onClick={() => selectGuild(DM_HOME)}>
+          <Icon name="mail" size={22} />
         </button>
       </div>
       <div className={s.railSep} />

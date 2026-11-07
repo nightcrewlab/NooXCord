@@ -14,7 +14,8 @@ import {
 } from "@nooxcord/shared";
 import { Api } from "./api";
 import { Auth } from "./auth";
-import { Db } from "./db";
+import { Db, SCHEMA_VERSION, fileVersion } from "./db";
+import { dailyBackup, prune, snapshot, type BackupInfo } from "./backup";
 import { Hub, type Conn } from "./hub";
 import { Media } from "./media";
 import { Store, mapAttachment } from "./store";
@@ -44,6 +45,8 @@ export interface HostConfig {
 export interface RunningHost {
   port: number;
   setConfig(c: Partial<HostConfig>): void;
+  /** Snapshot of the database into dataDir/backups (keeps the newest 7). */
+  backup(tag?: string): BackupInfo;
   close(): Promise<void>;
 }
 
@@ -77,7 +80,16 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   };
   for (const d of [opts.dataDir, ...Object.values(dirs)]) fs.mkdirSync(d, { recursive: true });
 
-  const db = new Db(path.join(opts.dataDir, "nooxcord.db"));
+  const dbFile = path.join(opts.dataDir, "nooxcord.db");
+  const backupsDir = path.join(opts.dataDir, "backups");
+  // Keep a copy of the old schema before migrating (e.g. the Faz 4 channels rebuild).
+  if (fs.existsSync(dbFile)) {
+    const v = fileVersion(dbFile);
+    if (v > 0 && v < SCHEMA_VERSION) snapshot(dbFile, backupsDir, `v${v}`);
+  }
+  const db = new Db(dbFile);
+  const backupTimer = setInterval(() => { try { dailyBackup(db.raw, backupsDir); } catch (e) { console.error("[backup]", e); } }, 6 * 60 * 60_000);
+  try { dailyBackup(db.raw, backupsDir); } catch (e) { console.error("[backup]", e); }
   const keyFile = path.join(opts.dataDir, "proxy.key");
   if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, randomBytes(32));
   setProxyKey(fs.readFileSync(keyFile));
@@ -322,14 +334,15 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
         const uid = auth.resolve(f.d?.token);
         if (!uid || !store.userRow(uid)) return ws.close(CLOSE.AUTH_FAILED, "auth failed");
         clearTimeout(authTimer);
-        conn = { ws, userId: uid, lastSeen };
+        conn = { ws, userId: uid, lastSeen, desktop: f.d?.client === "desktop" };
         const cameOnline = hub.add(conn);
         const guildIds = store.guildIdsOf(uid);
         hub.send(conn, {
           t: "evt", e: "ready",
           d: {
             user: store.selfUser(store.userRow(uid)!),
-            users: store.usersInGuilds(guildIds),
+            users: store.usersFor(uid),
+            dms: store.dmsOf(uid),
             guilds: guildIds.map((g) => store.guildState(g, uid)),
             readStates: store.readStates(uid),
             host: info,
@@ -338,6 +351,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
         if (cameOnline) hub.toUsers(store.relatedUserIds(uid), "user.update", store.publicUser(store.userRow(uid)!), uid);
         return;
       }
+      if (f.t === "rc") return void (conn && media?.remoteInput(conn, f));
       if (f.t !== "req" || !conn) return;
       if (tokens-- <= 0) return hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: "rate_limited", msg: "Çok hızlı." } });
       try {
@@ -394,8 +408,14 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
       Object.assign(config, c);
       syncInfo();
     },
+    backup(tag) {
+      const b = snapshot(db.raw, backupsDir, tag);
+      prune(backupsDir);
+      return b;
+    },
     async close() {
       stopping = true;
+      clearInterval(backupTimer);
       clearInterval(sweep);
       await media?.close();
       for (const ws of [...wss.clients, ...mediaWss.clients]) ws.terminate();

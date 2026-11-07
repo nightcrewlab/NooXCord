@@ -5,6 +5,9 @@ import { hosts } from "./hosts";
 import * as localHost from "./localHost";
 import { destroyOverlay, registerOverlay } from "./overlay";
 import { registerMediaIpc, shutdownMedia } from "./media";
+import { endRemote, registerRemoteIpc } from "./remote";
+import { initLogs, registerServices } from "./services";
+import { createTray, destroyTray, isQuitting, markQuitting, registerTray, showMain, startHidden } from "./tray";
 import { hostStopped, registerNetIpc, registerNetShortcuts, shutdownNet } from "./netIpc";
 import { prepareVoiceTest, voiceSelfTest } from "./voiceTest";
 
@@ -15,6 +18,7 @@ if (process.env.NX_SELFTEST) app.setPath("userData", path.join(os.tmpdir(), "noo
 if (process.env.NX_SELFTEST === "voice") prepareVoiceTest();
 if (!app.requestSingleInstanceLock()) app.quit();
 app.setAppUserModelId("com.nooxrii.nooxcord");
+initLogs();
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -45,6 +49,9 @@ function registerIpc(): void {
   ipcMain.handle("shell:openExternal", (_e, url) => (isSafeExternal(url) ? shell.openExternal(url) : undefined));
   registerMediaIpc(() => mainWindow);
   registerNetIpc();
+  registerRemoteIpc();
+  registerTray(() => mainWindow);
+  registerServices(() => mainWindow);
 }
 
 function createMainWindow(): void {
@@ -65,7 +72,14 @@ function createMainWindow(): void {
       spellcheck: false,
     },
   });
-  if (!process.env.NX_SELFTEST) mainWindow.once("ready-to-show", () => mainWindow?.show());
+  if (!process.env.NX_SELFTEST && !startHidden()) mainWindow.once("ready-to-show", () => mainWindow?.show());
+  // Close to tray (setting, default on): the app keeps running for voice, hosting and notifications.
+  mainWindow.on("close", (e) => {
+    if (process.env.NX_SELFTEST || isQuitting() || !hosts.appPrefs().closeToTray) return;
+    e.preventDefault();
+    mainWindow?.hide();
+  });
+  mainWindow.on("focus", () => mainWindow?.flashFrame(false));
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isSafeExternal(url)) void shell.openExternal(url);
     return { action: "deny" };
@@ -82,10 +96,7 @@ function createMainWindow(): void {
   else void mainWindow.loadFile(app.isPackaged ? path.join(process.resourcesPath, "web/index.html") : path.join(__dirname, "../../../packages/client/dist/index.html"));
 }
 
-app.on("second-instance", () => {
-  if (mainWindow?.isMinimized()) mainWindow.restore();
-  mainWindow?.focus();
-});
+app.on("second-instance", () => showMain());
 
 /** Headless check used during development: NX_SELFTEST=1 electron . */
 async function selfTest(): Promise<void> {
@@ -168,11 +179,15 @@ void app.whenReady().then(async () => {
   const prefs = hosts.localHostPrefs();
   if (prefs.autoStart) await localHost.start(prefs.port); // resume hosting before the UI reconnects
   createMainWindow();
+  createTray();
   registerOverlay();
   registerNetShortcuts();
 });
 
 app.on("before-quit", () => {
+  markQuitting();
+  destroyTray();
+  endRemote();
   shutdownMedia();
   shutdownNet();
   destroyOverlay();

@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { app, net, shell } from "electron";
+import { s } from "./strings";
 
 /*
  * Tunnel providers (CLAUDE.md §10.4, ADR 0001). Both run as child processes we own:
@@ -149,7 +150,7 @@ export class TunnelManager {
     this.child = child;
     let found = false;
     this.startTimer = setTimeout(() => {
-      if (!found && this.child === child) this.fail("Tünel 45 saniyede açılamadı. İnternet bağlantını kontrol et.");
+      if (!found && this.child === child) this.fail(s("main.tunnel.timeout"));
     }, 45_000);
     const onData = (buf: Buffer) => {
       for (const line of String(buf).split(/\r?\n/)) {
@@ -169,14 +170,14 @@ export class TunnelManager {
     };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
-    child.on("error", (e) => this.child === child && this.fail(`Tünel başlatılamadı: ${e.message}`));
+    child.on("error", (e) => this.child === child && this.fail(s("main.tunnel.startFailed", { msg: e.message })));
     child.on("exit", (code) => {
       if (this.child !== child) return;
       this.child = null;
       if (!this.wanted) return;
       // Crashed or dropped: retry with growing delay (2 s ... 60 s).
       const delay = Math.min(60_000, 2000 * 2 ** this.retry++);
-      this.log(`[nooxcord] tünel süreci kapandı (kod ${code}); ${Math.round(delay / 1000)} sn sonra yeniden denenecek`);
+      this.log(`[nooxcord] tunnel process exited (code ${code}); retrying in ${Math.round(delay / 1000)} s`);
       this.set({ status: "starting", url: null });
       this.retryTimer = setTimeout(() => void this.start(this.port), delay);
     });
@@ -186,7 +187,7 @@ export class TunnelManager {
 
   private startCloudflare() {
     const bin = cfBin();
-    if (!fs.existsSync(bin)) throw new Error("cloudflared.exe bulunamadı. Uygulamayı yeniden kurmayı deneyin.");
+    if (!fs.existsSync(bin)) throw new Error(s("main.tunnel.noCloudflared"));
     // A user's ~/.cloudflared/config.yml would break quick tunnels: hand it our own (non-empty) config.
     const cfg = path.join(app.getPath("userData"), "cloudflared.yml");
     if (!fs.existsSync(cfg)) fs.writeFileSync(cfg, "# NooXCord quick tunnel: intentionally empty\nno-autoupdate: true\n");
@@ -216,7 +217,7 @@ export class TunnelManager {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       const tmp = dest + ".download";
       const res = await net.fetch(DEV_DOWNLOAD, { redirect: "follow" });
-      if (!res.ok) throw new Error(`İndirme başarısız (HTTP ${res.status}).`);
+      if (!res.ok) throw new Error(s("main.tunnel.downloadFailed", { status: res.status }));
       fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
       const sig = await run("powershell.exe", [
         "-NoProfile", "-NonInteractive", "-Command",
@@ -224,7 +225,7 @@ export class TunnelManager {
       ]);
       if (!/^Valid\|.*O=Microsoft Corporation/m.test(sig.out.trim())) {
         fs.rmSync(tmp, { force: true });
-        throw new Error("İndirilen dosyanın Microsoft imzası doğrulanamadı; kullanılmadı.");
+        throw new Error(s("main.tunnel.badSignature"));
       }
       fs.renameSync(tmp, dest);
       this.setDev({ installed: true });
@@ -280,16 +281,16 @@ export class TunnelManager {
 
   private async startDevTunnel() {
     const bin = devBin();
-    if (!fs.existsSync(bin)) throw new Error("Dev Tunnels aracı kurulu değil. Önce \"Aracı indir\".");
+    if (!fs.existsSync(bin)) throw new Error(s("main.tunnel.devMissing"));
     const info = await this.refreshDev();
-    if (!info.user) throw new Error("Dev Tunnels için önce GitHub ile giriş yap.");
+    if (!info.user) throw new Error(s("main.tunnel.devLogin"));
     let id = this.hooks.prefs().devTunnelId;
     // Tunnels expire after a while unused: recreate the same id when it is gone.
     if (!id || !(await run(bin, ["show", id])).ok) {
       id ??= `nooxcord-${Math.random().toString(36).slice(2, 8)}`;
       const c = await run(bin, ["create", id, "--allow-anonymous"]);
       this.log(c.out);
-      if (!c.ok && !/already exists|Conflict/i.test(c.out)) throw new Error("Dev tunnel oluşturulamadı: " + c.out.trim().split("\n").pop());
+      if (!c.ok && !/already exists|Conflict/i.test(c.out)) throw new Error(s("main.tunnel.devCreateFailed", { msg: c.out.trim().split("\n").pop() ?? "" }));
       this.hooks.setPrefs({ devTunnelId: id });
     }
     const pc = await run(bin, ["port", "create", id, "-p", String(this.port), "--protocol", "http"]);

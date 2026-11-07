@@ -1,6 +1,7 @@
 import path from "node:path";
 import { BrowserWindow, Notification, globalShortcut, ipcMain, screen } from "electron";
 import { exclusiveFullscreen } from "./media";
+import { s } from "./strings";
 
 /*
  * In-game overlay (CLAUDE.md §8): transparent, click-through, always-on-top window listing the
@@ -42,8 +43,8 @@ function watchFullscreen(active: boolean) {
     watchFullscreen(false);
     if (Notification.isSupported()) {
       new Notification({
-        title: "NooXCord overlay görünmüyor",
-        body: "Oyun özel (exclusive) tam ekranda. Overlay'i görmek için oyunun görüntü ayarından \"Kenarlıksız pencere\" (borderless) modunu seç.",
+        title: s("main.overlay.fsTitle"),
+        body: s("main.overlay.fsBody"),
         silent: true,
       }).show();
     }

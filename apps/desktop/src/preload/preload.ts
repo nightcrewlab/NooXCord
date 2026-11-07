@@ -61,6 +61,48 @@ contextBridge.exposeInMainWorld("nx", {
     },
     setInCall: (active: boolean) => call("media:setInCall", active),
   },
+  app: {
+    getPrefs: () => call("app:getPrefs"),
+    setPrefs: (p: unknown) => call("app:setPrefs", p),
+    focus: () => call("app:focus"),
+    attention: () => call("app:attention"),
+    openLogs: () => call("app:openLogs"),
+    setTrayState: (s: unknown) => ipcRenderer.send("tray:state", s),
+    onTrayAction: (cb: (a: string) => void) => {
+      const fn = (_e: unknown, a: string) => cb(a);
+      ipcRenderer.on("tray:action", fn);
+      return () => ipcRenderer.removeListener("tray:action", fn);
+    },
+  },
+  updates: {
+    get: () => call("updates:get"),
+    check: () => call("updates:check"),
+    install: () => call("updates:install"),
+    onState: (cb: (s: unknown) => void) => {
+      const fn = (_e: unknown, s: unknown) => cb(s);
+      ipcRenderer.on("updates:state", fn);
+      return () => ipcRenderer.removeListener("updates:state", fn);
+    },
+  },
+  backup: {
+    list: () => call("backup:list"),
+    now: () => call("backup:now"),
+    export: () => call("backup:export"),
+    import: () => call("backup:import"),
+    restore: (name: string) => call("backup:restore", name),
+    openFolder: () => call("backup:openFolder"),
+  },
+  remote: {
+    supported: () => call("remote:supported"),
+    begin: (label: string) => call("remote:begin", label),
+    end: () => call("remote:end"),
+    input: (ev: unknown[]) => ipcRenderer.send("remote:input", ev),
+    onPanic: (cb: () => void) => {
+      const fn = () => cb();
+      ipcRenderer.on("remote:panic", fn);
+      return () => ipcRenderer.removeListener("remote:panic", fn);
+    },
+  },
   overlay: {
     update: (members: unknown) => ipcRenderer.send("overlay:update", members),
   },

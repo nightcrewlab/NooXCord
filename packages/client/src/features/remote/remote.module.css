@@ -1,0 +1,69 @@
+.surface {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: crosshair;
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--nx-live);
+}
+.surface:focus-visible { box-shadow: inset 0 0 0 3px var(--nx-live); }
+
+.surfaceHint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--nx-radius-m);
+  background: rgba(11, 13, 17, 0.82);
+  color: var(--nx-text-1);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.layer {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+}
+
+.card,
+.bar {
+  background: var(--nx-bg-2);
+  border: 1px solid var(--nx-line);
+  border-radius: var(--nx-radius-l);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  padding: 12px 14px;
+  animation: pop 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.cardHead { display: flex; align-items: center; gap: 10px; }
+.cardText { font-weight: 600; color: var(--nx-text-1); }
+.note { margin-top: 6px; font-size: 12px; color: var(--nx-text-3); }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-color: var(--nx-live);
+  color: var(--nx-live);
+}
+.barText { display: flex; flex-direction: column; flex: 1; min-width: 0; font-size: 12px; color: var(--nx-text-2); }
+.barText b { color: var(--nx-text-1); font-size: 13px; }
+
+@keyframes pop {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card, .bar { animation: none; }
+}

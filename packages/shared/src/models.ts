@@ -114,7 +114,20 @@ export interface StreamInfo {
   /** One-off JPEG preview captured when the stream started (host-relative URL). */
   thumbnail: string | null;
   viewers: string[];
+  /** Viewer currently controlling this stream's keyboard/mouse (CLAUDE.md §7). */
+  controllerId: string | null;
 }
+
+/**
+ * Remote-control input, coordinates normalised to the shared surface (0..1).
+ *  m: move · b: mouse button (0 left, 1 middle, 2 right, 3 back, 4 forward) · w: wheel (120 = one notch, +dy up)
+ *  k: key by KeyboardEvent.code
+ */
+export type RemoteInputEvent =
+  | { k: "m"; x: number; y: number }
+  | { k: "b"; b: number; d: boolean }
+  | { k: "w"; dx: number; dy: number }
+  | { k: "k"; c: string; d: boolean };
 
 export interface VoiceState {
   userId: string;
@@ -168,10 +181,18 @@ export interface ConsumerParams {
   tag: number | null;
 }
 
+/** Direct-message conversation between two users (not part of any guild). */
+export interface DmChannel {
+  id: string;
+  userIds: string[];
+  lastMessageId: string | null;
+}
+
 export interface ReadyPayload {
   user: SelfUser;
   users: PublicUser[];
   guilds: GuildState[];
+  dms: DmChannel[];
   readStates: Record<string, string>; // channelId -> last read message id
   host: HostInfo;
 }

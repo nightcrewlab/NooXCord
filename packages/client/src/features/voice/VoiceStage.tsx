@@ -4,10 +4,12 @@ import { Icon } from "@nooxcord/icons";
 import { P, has, type Channel, type VoiceState } from "@nooxcord/shared";
 import { t } from "../../i18n";
 import { useVoice, voice, type WatchedStream } from "../../media/engine";
+import { remote, remoteCapable, useRemote } from "../../media/remote";
 import { useVoiceSettings } from "../../media/settings";
 import { platform } from "../../platform";
 import { useStore } from "../../state/store";
-import { Avatar, Button, IconButton, Spinner, cx } from "../../ui";
+import { Avatar, Button, IconButton, Spinner, cx, useMenu } from "../../ui";
+import { RemoteSurface } from "../remote/Remote";
 import chat from "../chat/chat.module.css";
 import layout from "../layout/layout.module.css";
 import { LiveBadge, StreamVideo, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
@@ -157,6 +159,35 @@ function OwnStreamCard({ state }: { state: VoiceState | undefined }) {
         </div>
         <Button variant="danger" size="small" icon="screen-stop" onClick={() => void voice.stopScreen()}>{t("stream.stop")}</Button>
       </div>
+      {!!state?.stream?.viewers.length && <ViewerList viewers={state.stream.viewers} controllerId={state.stream.controllerId} />}
+    </div>
+  );
+}
+
+/** Streamer's viewers; right-click (or click) one to give or take back remote control. */
+function ViewerList({ viewers, controllerId }: { viewers: string[]; controllerId: string | null }) {
+  const users = useStore((st) => st.users);
+  const openMenu = useMenu();
+  const capable = remoteCapable();
+  const menu = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    const u = users[id];
+    if (!capable || !u || u.guest) return;
+    openMenu(e, [
+      { label: u.nickname, icon: "user", disabled: true },
+      controllerId === id
+        ? { label: t("remote.take"), icon: "pointer", danger: true, onSelect: () => void remote.revoke() }
+        : { label: t("remote.give"), icon: "pointer", onSelect: () => void remote.give(id) },
+    ]);
+  };
+  return (
+    <div className={s.viewerList} aria-label={t("remote.viewers")}>
+      {viewers.map((id) => users[id] && (
+        <button key={id} className={cx(s.viewer, controllerId === id && s.viewerCtl)} title={users[id]!.nickname} onClick={(e) => menu(e, id)} onContextMenu={(e) => menu(e, id)}>
+          <Avatar user={users[id]!} size={24} />
+          {controllerId === id && <Icon name="pointer" size={12} />}
+        </button>
+      ))}
     </div>
   );
 }
@@ -190,9 +221,12 @@ function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream
   const vol = useVoiceSettings((st) => st.volumes[`stream:${userId}`] ?? 1);
   const ref = useRef<HTMLDivElement>(null);
   const live = w?.hasVideo;
+  const rc = useRemote(useShallow((x) => ({ asked: x.asked === userId, controlling: x.controlling === userId })));
+  const canAsk = big && live && remoteCapable() && !user?.guest && !!state?.stream && has(useStore.getState().guilds[state.guildId]?.myPerms ?? 0, P.REQUEST_REMOTE_CONTROL);
   return (
     <div ref={ref} className={cx(s.tile, big && s.big, !big && s.tileClickable)} onClick={() => !big && voice.setFocus(userId)}>
       {w && live ? <StreamVideo stream={w.stream} muted={deafened} volume={vol} /> : <div className={s.tileCenter}><Spinner />{t("stream.loading")}</div>}
+      {rc.controlling && live && <RemoteSurface tileRef={ref} />}
       <div className={s.tileBar} onClick={(e) => e.stopPropagation()}>
         <div className={s.tileName}>{state?.stream && <LiveBadge />}<span>{user?.nickname}</span></div>
         {big && w?.hasAudio && (
@@ -202,6 +236,9 @@ function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream
         {many && (big && focus === userId
           ? <button className={s.tileBtn} title={t("stream.grid")} aria-label={t("stream.grid")} onClick={() => voice.setFocus(null)}><Icon name="grid" size={16} /></button>
           : <button className={s.tileBtn} title={t("stream.focus")} aria-label={t("stream.focus")} onClick={() => voice.setFocus(userId)}><Icon name="fullscreen" size={16} /></button>)}
+        {canAsk && (rc.controlling
+          ? <button className={cx(s.tileBtn, s.tileBtnOn)} title={t("remote.release")} aria-label={t("remote.release")} onClick={() => void remote.release()}><Icon name="hand" size={16} /></button>
+          : <button className={s.tileBtn} disabled={rc.asked} title={rc.asked ? t("remote.requested") : t("remote.request")} aria-label={t("remote.request")} onClick={() => void remote.request(userId)}><Icon name="hand" size={16} /></button>)}
         <button className={s.tileBtn} title={t("stream.fullscreen")} aria-label={t("stream.fullscreen")} onClick={() => void ref.current?.requestFullscreen?.().catch(() => {})}><Icon name="fullscreen" size={16} /></button>
         <button className={s.tileBtn} title={t("stream.unwatch")} aria-label={t("stream.unwatch")} onClick={() => void voice.unwatch(userId)}><Icon name="eye-off" size={16} /></button>
       </div>

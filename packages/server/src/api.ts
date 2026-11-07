@@ -47,6 +47,21 @@ export class Api {
     return ch!;
   }
 
+  /** Text channel or DM. DMs allow viewing, sending and attaching files; only their two members see them. */
+  private chatChannel(channelId: string, userId: string, bit: number): { id: string; guildId: string | null; audience: string[]; perms: number } {
+    const ref = this.store.chanRef(channelId);
+    if (!ref) fail("not_found", "Kanal bulunamadı.");
+    if (ref!.guildId === null) {
+      const audience = this.store.dmMembers(ref!.id);
+      if (!audience.includes(userId)) fail("not_found", "Kanal bulunamadı.");
+      const perms = P.VIEW_CHANNELS | P.SEND_MESSAGES | P.ATTACH_FILES;
+      if (!has(perms, bit)) fail("forbidden", "Bu işlem için yetkin yok.");
+      return { id: ref!.id, guildId: null, audience, perms };
+    }
+    const perms = this.need(ref!.guildId, userId, bit);
+    return { id: ref!.id, guildId: ref!.guildId, audience: this.store.memberUserIds(ref!.guildId), perms };
+  }
+
   /** Highest role position of a member; owner = Infinity. */
   private topPosition(guildId: string, userId: string): number {
     if (this.store.guild(guildId)?.ownerId === userId) return Infinity;
@@ -81,8 +96,8 @@ export class Api {
     if (embeds.length === 0) return;
     if (!this.db.run("UPDATE messages SET embeds = ? WHERE id = ? AND content = ?", JSON.stringify(embeds), messageId, content).changes) return;
     const msg = this.store.message(messageId);
-    const ch = msg && this.store.channel(msg.channelId);
-    if (msg && ch) this.hub.toUsers(this.store.memberUserIds(ch.guildId), "message.update", msg);
+    const ref = msg && this.store.chanRef(msg.channelId);
+    if (msg && ref) this.hub.toUsers(ref.guildId ? this.store.memberUserIds(ref.guildId) : this.store.dmMembers(ref.id), "message.update", msg);
   }
 
   // ---------- handlers ----------
@@ -182,17 +197,36 @@ export class Api {
       return null;
     },
 
+    "dm.open": (uid, p) => {
+      if (p.userId === uid) fail("bad_request", "Kendine mesaj gönderemezsin.");
+      const other = this.store.userRow(p.userId);
+      if (!other) fail("not_found", "Kullanıcı bulunamadı.");
+      let id = this.store.dmBetween(uid, p.userId);
+      if (!id) {
+        if (!this.store.shareGuild(uid, p.userId)) fail("forbidden", "Yalnızca aynı sunucudaki kişilere mesaj gönderebilirsin.");
+        id = newId();
+        this.db.tx(() => {
+          this.db.run("INSERT INTO channels (id, guild_id, name, kind, created_at) VALUES (?, NULL, '', 'dm', ?)", id!, Date.now());
+          this.db.run("INSERT INTO dm_members (channel_id, user_id) VALUES (?, ?), (?, ?)", id!, uid, id!, p.userId);
+        });
+        const dm = this.store.dm(id)!;
+        const users = [this.store.publicUser(this.store.userRow(uid)!), this.store.publicUser(other!)];
+        this.hub.toUsers([uid, p.userId], "dm.create", { dm, users });
+      }
+      return this.store.dm(id)!;
+    },
+
     "message.list": (uid, p) => {
-      const ch = this.channelOf(p.channelId, uid, P.VIEW_CHANNELS);
+      const ch = this.chatChannel(p.channelId, uid, P.VIEW_CHANNELS);
       return this.store.messages(ch.id, p.before, p.limit ?? LIMITS.messagePage);
     },
 
     "message.send": (uid, p) => {
-      const ch = this.channelOf(p.channelId, uid, P.SEND_MESSAGES);
+      const ch = this.chatChannel(p.channelId, uid, P.SEND_MESSAGES);
       const content = p.content.trim();
       const attIds = [...new Set(p.attachmentIds ?? [])];
       if (!content && attIds.length === 0) fail("bad_request", "Boş mesaj gönderilemez.");
-      if (attIds.length > 0 && !has(this.store.perms(ch.guildId, uid), P.ATTACH_FILES)) fail("forbidden", "Dosya gönderme yetkin yok.");
+      if (attIds.length > 0 && !has(ch.perms, P.ATTACH_FILES)) fail("forbidden", "Dosya gönderme yetkin yok.");
       if (p.replyTo && !this.db.get("SELECT 1 FROM messages WHERE id = ? AND channel_id = ?", p.replyTo, ch.id)) fail("not_found", "Yanıtlanan mesaj bulunamadı.");
       const id = newId();
       this.db.tx(() => {
@@ -210,7 +244,7 @@ export class Api {
         );
       });
       const msg = { ...this.store.message(id)!, nonce: p.nonce };
-      this.hub.toUsers(this.store.memberUserIds(ch.guildId), "message.create", msg);
+      this.hub.toUsers(ch.audience, "message.create", msg);
       void this.attachEmbeds(id, content);
       return msg;
     },
@@ -219,11 +253,11 @@ export class Api {
       const m = this.store.message(p.messageId);
       if (!m) fail("not_found", "Mesaj bulunamadı.");
       if (m!.authorId !== uid) fail("forbidden", "Yalnızca kendi mesajını düzenleyebilirsin.");
-      const ch = this.channelOf(m!.channelId, uid, P.VIEW_CHANNELS);
+      const ch = this.chatChannel(m!.channelId, uid, P.VIEW_CHANNELS);
       const content = p.content.trim();
       this.db.run("UPDATE messages SET content = ?, edited_at = ?, embeds = '[]' WHERE id = ?", content, Date.now(), m!.id);
       const out = this.store.message(m!.id)!;
-      this.hub.toUsers(this.store.memberUserIds(ch.guildId), "message.update", out);
+      this.hub.toUsers(ch.audience, "message.update", out);
       void this.attachEmbeds(out.id, content);
       return out;
     },
@@ -231,27 +265,27 @@ export class Api {
     "message.delete": (uid, p) => {
       const m = this.store.message(p.messageId);
       if (!m) fail("not_found", "Mesaj bulunamadı.");
-      const ch = this.channelOf(m!.channelId, uid, P.VIEW_CHANNELS);
-      if (m!.authorId !== uid && !has(this.store.perms(ch.guildId, uid), P.MANAGE_MESSAGES)) fail("forbidden", "Bu mesajı silme yetkin yok.");
+      const ch = this.chatChannel(m!.channelId, uid, P.VIEW_CHANNELS);
+      if (m!.authorId !== uid && !has(ch.perms, P.MANAGE_MESSAGES)) fail("forbidden", "Bu mesajı silme yetkin yok.");
       const files = this.db.all<{ stored: string }>("SELECT stored FROM attachments WHERE message_id = ?", m!.id).map((r) => r.stored);
       this.db.run("DELETE FROM messages WHERE id = ?", m!.id);
       this.deleteFiles(files);
-      this.hub.toUsers(this.store.memberUserIds(ch.guildId), "message.delete", { channelId: ch.id, messageId: m!.id });
+      this.hub.toUsers(ch.audience, "message.delete", { channelId: ch.id, messageId: m!.id });
       return null;
     },
 
     typing: (uid, p) => {
-      const ch = this.channelOf(p.channelId, uid, P.SEND_MESSAGES);
+      const ch = this.chatChannel(p.channelId, uid, P.SEND_MESSAGES);
       const key = `${uid}:${ch.id}`;
       const now = Date.now();
       if (now - (this.typingAt.get(key) ?? 0) < 2500) return null;
       this.typingAt.set(key, now);
-      this.hub.toUsers(this.store.memberUserIds(ch.guildId), "typing", { channelId: ch.id, userId: uid }, uid);
+      this.hub.toUsers(ch.audience, "typing", { channelId: ch.id, userId: uid }, uid);
       return null;
     },
 
     "read.mark": (uid, p) => {
-      this.channelOf(p.channelId, uid, P.VIEW_CHANNELS);
+      this.chatChannel(p.channelId, uid, P.VIEW_CHANNELS);
       this.db.run(
         `INSERT INTO read_states (user_id, channel_id, last_read_id) VALUES (?, ?, ?)
          ON CONFLICT(user_id, channel_id) DO UPDATE SET last_read_id = excluded.last_read_id WHERE excluded.last_read_id > read_states.last_read_id`,

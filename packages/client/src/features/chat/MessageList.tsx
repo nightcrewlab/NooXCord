@@ -4,7 +4,7 @@ import { Icon } from "@nooxcord/icons";
 import { P, has, type Channel, type GuildState, type Message } from "@nooxcord/shared";
 import { t } from "../../i18n";
 import { formatDay, sameDay } from "../../lib/format";
-import { useStore, type PendingMessage } from "../../state/store";
+import { DM_HOME, useStore, type PendingMessage } from "../../state/store";
 import { Button, Spinner, useConfirm } from "../../ui";
 import { useUserMenu } from "../members/useUserMenu";
 import s from "./chat.module.css";
@@ -131,9 +131,9 @@ export function MessageList({ channel, gs, onReply, editing, setEditing }: { cha
               <div key={vi.key} ref={virt.measureElement} data-index={vi.index} className={s.row} style={{ transform: `translateY(${vi.start}px)` }}>
                 {row.kind === "welcome" && (
                   <div className={s.welcome}>
-                    <div className={s.welcomeIcon}><Icon name="hash" size={36} /></div>
-                    <h3 className={s.welcomeTitle}>{t("chat.welcome", { channel: channel.name })}</h3>
-                    <p className={s.welcomeDesc}>{t("chat.welcomeDesc")}</p>
+                    <div className={s.welcomeIcon}><Icon name={channel.guildId === DM_HOME ? "at" : "hash"} size={36} /></div>
+                    <h3 className={s.welcomeTitle}>{channel.guildId === DM_HOME ? t("dm.welcome", { user: channel.name }) : t("chat.welcome", { channel: channel.name })}</h3>
+                    <p className={s.welcomeDesc}>{channel.guildId === DM_HOME ? t("dm.welcomeDesc", { user: channel.name }) : t("chat.welcomeDesc")}</p>
                   </div>
                 )}
                 {row.kind === "loader" && <div className={s.loader}><Spinner />{t("chat.loadingOlder")}</div>}

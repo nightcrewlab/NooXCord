@@ -1,5 +1,6 @@
 import { audioContext } from "./level";
 import { pcmTrack, type PcmTrack } from "./pcm";
+import { t } from "../i18n";
 
 /*
  * Tunnel media (NXM-WS, CLAUDE.md §2.3 way 3). Tunnels carry only HTTP/WebSocket, so audio and
@@ -78,7 +79,7 @@ export class WsMedia {
       const ws = new WebSocket(this.url);
       ws.binaryType = "arraybuffer";
       this.ws = ws;
-      const timer = setTimeout(() => { ws.close(); reject(new Error("Medya bağlantısı zaman aşımına uğradı.")); }, 10_000);
+      const timer = setTimeout(() => { ws.close(); reject(new Error(t("err.mediaTimeout"))); }, 10_000);
       let ready = false;
       ws.onopen = () => ws.send(JSON.stringify({ ticket: this.ticket }));
       ws.onmessage = (e) => {
@@ -90,7 +91,7 @@ export class WsMedia {
       };
       ws.onclose = () => {
         clearTimeout(timer);
-        if (!ready) reject(new Error("Medya bağlantısı kurulamadı."));
+        if (!ready) reject(new Error(t("err.mediaFailed")));
         else if (this.ws === ws) this.onClosed();
       };
     });
@@ -230,9 +231,9 @@ export class WsMedia {
 
   /** Encodes the microphone to Opus (20 ms frames) and sends it while the voice gate is open. */
   async startMic(track: MediaStreamTrack): Promise<void> {
-    if (typeof AudioEncoder === "undefined") throw new Error("Bu tarayıcı tünel modunda mikrofon gönderemiyor; yalnızca dinleyebilirsin.");
+    if (typeof AudioEncoder === "undefined") throw new Error(t("err.wsNoEncoder"));
     const config: AudioEncoderConfig = { codec: "opus", sampleRate: 48000, numberOfChannels: 1, bitrate: 32_000 };
-    if (!(await AudioEncoder.isConfigSupported(config)).supported) throw new Error("Opus kodlayıcı yok; yalnızca dinleyebilirsin.");
+    if (!(await AudioEncoder.isConfigSupported(config)).supported) throw new Error(t("err.wsNoOpus"));
     const c = audioContext();
     captureLoaded ??= (async () => {
       const url = URL.createObjectURL(new Blob([CAPTURE], { type: "text/javascript" }));

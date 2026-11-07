@@ -1,4 +1,5 @@
 import type { Device, types as msc } from "mediasoup-client";
+import { remote, useRemote } from "./remote";
 import { create } from "zustand";
 import { STREAM_PRESETS, type EventName, type Events, type MediaSource, type RemoteProducer, type StreamPreset, type TransportParams } from "@nooxcord/shared";
 import type { HostConnection } from "../net/connection";
@@ -8,6 +9,7 @@ import { VadGate, audioContext, meter, type LevelMeter } from "./level";
 import { pcmTrack, type PcmTrack } from "./pcm";
 import { voiceSettings, useVoiceSettings } from "./settings";
 import { WsMedia, wsMediaSupported, type WsAudio } from "./wsMedia";
+import { t } from "../i18n";
 
 /*
  * Voice & stream engine (mediasoup-client). Owns the WebRTC transports, the microphone, the outgoing
@@ -134,7 +136,7 @@ class VoiceEngine {
     } catch (e) {
       if (seq !== this.seq) return;
       await this.teardown(true);
-      useStore.getState().toast((e as Error).message || "Sesli kanala bağlanılamadı.", "error");
+      useStore.getState().toast((e as Error).message || t("err.voiceJoin"), "error");
     }
   }
 
@@ -148,6 +150,7 @@ class VoiceEngine {
     this.offConn?.();
     this.conn = conn;
     this.offConn = conn.on(<E extends EventName>(e: E, d: Events[E]) => this.onEvent(e, d));
+    remote.bind(conn);
   }
 
   /** Signalling + transports; producers/consumers are (re)created afterwards. */
@@ -183,8 +186,8 @@ class VoiceEngine {
     this.device = device;
     this.send = device.createSendTransport(this.transportOptions(res.send!));
     this.recv = device.createRecvTransport(this.transportOptions(res.recv!));
-    for (const t of [this.send, this.recv]) {
-      const transport = t;
+    for (const tr of [this.send, this.recv]) {
+      const transport = tr;
       transport.on("connect", ({ dtlsParameters }, ok, fail) => {
         conn.call("media.connect", { transportId: transport.id, dtlsParameters: dtlsParameters as unknown as Record<string, unknown> }).then(() => ok(), fail);
       });
@@ -194,11 +197,11 @@ class VoiceEngine {
         if (wsMediaSupported() && !this.forceWs && v.guildId && v.channelId) {
           // UDP/TCP media port unreachable: fall back to WebSocket media through the main port.
           this.forceWs = true;
-          useStore.getState().toast("Doğrudan ses bağlantısı kurulamadı; tünel moduna geçiliyor (gecikme daha yüksek).", "info");
+          useStore.getState().toast(t("err.voiceFallbackWs"), "info");
           void this.rejoin(v.guildId, v.channelId);
           return;
         }
-        useStore.getState().toast("Ses bağlantısı kurulamadı. Medya portu (ana port + 1, UDP/TCP) erişilebilir olmalı.", "error");
+        useStore.getState().toast(t("err.voiceMediaPort"), "error");
         void this.leave();
       });
     }
@@ -265,7 +268,7 @@ class VoiceEngine {
         const { reason } = raw as Events["voice.ended"];
         this.seq++;
         void this.teardown(false);
-        useStore.getState().toast(reason === "replaced" ? "Başka bir cihazdan sese katıldın." : "Sesli kanaldan çıkarıldın.", "info");
+        useStore.getState().toast(reason === "replaced" ? t("err.voiceReplaced") : t("err.voiceRemoved"), "info");
         break;
       }
       case "media.producer": {
@@ -324,7 +327,7 @@ class VoiceEngine {
     } catch {
       if (seq === this.seq) {
         await this.teardown(false);
-        useStore.getState().toast("Sesli kanala yeniden bağlanılamadı.", "error");
+        useStore.getState().toast(t("err.voiceRejoin"), "error");
       }
     }
     void guildId;
@@ -348,7 +351,7 @@ class VoiceEngine {
       setV({ micError: null });
     } catch (e) {
       const name = (e as DOMException).name;
-      const msg = name === "NotAllowedError" ? "Mikrofon izni verilmedi; yalnızca dinleyebilirsin." : name === "NotFoundError" ? "Mikrofon bulunamadı; yalnızca dinleyebilirsin." : "Mikrofon açılamadı; yalnızca dinleyebilirsin.";
+      const msg = name === "NotAllowedError" ? t("err.micDenied") : name === "NotFoundError" ? t("err.micMissing") : t("err.micFailed");
       setV({ micError: msg });
       useStore.getState().toast(msg, "error");
       return;
@@ -662,8 +665,8 @@ class VoiceEngine {
   // ---------- screen share ----------
 
   async startScreen(opts: ShareOptions): Promise<void> {
-    if (this.mode === "ws" && useVoice.getState().channelId) throw new Error("Tünel modunda yayın açılamaz. Yayın için LAN, Hamachi veya açık port gerekir.");
-    if (!this.send) throw new Error("Önce bir sesli kanala katıl.");
+    if (this.mode === "ws" && useVoice.getState().channelId) throw new Error(t("err.streamTunnel"));
+    if (!this.send) throw new Error(t("err.joinVoiceFirst"));
     const preset = STREAM_PRESETS[opts.preset];
     const width = preset.width || opts.sourceSize?.width || 1920;
     const height = preset.height || opts.sourceSize?.height || 1080;
@@ -685,7 +688,7 @@ class VoiceEngine {
     this.screenStream = stream;
     this.shareOpts = { ...opts, testTrack: undefined };
     const video = stream.getVideoTracks()[0];
-    if (!video) throw new Error("Görüntü alınamadı.");
+    if (!video) throw new Error(t("err.noVideo"));
     video.contentHint = opts.contentHint;
     video.addEventListener("ended", () => void this.stopScreen());
 
@@ -708,7 +711,7 @@ class VoiceEngine {
   private async startSystemAudio(): Promise<MediaStreamTrack | null> {
     const media = platform.media;
     if (!media || !(await media.systemAudioSupported().catch(() => false))) {
-      useStore.getState().toast("Sistem sesi bu bilgisayarda yakalanamıyor; yayın sessiz başladı.", "error");
+      useStore.getState().toast(t("err.sysAudioUnsupported"), "error");
       return null;
     }
     const portPromise = new Promise<MessagePort>((resolve) => {
@@ -722,7 +725,7 @@ class VoiceEngine {
     });
     const res = await media.startSystemAudio();
     if (!res.ok) {
-      useStore.getState().toast(`Sistem sesi başlatılamadı: ${res.error ?? "bilinmeyen hata"}. Yayın sessiz.`, "error");
+      useStore.getState().toast(t("err.sysAudioFailed", { msg: res.error ?? "?" }), "error");
       return null;
     }
     const port = await portPromise;
@@ -852,4 +855,4 @@ useStore.subscribe((s, prev) => {
 });
 
 // Dev/test hook (used by the Electron voice self-test).
-(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useStore };
+(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useStore, remote, useRemote };

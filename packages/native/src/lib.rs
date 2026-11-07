@@ -175,3 +175,131 @@ pub fn exclusive_fullscreen() -> bool {
         false
     }
 }
+
+// ---------- remote control ----------
+
+#[cfg(windows)]
+mod input;
+
+#[napi(object)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// Move the cursor to physical virtual-desktop coordinates.
+#[napi]
+pub fn input_move(x: i32, y: i32) -> bool {
+    #[cfg(windows)]
+    {
+        input::move_to(x, y)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (x, y);
+        false
+    }
+}
+
+/// Mouse button (0 left, 1 middle, 2 right, 3 back, 4 forward).
+#[napi]
+pub fn input_button(button: u32, down: bool) -> bool {
+    #[cfg(windows)]
+    {
+        input::button(button, down)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (button, down);
+        false
+    }
+}
+
+/// Wheel in WHEEL_DELTA units (positive dy = up, positive dx = right).
+#[napi]
+pub fn input_wheel(dx: i32, dy: i32) -> bool {
+    #[cfg(windows)]
+    {
+        input::wheel(dx, dy)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (dx, dy);
+        false
+    }
+}
+
+/// Key press/release by Windows virtual-key code.
+#[napi]
+pub fn input_key(vk: u32, down: bool) -> bool {
+    #[cfg(windows)]
+    {
+        input::key(vk, down)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (vk, down);
+        false
+    }
+}
+
+/// Start watching for the local user's own (physical) keyboard/mouse input.
+#[napi]
+pub fn input_guard_start() -> Result<()> {
+    #[cfg(windows)]
+    {
+        input::guard_start().map_err(Error::from_reason)
+    }
+    #[cfg(not(windows))]
+    {
+        Err(Error::from_reason("not supported on this platform"))
+    }
+}
+
+#[napi]
+pub fn input_guard_stop() {
+    #[cfg(windows)]
+    input::guard_stop();
+}
+
+/// Milliseconds since the last physical input (huge when none was seen yet).
+#[napi]
+pub fn physical_idle_ms() -> f64 {
+    #[cfg(windows)]
+    {
+        input::idle_ms()
+    }
+    #[cfg(not(windows))]
+    {
+        f64::MAX
+    }
+}
+
+/// Window bounds in physical pixels; null when the window is gone or minimised.
+#[napi]
+pub fn window_rect(hwnd: i64) -> Option<Rect> {
+    #[cfg(windows)]
+    {
+        input::window_rect(hwnd).map(|(x, y, width, height)| Rect { x, y, width, height })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        None
+    }
+}
+
+/// Foreground window handle (0 when none); keys reach a shared window only while it has focus.
+#[napi]
+pub fn foreground_window() -> i64 {
+    #[cfg(windows)]
+    {
+        input::foreground()
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}

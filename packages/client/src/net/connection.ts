@@ -1,8 +1,10 @@
 import {
   CLOSE, PING_INTERVAL_MS,
   type AuthResponse, type EventName, type Events, type HostInfo, type MethodName, type MethodParams, type MethodResults,
-  type SelfUser, type ServerFrame, type Attachment,
+  type SelfUser, type ServerFrame, type Attachment, type ClientFrame,
 } from "@nooxcord/shared";
+import { platform } from "../platform";
+import { t } from "../i18n";
 
 export class RpcError extends Error {
   constructor(readonly code: string, msg: string) {
@@ -33,10 +35,10 @@ export class HostHttp {
         signal: AbortSignal.timeout(10_000),
       });
     } catch {
-      throw new RpcError("network", "Sunucuya ulaşılamadı.");
+      throw new RpcError("network", t("err.unreachable"));
     }
     const data = (await res.json().catch(() => ({}))) as { code?: string; msg?: string };
-    if (!res.ok) throw new RpcError(data.code ?? "internal", data.msg ?? "Sunucu hatası.");
+    if (!res.ok) throw new RpcError(data.code ?? "internal", data.msg ?? t("err.server"));
     return data as T;
   }
 
@@ -61,10 +63,10 @@ export class HostHttp {
         let data: { code?: string; msg?: string } = {};
         try { data = JSON.parse(xhr.responseText); } catch { /* empty */ }
         if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
-        else reject(new RpcError(data.code ?? "internal", data.msg ?? "Yükleme başarısız."));
+        else reject(new RpcError(data.code ?? "internal", data.msg ?? t("err.upload")));
       };
-      xhr.onerror = () => reject(new RpcError("network", "Yükleme başarısız."));
-      xhr.onabort = () => reject(new RpcError("aborted", "İptal edildi."));
+      xhr.onerror = () => reject(new RpcError("network", t("err.upload")));
+      xhr.onabort = () => reject(new RpcError("aborted", t("err.aborted")));
       xhr.send(fd);
     });
     return { promise, abort: () => xhr.abort() };
@@ -111,7 +113,7 @@ export class HostConnection {
     this.ws = ws;
     ws.onopen = () => {
       this.lastRecv = Date.now();
-      ws.send(JSON.stringify({ t: "auth", d: { token: this.http.token } }));
+      ws.send(JSON.stringify({ t: "auth", d: { token: this.http.token, client: platform.kind } }));
       clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(() => {
         if (Date.now() - this.lastRecv > 12_000) return ws.close(4000, "stale");
@@ -145,7 +147,7 @@ export class HostConnection {
       clearInterval(this.pingTimer);
       for (const [, p] of this.pending) {
         clearTimeout(p.timer);
-        p.reject(new RpcError("network", "Bağlantı koptu."));
+        p.reject(new RpcError("network", t("err.disconnected")));
       }
       this.pending.clear();
       if (this.ws !== ws) return;
@@ -163,13 +165,18 @@ export class HostConnection {
     this.ws?.close(1000, "bye");
   }
 
+  /** Fire-and-forget frame (remote-control input). */
+  sendFrame(f: ClientFrame): void {
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify(f));
+  }
+
   call<M extends MethodName>(m: M, d: MethodParams<M>, timeoutMs = 15_000): Promise<MethodResults[M]> {
     return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== 1) return reject(new RpcError("network", "Bağlantı yok."));
+      if (!this.ws || this.ws.readyState !== 1) return reject(new RpcError("network", t("err.noConnection")));
       const id = ++this.seq;
       const timer = window.setTimeout(() => {
         this.pending.delete(id);
-        reject(new RpcError("timeout", "Sunucu yanıt vermedi."));
+        reject(new RpcError("timeout", t("err.timeout")));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
       this.ws.send(JSON.stringify({ t: "req", id, m, d }));

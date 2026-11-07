@@ -1,6 +1,6 @@
 import {
   ALL_PERMISSIONS, DEFAULT_ROLE_PERMS, GUEST_FORBIDDEN,
-  type Attachment, type Channel, type Embed, type Guild, type GuildState, type Invite, type Member,
+  type Attachment, type Channel, type DmChannel, type Embed, type Guild, type GuildState, type Invite, type Member,
   type Message, type PublicUser, type Role, type SelfUser, type UserStatus, type VoiceState,
 } from "@nooxcord/shared";
 import type { Db } from "./db";
@@ -42,14 +42,61 @@ export class Store {
     return { ...this.publicUser(row), status: row.status as UserStatus, online: true, email: row.email };
   }
 
-  /** Users that share at least one guild with userId (including userId). */
+  /** Users that share at least one guild or a DM with userId (including userId). */
   relatedUserIds(userId: string): string[] {
     return this.db
       .all<{ user_id: string }>(
-        `SELECT DISTINCT m2.user_id FROM members m1 JOIN members m2 ON m1.guild_id = m2.guild_id WHERE m1.user_id = ?`,
+        `SELECT m2.user_id FROM members m1 JOIN members m2 ON m1.guild_id = m2.guild_id WHERE m1.user_id = ?1
+         UNION SELECT d2.user_id FROM dm_members d1 JOIN dm_members d2 ON d1.channel_id = d2.channel_id WHERE d1.user_id = ?1`,
         userId,
       )
       .map((r) => r.user_id);
+  }
+
+  /** Users this user should know about: guild co-members and DM partners. */
+  usersFor(userId: string): PublicUser[] {
+    const ids = this.relatedUserIds(userId);
+    if (ids.length === 0) return [];
+    return this.db.all<UserRow>(`SELECT * FROM users WHERE id IN (${ids.map(() => "?").join(",")})`, ...ids).map((r) => this.publicUser(r));
+  }
+
+  // ---------- direct messages ----------
+  dmsOf(userId: string): DmChannel[] {
+    const rows = this.db.all<{ id: string; last_id: string | null }>(
+      `SELECT c.id, (SELECT MAX(id) FROM messages WHERE channel_id = c.id) AS last_id
+       FROM channels c JOIN dm_members d ON d.channel_id = c.id WHERE c.kind = 'dm' AND d.user_id = ?`,
+      userId,
+    );
+    return rows.map((r) => ({ id: r.id, userIds: this.dmMembers(r.id), lastMessageId: r.last_id ?? null }));
+  }
+
+  dmMembers(channelId: string): string[] {
+    return this.db.all<{ user_id: string }>("SELECT user_id FROM dm_members WHERE channel_id = ? ORDER BY user_id", channelId).map((r) => r.user_id);
+  }
+
+  dm(channelId: string): DmChannel | undefined {
+    const r = this.db.get<{ id: string; last_id: string | null }>(
+      "SELECT c.id, (SELECT MAX(id) FROM messages WHERE channel_id = c.id) AS last_id FROM channels c WHERE c.id = ? AND c.kind = 'dm'",
+      channelId,
+    );
+    return r && { id: r.id, userIds: this.dmMembers(r.id), lastMessageId: r.last_id ?? null };
+  }
+
+  dmBetween(a: string, b: string): string | undefined {
+    return this.db.get<{ channel_id: string }>(
+      "SELECT d1.channel_id FROM dm_members d1 JOIN dm_members d2 ON d1.channel_id = d2.channel_id WHERE d1.user_id = ? AND d2.user_id = ?",
+      a, b,
+    )?.channel_id;
+  }
+
+  shareGuild(a: string, b: string): boolean {
+    return !!this.db.get("SELECT 1 FROM members m1 JOIN members m2 ON m1.guild_id = m2.guild_id WHERE m1.user_id = ? AND m2.user_id = ?", a, b);
+  }
+
+  /** Guild channel or DM: who may see it and which guild (null for DMs) its permissions come from. */
+  chanRef(id: string): { id: string; guildId: string | null; kind: string } | undefined {
+    const r = this.db.get<{ id: string; guild_id: string | null; kind: string }>("SELECT id, guild_id, kind FROM channels WHERE id = ?", id);
+    return r && { id: r.id, guildId: r.guild_id, kind: r.kind };
   }
 
   usersInGuilds(guildIds: string[]): PublicUser[] {
@@ -91,7 +138,7 @@ export class Store {
 
   channel(id: string): Channel | undefined {
     const r = this.db.get<ChannelRow>(
-      "SELECT c.*, (SELECT MAX(id) FROM messages WHERE channel_id = c.id) AS last_id FROM channels c WHERE id = ?",
+      "SELECT c.*, (SELECT MAX(id) FROM messages WHERE channel_id = c.id) AS last_id FROM channels c WHERE id = ? AND guild_id IS NOT NULL",
       id,
     );
     return r && mapChannel(r);

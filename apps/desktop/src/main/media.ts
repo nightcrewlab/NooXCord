@@ -1,5 +1,6 @@
 import os from "node:os";
 import { BrowserWindow, MessageChannelMain, desktopCapturer, ipcMain, screen, session, type MessagePortMain, type WebContents } from "electron";
+import { s } from "./strings";
 
 /*
  * Desktop media helpers for the renderer:
@@ -8,15 +9,24 @@ import { BrowserWindow, MessageChannelMain, desktopCapturer, ipcMain, screen, se
  *  - global push-to-talk (key polling in the main process, works while a game has focus)
  */
 
-interface NativeModule {
+export interface NativeModule {
   loopbackStart(excludePid: number): { sampleRate: number; channels: number };
   loopbackRead(): Float32Array;
   loopbackStop(): void;
   keyDown(vk: number): boolean;
   exclusiveFullscreen?(): boolean;
+  inputMove?(x: number, y: number): boolean;
+  inputButton?(button: number, down: boolean): boolean;
+  inputWheel?(dx: number, dy: number): boolean;
+  inputKey?(vk: number, down: boolean): boolean;
+  inputGuardStart?(): void;
+  inputGuardStop?(): void;
+  physicalIdleMs?(): number;
+  windowRect?(hwnd: number): { x: number; y: number; width: number; height: number } | null;
+  foregroundWindow?(): number;
 }
 
-let native: NativeModule | null = null;
+export let native: NativeModule | null = null;
 let nativeError: string | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -33,6 +43,10 @@ export const exclusiveFullscreen = (): boolean => {
 };
 
 let pendingSource: string | null = null;
+/** What the current screen share captures (remote control maps input onto it). */
+export type ShareTarget = { kind: "screen"; displayId: string } | { kind: "window"; hwnd: number };
+let shareTarget: ShareTarget | null = null;
+export const currentShareTarget = (): ShareTarget | null => shareTarget;
 let audio: { port: MessagePortMain; timer: NodeJS.Timeout; owner: WebContents } | null = null;
 let ptt: { vk: number; down: boolean; timer: NodeJS.Timeout; owner: WebContents } | null = null;
 
@@ -44,7 +58,7 @@ const loopbackOs = (): boolean => {
 };
 
 /** KeyboardEvent.code -> Windows virtual-key code. */
-function vkFromCode(code: string): number | null {
+export function vkFromCode(code: string): number | null {
   let m = /^Key([A-Z])$/.exec(code);
   if (m) return m[1]!.charCodeAt(0);
   m = /^Digit([0-9])$/.exec(code);
@@ -60,6 +74,8 @@ function vkFromCode(code: string): number | null {
     Insert: 0x2d, Delete: 0x2e, Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22,
     ArrowUp: 0x26, ArrowDown: 0x28, ArrowLeft: 0x25, ArrowRight: 0x27, Pause: 0x13, ScrollLock: 0x91,
     NumpadAdd: 0x6b, NumpadSubtract: 0x6d, NumpadMultiply: 0x6a, NumpadDivide: 0x6f, NumpadDecimal: 0x6e,
+    Escape: 0x1b, Enter: 0x0d, NumpadEnter: 0x0d, Backspace: 0x08, ContextMenu: 0x5d, NumLock: 0x90, PrintScreen: 0x2c,
+    MetaLeft: 0x5b, MetaRight: 0x5c,
     // mouse side buttons are common PTT choices
     Mouse4: 0x05, Mouse5: 0x06,
   };
@@ -88,6 +104,10 @@ export function registerMediaIpc(getMain: () => BrowserWindow | null): void {
     if (!id) return callback({});
     const sources = await desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 0, height: 0 } });
     const src = sources.find((s) => s.id === id);
+    if (src) {
+      const hwnd = /^window:(\d+):/.exec(src.id)?.[1];
+      shareTarget = src.id.startsWith("screen:") ? { kind: "screen", displayId: src.display_id } : hwnd ? { kind: "window", hwnd: Number(hwnd) } : null;
+    }
     callback(src ? { video: src } : {});
   });
 
@@ -122,7 +142,7 @@ export function registerMediaIpc(getMain: () => BrowserWindow | null): void {
 
   ipcMain.handle("media:startSystemAudio", (e) => {
     stopAudio();
-    if (!native || !loopbackOs()) return { ok: false, sampleRate: 0, channels: 0, error: nativeError ?? "Windows 10 2004+ gerekli" };
+    if (!native || !loopbackOs()) return { ok: false, sampleRate: 0, channels: 0, error: nativeError ?? s("main.err.win2004") };
     let info: { sampleRate: number; channels: number };
     try {
       // Exclude the whole NooXCord process tree: renderers, audio service, host — nobody hears themselves.

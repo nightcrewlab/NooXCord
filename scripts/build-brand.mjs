@@ -24,6 +24,15 @@ const pngs = sizes.map((s) => render(s < 32 ? small : full, s));
 fs.writeFileSync(path.join(desktopRes, "icon.ico"), await pngToIco(pngs));
 fs.writeFileSync(path.join(desktopRes, "icon.png"), render(full, 512));
 
+// Tray: plain, muted (red badge with a slash) and live (red dot) variants of the 16px mark.
+const badge = (inner) => small.replace("</svg>", `<circle cx="400" cy="400" r="112" fill="#0B0D11"/>${inner}</svg>`);
+const tray = {
+  "tray.png": small,
+  "tray-muted.png": badge(`<circle cx="400" cy="400" r="88" fill="#FF3B5C"/><path d="M350 350 L450 450" stroke="#fff" stroke-width="34" stroke-linecap="round"/>`),
+  "tray-live.png": badge(`<circle cx="400" cy="400" r="88" fill="#FF3B5C"/><circle cx="400" cy="400" r="34" fill="#fff"/>`),
+};
+for (const [name, svg] of Object.entries(tray)) fs.writeFileSync(path.join(desktopRes, name), render(svg, 32));
+
 fs.writeFileSync(path.join(clientPublic, "favicon.svg"), small);
 fs.writeFileSync(path.join(clientPublic, "icon-192.png"), render(full, 192));
 fs.writeFileSync(path.join(clientPublic, "icon-512.png"), render(full, 512));

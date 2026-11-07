@@ -15,7 +15,7 @@ const pct = (db: number) => Math.max(0, Math.min(100, ((db - MIN_DB) / -MIN_DB) 
 function keyName(code: string): string {
   if (code.startsWith("Key")) return code.slice(3);
   if (code.startsWith("Digit")) return code.slice(5);
-  return code.replace(/^(Arrow|Numpad)/, "$1 ").replace("Left", " Sol").replace("Right", " Sağ");
+  return code.replace(/^(Arrow|Numpad)/, "$1 ").replace("Left", ` ${t("key.left")}`).replace("Right", ` ${t("key.right")}`);
 }
 
 export function VoiceTab() {
@@ -92,7 +92,7 @@ export function VoiceTab() {
           <span className={s.label}>{t("settings.output")}</span>
           <select className={s.select} value={st.outputDeviceId} onChange={(e) => { st.set({ outputDeviceId: e.target.value }); void voice.setOutputDevice(e.target.value); }}>
             <option value="">{t("settings.default")}</option>
-            {outputs.filter((d) => d.deviceId && d.deviceId !== "default").map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || `Hoparlör ${i + 1}`}</option>)}
+            {outputs.filter((d) => d.deviceId && d.deviceId !== "default").map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || t("settings.speakerN", { n: i + 1 })}</option>)}
           </select>
         </label>
       </div>

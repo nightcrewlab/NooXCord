@@ -27,6 +27,26 @@ export interface ScreenSource {
   primary: boolean;
 }
 
+export interface AppPrefs {
+  closeToTray: boolean;
+  openAtLogin: boolean;
+  lang: "tr" | "en";
+  /** Only the installed app can register itself to start with Windows. */
+  canOpenAtLogin: boolean;
+}
+
+export interface UpdateState {
+  status: "idle" | "dev" | "checking" | "none" | "downloading" | "ready" | "error";
+  current: string;
+  version?: string;
+  pct?: number;
+  error?: string;
+}
+
+export interface BackupInfo { name: string; size: number; at: number }
+
+export interface TrayState { inVoice: boolean; muted: boolean; deafened: boolean; live: boolean }
+
 export interface HostPrefs {
   allowGuests: boolean;
   guestPassword: string;
@@ -127,6 +147,44 @@ export interface NxBridge {
   overlay: {
     update(members: OverlayMember[] | null): void;
   };
+  app: {
+    getPrefs(): Promise<AppPrefs>;
+    setPrefs(p: Partial<Pick<AppPrefs, "closeToTray" | "openAtLogin" | "lang">>): Promise<AppPrefs>;
+    /** Bring the main window to the front (notification click). */
+    focus(): Promise<void>;
+    /** Flash the taskbar button when the window is not focused. */
+    attention(): Promise<void>;
+    openLogs(): Promise<void>;
+    setTrayState(s: TrayState): void;
+    onTrayAction(cb: (a: "mute" | "deafen") => void): () => void;
+  };
+  updates: {
+    get(): Promise<UpdateState>;
+    check(): Promise<UpdateState>;
+    install(): Promise<void>;
+    onState(cb: (s: UpdateState) => void): () => void;
+  };
+  /** Backups of the host database on this computer. */
+  backup: {
+    list(): Promise<BackupInfo[]>;
+    now(): Promise<BackupInfo>;
+    /** Save dialog; false when cancelled. */
+    export(): Promise<boolean>;
+    /** Open dialog + restore (host restarts); false when cancelled. */
+    import(): Promise<boolean>;
+    restore(name: string): Promise<void>;
+    openFolder(): Promise<void>;
+  };
+  /** Remote control, streamer side: SendInput onto the shared monitor/window (main process). */
+  remote: {
+    supported(): Promise<boolean>;
+    /** Shows the red frame with this label and starts accepting input. */
+    begin(label: string): Promise<{ ok: boolean; error?: string }>;
+    end(): Promise<void>;
+    input(ev: unknown[]): void;
+    /** The panic shortcut was pressed (control already stopped locally). */
+    onPanic(cb: () => void): () => void;
+  };
 }
 
 declare global {
@@ -148,6 +206,10 @@ export interface Platform {
   /** Desktop-only media helpers; null in the browser. */
   media: NxBridge["media"] | null;
   overlay: NxBridge["overlay"] | null;
+  remote: NxBridge["remote"] | null;
+  app: NxBridge["app"] | null;
+  updates: NxBridge["updates"] | null;
+  backup: NxBridge["backup"] | null;
   /** Can this client start a screen share at all? */
   canShareScreen: boolean;
   isMobile: boolean;
@@ -180,6 +242,10 @@ function webPlatform(): Platform {
     openExternal: (url) => window.open(url, "_blank", "noopener,noreferrer"),
     media: null,
     overlay: null,
+    remote: null,
+    app: null,
+    updates: null,
+    backup: null,
     canShareScreen: !mobile && typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia,
     isMobile: mobile,
   };
@@ -196,6 +262,10 @@ function desktopPlatform(nx: NxBridge): Platform {
     openExternal: (url) => void nx.openExternal(url),
     media: nx.media,
     overlay: nx.overlay,
+    remote: nx.remote ?? null,
+    app: nx.app ?? null,
+    updates: nx.updates ?? null,
+    backup: nx.backup ?? null,
     canShareScreen: true,
     isMobile: false,
   };
