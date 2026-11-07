@@ -1,0 +1,61 @@
+# NooXCord installer (CLAUDE.md §14). Built by `pnpm dist` (scripts/dist.mjs stages ../../release/app first).
+appId: com.nooxrii.nooxcord
+productName: NooXCord
+copyright: Copyright © 2026 NooXRii
+electronVersion: 45.2.3
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+
+directories:
+  app: ../../release/app
+  output: ../../release
+  buildResources: build
+
+files:
+  - "**/*"
+asar: true
+asarUnpack:
+  - node_modules/mediasoup/worker/**
+  - "**/*.node"
+
+extraResources:
+  - from: ../../release/resources
+    to: .
+    filter: ["**/*"]
+extraFiles:
+  - from: ../../release/vcruntime
+    to: .
+    filter: ["*.dll"]
+
+protocols:
+  - name: NooXCord
+    schemes: [nooxcord]
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.ico
+  executableName: NooXCord
+  requestedExecutionLevel: asInvoker
+  # Unsigned until a code signing certificate exists (SmartScreen warns; README explains "Run anyway").
+  signAndEditExecutable: true
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: NooXCord
+  artifactName: NooXCord-Setup-${version}.exe
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  installerLanguages: [tr_TR, en_US]
+  language: "1055"
+  multiLanguageInstaller: true
+  deleteAppDataOnUninstall: false
+  include: build/installer.nsh
+  license: build/licenses/THIRD-PARTY-NOTICES.txt

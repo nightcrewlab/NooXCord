@@ -436,5 +436,11 @@
   "err.sendFailed": "Mesaj gönderilemedi.",
   "dm.welcome": "{user}",
   "dm.welcomeDesc": "{user} ile özel mesajlarının başlangıcı.",
-  "dm.placeholder": "@{user} kullanıcısına mesaj gönder"
+  "dm.placeholder": "@{user} kullanıcısına mesaj gönder",
+  "net.firewall": "Windows Güvenlik Duvarı",
+  "net.firewallOn": "Özel ağlarda gelen bağlantılara izin veriliyor (NooXCord + medya sunucusu).",
+  "net.firewallOff": "Kural yok. LAN/Hamachi'den bağlanılamıyorsa izin ver (yönetici onayı istenir).",
+  "net.firewallAllow": "İzin ver",
+  "net.firewallRedo": "Yenile",
+  "net.firewallFailed": "Güvenlik duvarı kuralı eklenemedi (onay verilmedi mi?)."
 }

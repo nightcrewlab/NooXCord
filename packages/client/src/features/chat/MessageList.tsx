@@ -101,6 +101,14 @@ export function MessageList({ channel, gs, onReply, editing, setEditing }: { cha
     if (atBottom.current && document.hasFocus()) markRead(channel.id);
   }, [rows.length, channel.id, markRead]);
 
+  // Messages that arrived while the window was in the background are read once it is back in front.
+  useEffect(() => {
+    const onFocus = () => { if (atBottom.current && document.visibilityState === "visible") markRead(channel.id); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => { window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
+  }, [channel.id, markRead]);
+
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;

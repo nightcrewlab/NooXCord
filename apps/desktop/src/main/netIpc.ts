@@ -1,7 +1,7 @@
 import { BrowserWindow, Notification, clipboard, globalShortcut, ipcMain } from "electron";
 import { hosts } from "./hosts";
 import * as localHost from "./localHost";
-import { addresses, checkPort, hamachiService, suggestPort } from "./network";
+import { addresses, checkPort, firewallAllow, hamachiService, suggestPort } from "./network";
 import { TunnelManager, type TunnelProviderId } from "./tunnel";
 import { s } from "./strings";
 
@@ -39,6 +39,11 @@ export function registerNetIpc(): void {
   ipcMain.handle("net:addresses", () => addresses());
   ipcMain.handle("net:hamachiService", async (_e, start) => {
     await hamachiService(!!start);
+    return addresses();
+  });
+
+  ipcMain.handle("net:firewallAllow", async () => {
+    await firewallAllow([process.execPath, localHost.workerBin()]);
     return addresses();
   });
 

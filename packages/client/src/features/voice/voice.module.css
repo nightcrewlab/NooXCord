@@ -172,3 +172,7 @@
 }
 .viewer:hover { background: var(--nx-bg-3); }
 .viewerCtl { border-color: var(--nx-live); padding-right: 6px; }
+
+/* window-filling fallback when the browser has no fullscreen API for this element */
+.tile.pseudoFs { position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100dvh; min-height: 0; aspect-ratio: auto; border: 0; border-radius: 0; }
+.tile.pseudoFs .tileBar { opacity: 1; padding-bottom: max(8px, env(safe-area-inset-bottom)); }

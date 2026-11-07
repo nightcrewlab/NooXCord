@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Icon } from "@nooxcord/icons";
 import { P, has, type Channel, type VoiceState } from "@nooxcord/shared";
@@ -213,6 +213,35 @@ function WatchArea({ ids, focus, states }: { ids: string[]; focus: string | null
   );
 }
 
+type FsDoc = Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void };
+type FsEl = HTMLElement & { webkitRequestFullscreen?: () => void };
+type IosVideo = HTMLVideoElement & { webkitEnterFullscreen?: () => void; webkitSupportsFullscreen?: boolean };
+
+/**
+ * Fullscreen for a stream tile. Element fullscreen where the browser has it (desktop, Android, iPad);
+ * iPhone Safari only lets a <video> go fullscreen, so use the native player there; otherwise fill the window with CSS.
+ */
+async function toggleFullscreen(el: HTMLElement, fallback: () => void): Promise<void> {
+  const d = document as FsDoc;
+  if (d.fullscreenElement || d.webkitFullscreenElement) {
+    if (d.exitFullscreen) await d.exitFullscreen().catch(() => {});
+    else d.webkitExitFullscreen?.();
+    return;
+  }
+  const f = el as FsEl;
+  try {
+    if (f.requestFullscreen) {
+      await f.requestFullscreen();
+      await (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> })?.lock?.("landscape").catch(() => {});
+      return;
+    }
+    if (f.webkitRequestFullscreen) { f.webkitRequestFullscreen(); return; }
+  } catch { /* fall through */ }
+  const v = el.querySelector("video") as IosVideo | null;
+  if (v?.webkitEnterFullscreen && v.webkitSupportsFullscreen !== false) { v.webkitEnterFullscreen(); return; }
+  fallback();
+}
+
 function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream | null; state: VoiceState | undefined; big?: boolean }) {
   const user = useStore((st) => st.users[userId]);
   const deafened = useVoice((x) => x.deafened);
@@ -220,11 +249,18 @@ function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream
   const many = useVoice((x) => Object.keys(x.watching).length > 1);
   const vol = useVoiceSettings((st) => st.volumes[`stream:${userId}`] ?? 1);
   const ref = useRef<HTMLDivElement>(null);
+  const [pseudo, setPseudo] = useState(false);
+  useEffect(() => {
+    if (!pseudo) return;
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setPseudo(false);
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [pseudo]);
   const live = w?.hasVideo;
   const rc = useRemote(useShallow((x) => ({ asked: x.asked === userId, controlling: x.controlling === userId })));
   const canAsk = big && live && remoteCapable() && !user?.guest && !!state?.stream && has(useStore.getState().guilds[state.guildId]?.myPerms ?? 0, P.REQUEST_REMOTE_CONTROL);
   return (
-    <div ref={ref} className={cx(s.tile, big && s.big, !big && s.tileClickable)} onClick={() => !big && voice.setFocus(userId)}>
+    <div ref={ref} className={cx(s.tile, big && s.big, !big && s.tileClickable, pseudo && s.pseudoFs)} onClick={() => !big && voice.setFocus(userId)}>
       {w && live ? <StreamVideo stream={w.stream} muted={deafened} volume={vol} /> : <div className={s.tileCenter}><Spinner />{t("stream.loading")}</div>}
       {rc.controlling && live && <RemoteSurface tileRef={ref} />}
       <div className={s.tileBar} onClick={(e) => e.stopPropagation()}>
@@ -239,7 +275,7 @@ function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream
         {canAsk && (rc.controlling
           ? <button className={cx(s.tileBtn, s.tileBtnOn)} title={t("remote.release")} aria-label={t("remote.release")} onClick={() => void remote.release()}><Icon name="hand" size={16} /></button>
           : <button className={s.tileBtn} disabled={rc.asked} title={rc.asked ? t("remote.requested") : t("remote.request")} aria-label={t("remote.request")} onClick={() => void remote.request(userId)}><Icon name="hand" size={16} /></button>)}
-        <button className={s.tileBtn} title={t("stream.fullscreen")} aria-label={t("stream.fullscreen")} onClick={() => void ref.current?.requestFullscreen?.().catch(() => {})}><Icon name="fullscreen" size={16} /></button>
+        <button className={s.tileBtn} title={t("stream.fullscreen")} aria-label={t("stream.fullscreen")} onClick={() => { if (pseudo) setPseudo(false); else if (ref.current) void toggleFullscreen(ref.current, () => setPseudo(true)); }}><Icon name="fullscreen" size={16} /></button>
         <button className={s.tileBtn} title={t("stream.unwatch")} aria-label={t("stream.unwatch")} onClick={() => void voice.unwatch(userId)}><Icon name="eye-off" size={16} /></button>
       </div>
     </div>

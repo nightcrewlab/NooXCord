@@ -25,6 +25,12 @@ function lanAddresses(port: number): string[] {
   return out;
 }
 
+/** mediasoup worker: unpacked next to app.asar when installed (mediasoup cannot find it there by itself). */
+export const workerBin = (): string =>
+  app.isPackaged
+    ? path.join(process.resourcesPath, "app.asar.unpacked", "node_modules", "mediasoup", "worker", "out", "Release", "mediasoup-worker.exe")
+    : path.join(__dirname, "../../../node_modules/mediasoup/worker/out/Release/mediasoup-worker.exe");
+const hostEnv = (): NodeJS.ProcessEnv => (app.isPackaged ? { ...process.env, MEDIASOUP_WORKER_BIN: workerBin() } : process.env);
 const webDir = () => (app.isPackaged ? path.join(process.resourcesPath, "web") : path.join(__dirname, "../../../packages/client/dist"));
 
 /** Host-owner settings handed to the server (never changeable over the network). */
@@ -47,7 +53,7 @@ export function start(port: unknown): Promise<LocalHostStatus> {
   if (!Number.isInteger(p) || p < 1024 || p > 65535) return Promise.resolve({ ...current, error: s("main.err.portRange") });
   if (child) return Promise.resolve(current);
   return new Promise((resolve) => {
-    const proc = utilityProcess.fork(path.join(__dirname, "host.cjs"), [], { serviceName: "NooXCord Host", stdio: "inherit" });
+    const proc = utilityProcess.fork(path.join(__dirname, "host.cjs"), [], { serviceName: "NooXCord Host", stdio: "inherit", env: hostEnv() });
     child = proc;
     const timer = setTimeout(() => finish({ running: false, port: null, lanAddresses: [], error: s("main.err.hostTimeout") }), 15_000);
     const finish = (st: LocalHostStatus) => {

@@ -1,0 +1,8 @@
+NooXCord bundles the following third-party software:
+
+- Electron (MIT) and Chromium (see LICENSES.chromium.html next to NooXCord.exe)
+- cloudflared, Cloudflare, Inc. (Apache License 2.0, see cloudflared-LICENSE.txt)
+- mediasoup (ISC, see resources/app.asar.unpacked/node_modules/mediasoup/LICENSE)
+- Microsoft Visual C++ runtime (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll),
+  redistributed under the Microsoft Visual Studio redistribution terms
+- Inter and Space Grotesk fonts (SIL Open Font License 1.1)

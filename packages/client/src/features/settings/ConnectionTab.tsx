@@ -154,6 +154,7 @@ function GuestPassword({ value, onSave }: { value: string; onSave: (v: string) =
 function AddressList({ addr, port, onAddr }: { addr: NetAddresses | null; port: number | null; onAddr: (a: NetAddresses) => void }) {
   const toast = useStore((st) => st.toast);
   const [busy, setBusy] = useState(false);
+  const [fwBusy, setFwBusy] = useState(false);
   if (!addr) return null;
   const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast(t("common.copied")));
   const h = addr.hamachi;
@@ -189,6 +190,21 @@ function AddressList({ addr, port, onAddr }: { addr: NetAddresses | null; port: 
         </div>
       </div>
       <div className={s.hintText}>{t("net.hamachiHint")}</div>
+      {addr.firewall !== "unknown" && (
+        <div className={s.perm} style={{ marginTop: 12 }}>
+          <span>
+            <div>{t("net.firewall")}</div>
+            <div className={s.hintText}>{addr.firewall === "allowed" ? t("net.firewallOn") : t("net.firewallOff")}</div>
+          </span>
+          <Button size="small" variant={addr.firewall === "allowed" ? "ghost" : "secondary"} icon="shield" loading={fwBusy} onClick={async () => {
+            setFwBusy(true);
+            const a = await platform.net!.firewallAllow().catch(() => null);
+            setFwBusy(false);
+            if (a) onAddr(a);
+            if (a?.firewall !== "allowed") toast(t("net.firewallFailed"), "error");
+          }}>{addr.firewall === "allowed" ? t("net.firewallRedo") : t("net.firewallAllow")}</Button>
+        </div>
+      )}
     </section>
   );
 }

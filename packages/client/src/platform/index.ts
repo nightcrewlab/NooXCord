@@ -64,6 +64,7 @@ export interface PortCheck {
 export interface NetAddresses {
   lan: { name: string; ip: string }[];
   hamachi: { ip: string | null; service: "running" | "stopped" | "missing" | "unknown" };
+  firewall: "allowed" | "missing" | "unknown";
 }
 
 export type TunnelProviderId = "cloudflare" | "devtunnel";
@@ -114,6 +115,7 @@ export interface NxBridge {
     suggestPort(): Promise<number>;
     addresses(): Promise<NetAddresses>;
     hamachiService(start: boolean): Promise<NetAddresses>;
+    firewallAllow(): Promise<NetAddresses>;
   };
   tunnel: {
     get(): Promise<TunnelState>;

@@ -76,6 +76,7 @@ export async function suggestPort(): Promise<number> {
 export interface Addresses {
   lan: { name: string; ip: string }[];
   hamachi: { ip: string | null; service: "running" | "stopped" | "missing" | "unknown" };
+  firewall: "allowed" | "missing" | "unknown";
 }
 
 const isHamachi = (name: string, ip: string) => /hamachi/i.test(name) || ip.startsWith("25.");
@@ -95,7 +96,28 @@ export async function addresses(): Promise<Addresses> {
     const q = await run("sc", ["query", "Hamachi2Svc"]);
     service = /RUNNING/.test(q) ? "running" : /STOPPED|STOP_PENDING/.test(q) ? "stopped" : /1060/.test(q) ? "missing" : "unknown";
   }
-  return { lan, hamachi: { ip: hamachiIp, service } };
+  return { lan, hamachi: { ip: hamachiIp, service }, firewall: await firewallStatus() };
+}
+
+const RULE = "NooXCord";
+const psq = (v: string) => v.replace(/'/g, "''");
+
+/** Inbound rule for NooXCord (host HTTP/WS) and mediasoup-worker (media port), private profile only (CLAUDE.md §10.2). */
+export async function firewallStatus(): Promise<"allowed" | "missing" | "unknown"> {
+  if (process.platform !== "win32") return "unknown";
+  const out = (await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    `(Get-NetFirewallRule -DisplayName '${RULE}' -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' } | Measure-Object).Count`], 15_000)).trim();
+  if (!/^\d+$/.test(out)) return "unknown";
+  return Number(out) > 0 ? "allowed" : "missing";
+}
+
+/** Replaces our rules through an elevated netsh (Windows asks for UAC consent). */
+export async function firewallAllow(programs: string[]): Promise<void> {
+  if (process.platform !== "win32") return;
+  const cmds = [`netsh advfirewall firewall delete rule name="${RULE}"`,
+    ...programs.map((p) => `netsh advfirewall firewall add rule name="${RULE}" dir=in action=allow program="${p}" profile=private enable=yes`)];
+  await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    `Start-Process -FilePath cmd.exe -ArgumentList '/c ${psq(cmds.join(" & "))}' -Verb RunAs -WindowStyle Hidden -Wait`], 60_000);
 }
 
 /** Starts/stops the Hamachi service through an elevated helper (Windows asks for UAC consent). */

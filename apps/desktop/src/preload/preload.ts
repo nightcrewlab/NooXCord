@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("nx", {
     suggestPort: () => call("net:suggestPort"),
     addresses: () => call("net:addresses"),
     hamachiService: (start: boolean) => call("net:hamachiService", start),
+    firewallAllow: () => call("net:firewallAllow"),
   },
   tunnel: {
     get: () => call("tunnel:get"),

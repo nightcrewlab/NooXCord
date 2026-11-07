@@ -400,8 +400,8 @@ export const useStore = create<Store>()((set, get) => {
     },
 
     markRead(channelId) {
-      const { conn, readStates, guilds } = get();
-      let last: string | null = null;
+      const { conn, readStates, guilds, dms } = get();
+      let last: string | null = dms[channelId]?.lastMessageId ?? null;
       for (const g of Object.values(guilds)) {
         const c = g.channels.find((x) => x.id === channelId);
         if (c) last = c.lastMessageId;

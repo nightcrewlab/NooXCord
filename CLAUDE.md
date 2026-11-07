@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 4 (kontrol & cila) kodlandı ve otomatik testleri geçti (2026-11-07); uzaktan kontrolün iki PC ile gerçek testi kullanıcıda. Sıradaki: Faz 5 (paketleme). Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.0.exe` (140 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), GitHub repo → auto-update beslemesi, imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -166,7 +166,15 @@ cargo run --release --manifest-path prototypes/p3-loopback/Cargo.toml   # loopba
 ```
 Overlay testi: `pnpm dev` açıkken `Ctrl+Shift+O`.
 
-Sonradan eklenecekler: `pnpm lint`, `pnpm test` (vitest), `pnpm test:e2e` (playwright), `pnpm build:native` (napi-rs), `pnpm dist` (NSIS setup).
+Kurulum paketi (Faz 5):
+```bash
+pnpm dist           # build + scripts/dist.mjs → release/NooXCord-Setup-<sürüm>.exe (sürüm: apps/desktop/package.json)
+pnpm dist:dir       # yalnızca release/win-unpacked (kurulum yok, hızlı deneme)
+NX_SELFTEST=voice release/win-unpacked/NooXCord.exe   # paketlenmiş uygulamada ses/yayın testi
+```
+`scripts/dist.mjs`: `release/app` klasörünü hazırlar (esbuild çıktıları + yalnızca dış bırakılan modüller: `electron-updater`, `mediasoup` (lib + worker exe), `@nooxcord/native` (index.js + .node)), sonra `apps/desktop/electron-builder.yml` ile NSIS üretir. Gerekenler: `.tools/cloudflared.exe`, `pnpm build:native` çıktısı, Visual Studio'nun VC++ x64 runtime DLL'leri (en yenisi otomatik bulunur; yoksa `.tools/vcruntime/`).
+
+Sonradan eklenecekler: `pnpm lint`, `pnpm test:e2e` (playwright).
 
 ---
 
@@ -315,7 +323,7 @@ Tümü **Ayarlar → Bağlantı** sayfasından yönetilir. Her öğenin durumu c
 - Port değişince host yeniden başlatılır, aktif tünelin portu güncellenir.
 
 ### 10.2 Windows Güvenlik Duvarı
-- Kurulumda NSIS, `NooXCord.exe` için gelen bağlantı kuralı ekler (Özel ağ profili). Herkese açık profil için ayarlarda ayrı onay ister (yönetici izni → UAC).
+- Kurulum yönetici istemediği için kural kurulumda eklenmez (Faz 5 kararı). **Ayarlar → Bağlantı → Windows Güvenlik Duvarı → İzin ver**: UAC onayıyla `netsh` iki kural ekler (`NooXCord.exe` + `mediasoup-worker.exe`, yalnızca Özel profil, ad `NooXCord`, öncekiler silinir). Durum `Get-NetFirewallRule` ile gösterilir. Herkese açık profil desteklenmez. Windows ilk dinlemede kendi izin penceresini de gösterebilir.
 
 ### 10.3 Hamachi
 - LogMeIn Hamachi'nin Windows için resmi CLI'si **yoktur**; bu yüzden NooXCord Hamachi'yi kurmaz/yönetmez, **algılar ve kullanır**:
@@ -417,15 +425,16 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 | **2 — Ses & Yayın** | Sesli kanal (katıl/ayrıl, sustur/sağırlaştır, kişi başı ses, aygıt seçimi, ses etkinliği + otomatik hassasiyet, bas-konuş — masaüstünde global) ✅, konuşan göstergesi ✅, ekran yayını (monitör/pencere seçici, 5 kalite ön ayarı, akıcılık/netlik, H.264 + 2 katman simulcast) ✅, sistem sesi kendi sesi hariç (native WASAPI process loopback) ✅, çoklu yayın + tek seferlik thumbnail + çoklu izleme (ızgara/odak, tam ekran) ✅, overlay gerçek veriyle ✅. RNNoise → Faz 4 (şimdilik Chromium gürültü bastırma) | 3 kişi aynı anda 2 yayını izleyebiliyor ✅ (`NX_SELFTEST=voice`, 15 kontrol) · yayında yankı yok: exclude modu P3'te doğrulandı, **gerçek iki PC testi ⏳ kullanıcıda** |
 | **3 — Ağ & Web** | Ayarlar → Bağlantı: port + canlı kontrol (IPv4/IPv6, kullanan süreç) + boş port öner + yeniden başlat ✅, LAN/Hamachi adresleri + Hamachi servis aç/kapa (UAC) ✅, tünel: Cloudflare Quick Tunnel + Dev Tunnels (indir+imza kontrolü, GitHub girişi, sabit URL, yenile, aç/kapat), kopyala/QR/Ctrl+Shift+L/bildirim ✅, misafir girişi + misafir şifresi + misafir kısıtları ✅, mobil arayüz (alt sekmeler) ✅, NXM-WS tünel modu (ses+mikrofon+yayın izleme, WebRTC başarısızsa otomatik geçiş) ✅, overlay özel tam ekran ipucu ✅, link önizleme DNS sabitleme + resim proxy ✅ | Tünel modunda sese katılma + 2 yayın izleme ✅ (`pnpm test:voice`, C kullanıcısı) · gerçek telefon + tünel testi ✅ (NooXRii, 2026-11-07) — **Faz 3 TAMAMLANDI** |
 | **4 — Kontrol & Cila** | Uzaktan kontrol (istek/kabul/her zaman/sağ tık ver, kırmızı çerçeve + rozet — yakalamadan hariç, panik kısayolu, yerel girdi 2 sn öncelik, Win tuşu engeli, pencere paylaşımında odak şartı, 10 dk boşta bitiş, host logu) ✅, DM (migration 2, `dm.open`, yalnızca ortak sunucudakiler) ✅, bildirimler (DM + @bahsetme, kanal/DM sessize alma, rahatsız etmeyin, görev çubuğu yanıp sönme) ✅, tepsi (sustur/sağırlaştır, kapatınca tepsiye, Windows ile başlat) ✅, auto-update (`electron-updater`, yalnızca kurulu uygulama) ✅, günlük DB yedeği (son 7, migration öncesi kopya, dışa/içe aktar, geri yükle) ✅, İngilizce + ana süreç metinleri i18n'de ✅. RNNoise → Faz 5 | Sunucu tarafı §7.3 kuralları test edildi ✅ (`pnpm test`, misafir/tarayıcı reddi, yalnızca kontrolcü girdisi, bırak/geri al/izlemeyi bırak/yayın bitti) · **gerçek iki PC'de SendInput + panik + çerçeve testi ⏳ kullanıcıda** |
-| **5 — Paketleme & Deneysel** | NSIS installer son hali, imzalama, firewall, opsiyonel exclusive fullscreen overlay hook | Temiz Windows 10 VM'de setup → çalıştır başarılı |
+| **5 — Paketleme & Deneysel** | NSIS installer (kullanıcı başına, klasör seçimi, TR/EN, Windows < 19041 uyarısı, kaldırırken veri silme sorusu, `nooxcord://`) ✅, VC++ runtime uygulama yanında ✅, uygulama içi güvenlik duvarı kuralı ✅, lisans/üçüncü taraf bildirimleri ✅, README (SmartScreen) ✅ · imzalama ⏳ (sertifika yok), auto-update beslemesi ⏳ (GitHub repo yok), RNNoise ⏳, opsiyonel exclusive fullscreen overlay hook ⏳ | Paketlenmiş uygulama `NX_SELFTEST=1` + `voice` (16) ✅ · **temiz Windows 10 VM'de setup → çalıştır ⏳ kullanıcıda** |
 
 ---
 
 ## 14. Paketleme ve kurulum
 
 - `electron-builder` → **NSIS** `NooXCord-Setup-<sürüm>.exe` (x64). Kullanıcı başına kurulum (yönetici gerektirmez) varsayılan; firewall kuralı adımı UAC ister.
-- Pakete dahil: Electron/Node çalışma zamanı, `mediasoup-worker.exe`, `cloudflared.exe` (lisans metni `resources/licenses/` altında), `native` prebuilt `.node` dosyası (ASAR dışında, `asarUnpack`), web istemcisi build'i `resources/web/` (host da LAN/tünel tarayıcılarına buradan sunar), fontlar (Inter + Space Grotesk, OFL, paket içinde). Veritabanı/şifreleme yerleşik Node modülleriyle yapıldığı için başka native modül yok.
-- **Bağımlılık kontrolü (NSIS):** Visual C++ 2015–2022 Redistributable (x64) yoksa installer'a gömülü `vc_redist.x64.exe` sessiz kurulur (`/install /quiet /norestart`). Windows sürümü < 10.0.19041 ise uyarı.
+- Pakete dahil (Faz 5'te yapıldı, `scripts/dist.mjs`): Electron/Node çalışma zamanı, `mediasoup-worker.exe`, `cloudflared.exe` (lisans metni `resources/licenses/` altında), `native` prebuilt `.node` dosyası (ASAR dışında, `asarUnpack`), web istemcisi build'i `resources/web/` (host da LAN/tünel tarayıcılarına buradan sunar), fontlar (Inter + Space Grotesk, OFL, paket içinde). Veritabanı/şifreleme yerleşik Node modülleriyle yapıldığı için başka native modül yok.
+- **Bağımlılık:** `mediasoup-worker.exe` ve native modül VC++ runtime ister. `vc_redist.x64.exe` yönetici istediği için kullanılmadı; `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` uygulama yanına (`NooXCord.exe` ve `mediasoup-worker.exe` klasörleri) konur (Microsoft'un izin verdiği app-local dağıtım). Windows sürümü < 10.0.19041 ise NSIS uyarır (`apps/desktop/build/installer.nsh`).
+- Paketlenmiş uygulamada mediasoup worker `app.asar.unpacked` altındadır; host süreci `MEDIASOUP_WORKER_BIN` ile başlatılır (`localHost.ts` `workerBin()`).
 - Opsiyonel kurulum adımı: "Dev Tunnel aracını şimdi indir".
 - Kaldırıcı: kullanıcı verisini (`%APPDATA%/NooXCord`) silmeyi **sorar**.
 - **Kod imzalama:** İmzasız exe Windows SmartScreen uyarısı verir. İmza sertifikası alınana kadar README'de "Yine de çalıştır" açıklaması bulunur.
@@ -480,6 +489,8 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 15. ~~Ana süreç metinleri~~ → Faz 4'te `main.*` anahtarlarına taşındı (ana süreç `tr.json`/`en.json`'u derleme anında paketler, dil renderer ayarını izler). **Kalan:** host'un döndürdüğü hata mesajları (`fail(...)`) Türkçe; İngilizce arayüzde de Türkçe görünür → hata kodu + anahtar ile çevrilmeli.
 16. Tünel açılışta otomatik başlamaz (bilinçli: herkese açık bağlantı kullanıcı istemeden açılmasın); her seferinde Ayarlar → Bağlantı'dan açılır.
 17. Uzaktan kontrol: panik kısayolu sabit (`Ctrl+Alt+Shift+Esc`), ek engellenecek kombinasyon ayarı yok (yalnızca Win tuşları engelli) — ayar ekranı sonraya. Yönetici yetkili pencereler girdi almaz (UIPI), istek kartında yazıyor.
-18. Auto-update besleme adresi (GitHub owner/repo) Faz 5'te `electron-builder.yml` `publish` ile verilecek; o zamana kadar "yalnızca kurulu uygulamada" durumunda.
+18. Auto-update besleme adresi (GitHub owner/repo) henüz yok (git remote yok): repo açılınca `electron-builder.yml`'e `publish: { provider: github, owner, repo }` eklenir, `pnpm dist` sonra `app-update.yml` üretir. O zamana kadar güncelleme durumu "yalnızca kurulu uygulamada".
 19. Yedekler yalnızca veritabanını kapsar (`%APPDATA%/NooXCord/host/backups`), yüklenen dosyalar dahil değil.
 20. Migration 2 `channels` tablosunu yeniden kurar (DM için `guild_id` boş olabilir); migration sırasında foreign key kapalı, sonra `foreign_key_check`. Eski şema dosyası önce `backups/…-v1.db` olarak kopyalanır.
+21. Okunmamış işareti: DM'ler `markRead`'de hiç okunmuş sayılmıyordu (yalnızca guild kanalları aranıyordu) ve pencere arka plandayken gelen mesajlar pencere öne gelince okunmuyordu → ikisi de düzeltildi (Faz 5 başı).
+22. iPhone Safari'de yalnızca `<video>` tam ekran olabilir: yayın döşemesi önce element tam ekranını, sonra `webkitEnterFullscreen`, en son CSS ile pencereyi kaplamayı dener.

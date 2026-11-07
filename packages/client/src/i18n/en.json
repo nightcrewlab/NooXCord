@@ -436,5 +436,11 @@
   "err.sendFailed": "The message could not be sent.",
   "dm.welcome": "{user}",
   "dm.welcomeDesc": "This is the beginning of your direct messages with {user}.",
-  "dm.placeholder": "Message @{user}"
+  "dm.placeholder": "Message @{user}",
+  "net.firewall": "Windows Firewall",
+  "net.firewallOn": "Incoming connections are allowed on private networks (NooXCord + media server).",
+  "net.firewallOff": "No rule. If others cannot connect over LAN/Hamachi, allow it (asks for administrator consent).",
+  "net.firewallAllow": "Allow",
+  "net.firewallRedo": "Renew",
+  "net.firewallFailed": "The firewall rule could not be added (was consent denied?)."
 }
