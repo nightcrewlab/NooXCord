@@ -1,0 +1,40 @@
+.popup {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 70;
+  width: min(320px, calc(100vw - 32px));
+  padding: 12px 14px;
+  background: var(--nx-bg-2);
+  border: 1px solid var(--nx-line);
+  border-radius: var(--nx-radius-l);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  color: var(--nx-text-1);
+  animation: pop 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.head { display: flex; align-items: center; gap: 10px; color: var(--nx-accent); }
+.title { flex: 1; min-width: 0; font-weight: 600; color: var(--nx-text-1); }
+.sub { margin-top: 6px; font-size: 12px; color: var(--nx-text-2); }
+.actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+
+.bar {
+  margin-top: 10px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--nx-bg-0);
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--nx-accent), var(--nx-accent-2));
+  transition: width 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .popup { animation: none; }
+  .fill { transition: none; }
+}

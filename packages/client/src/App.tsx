@@ -7,6 +7,7 @@ import { platform } from "./platform";
 import { useStore } from "./state/store";
 import { ConfirmProvider, MenuProvider, Spinner, Toasts } from "./ui";
 import { RemoteLayer } from "./features/remote/Remote";
+import { UpdatePopup } from "./features/updates/UpdatePopup";
 import { initNotifications } from "./features/notify/notify";
 import { useVoice, voice } from "./media/engine";
 
@@ -75,6 +76,7 @@ export function App() {
         )}
         <Toasts />
         <RemoteLayer />
+        <UpdatePopup />
       </MenuProvider>
     </ConfirmProvider>
   );

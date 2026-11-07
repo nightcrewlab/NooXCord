@@ -168,6 +168,13 @@ async function uiSelfTest(): Promise<void> {
     await new Promise<void>((r) => wc.once("did-finish-load", () => r()));
     await new Promise((r) => setTimeout(r, 2500));
   }
+  // Optional: fake an update state ("downloading" / "ready") to see the corner popup.
+  if (process.env.NX_UITEST_UPDATE) {
+    const status = process.env.NX_UITEST_UPDATE;
+    wc.send("updates:state", { status, current: app.getVersion(), version: "9.9.9", pct: 42 });
+    await wc.executeJavaScript("document.getAnimations().forEach((a) => a.finish())"); // hidden windows do not tick CSS animations
+    await new Promise((r) => setTimeout(r, 300));
+  }
   if (process.env.NX_UITEST_JS) {
     log("script", await wc.executeJavaScript(process.env.NX_UITEST_JS).catch((e: Error) => "FAIL " + e.message));
     await new Promise((r) => setTimeout(r, 2500));
