@@ -52,7 +52,8 @@
   position: relative; border-radius: 12px; overflow: hidden; background: #000; border: 1px solid var(--nx-line);
   aspect-ratio: 16 / 9; display: grid; place-items: center;
 }
-.tile video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+/* absolute: a % height on a grid item falls back to the video's own aspect height and overflows the tile */
+.tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
 .tile.big { aspect-ratio: auto; height: min(62vh, calc((100vw - 640px) * 9 / 16)); min-height: 240px; }
 .tileBar {
   position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
@@ -213,7 +214,9 @@
 .theater .watchArea { height: 100%; }
 .theater .watchArea > .tile { flex: 1; min-height: 0; }
 .theater .tile.big { height: 100%; min-height: 0; }
-.theater .watchGrid { height: 100%; overflow-y: auto; align-content: center; }
+/* side by side: rows share the stage height, each video letterboxes inside its tile (never taller than the stage) */
+.theater .watchGrid { height: 100%; grid-auto-rows: minmax(0, 1fr); overflow: hidden; }
+.theater .watchGrid > .tile { aspect-ratio: auto; height: 100%; min-height: 0; }
 
 .strip { flex: none; position: relative; padding: 18px 12px 10px; }
 .stripHidden { padding: 14px 12px 4px; }

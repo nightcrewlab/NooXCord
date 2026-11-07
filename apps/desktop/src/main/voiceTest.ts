@@ -133,6 +133,30 @@ export async function voiceSelfTest(): Promise<void> {
     await sleep(300);
     const backVideos = await stageVideos();
     check("theater: side by side -> click focuses (other hidden) -> click again side by side", sideBySide[0] === null && sideBySide[1] === 2 && focusedVideos === 1 && backVideos === 2, `${JSON.stringify(sideBySide)} ${focusedVideos} ${backVideos}`);
+    // Stream tiles stay inside the stage at any window shape (wide + short, narrow + tall), side by side and focused.
+    const fits = () => c.webContents.executeJavaScript(`(() => {
+      const box = document.querySelector("main [class*=_theaterMain_]"); if (!box) return "no stage";
+      const b = box.getBoundingClientRect();
+      const bad = [...box.querySelectorAll("[class*=_tile_], video")].map((el) => el.getBoundingClientRect())
+        .filter((r) => r.bottom > b.bottom + 1 || r.right > b.right + 1 || r.top < b.top - 1);
+      return bad.length ? JSON.stringify({ stage: [Math.round(b.width), Math.round(b.height)], tiles: bad.map((r) => [Math.round(r.width), Math.round(r.height)]) }) : "ok";
+    })()`);
+    const fitResults: string[] = [];
+    for (const [w, h] of [[1700, 560], [1280, 800], [900, 900]] as const) {
+      c.setSize(w, h);
+      await sleep(300);
+      fitResults.push(`${w}x${h} grid:${await fits()}`);
+      if (w === 1700) await shot("short-grid");
+      await c.webContents.executeJavaScript(`window.__nx.voice.setFocus(${JSON.stringify(ida)})`);
+      await sleep(200);
+      fitResults.push(`${w}x${h} focus:${await fits()}`);
+      if (w === 1700) await shot("short-focus");
+      await c.webContents.executeJavaScript(`window.__nx.voice.setFocus(null)`);
+      await sleep(200);
+    }
+    c.setSize(1280, 800);
+    check("theater: stream tiles fit the stage at any window size", fitResults.every((x) => x.endsWith(":ok")), fitResults.join(" | "));
+
     // An unwatched stream sits in the strip with its preview; clicking it watches it again.
     await c.webContents.executeJavaScript(`window.__nx.voice.unwatch(${JSON.stringify(idb)})`);
     await sleep(800);
