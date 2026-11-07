@@ -1,0 +1,28 @@
+{
+  "name": "nooxcord",
+  "private": true,
+  "version": "0.0.1",
+  "author": "NooXRii",
+  "scripts": {
+    "dev": "pnpm --filter @nooxcord/desktop dev",
+    "dev:web": "pnpm --filter @nooxcord/client dev",
+    "dev:host": "pnpm --filter @nooxcord/server dev",
+    "build": "pnpm --filter @nooxcord/client build && pnpm --filter @nooxcord/desktop build:main",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @nooxcord/server test",
+    "brand": "node scripts/build-brand.mjs",
+    "icons": "node scripts/export-icons.mjs",
+    "build:native": "pnpm --filter @nooxcord/native build",
+    "test:voice": "node apps/desktop/build.mjs && cross-env NX_SELFTEST=voice electron apps/desktop"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/node": "^26.6.6",
+    "concurrently": "^10.0.6",
+    "cross-env": "^10.1.0",
+    "esbuild": "^0.28.2",
+    "png-to-ico": "^3.0.2",
+    "typescript": "^7.0.2",
+    "wait-on": "^9.5.1"
+  }
+}

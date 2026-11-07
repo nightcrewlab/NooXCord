@@ -1,0 +1,12 @@
+{
+  "name": "@nooxcord/proto-mediasoup",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "mediasoup": "^3.32.2"
+  }
+}

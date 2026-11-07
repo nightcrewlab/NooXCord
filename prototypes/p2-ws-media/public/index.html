@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>NooXCord P2 · WS Medya Testi</title>
+<style>
+  :root { --bg0:#0b0d11; --bg1:#11141a; --bg2:#171b23; --line:#262c38; --t1:#e8ecf2; --t2:#9aa3b2; --acc:#ff7a45; --ok:#3ddc84; --bad:#ff3b5c; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg0); color:var(--t1); font:14px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif; padding:16px; }
+  h1 { font-size:20px; margin:0 0 4px; } h1 span { color:var(--acc); }
+  p.sub { color:var(--t2); margin:0 0 16px; }
+  .card { background:var(--bg1); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  button, select { background:var(--bg2); color:var(--t1); border:1px solid var(--line); border-radius:8px; padding:10px 14px; font:inherit; min-height:44px; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#111; font-weight:700; }
+  button:disabled { opacity:.5; }
+  canvas { width:100%; max-width:960px; aspect-ratio:16/9; background:#000; border-radius:10px; display:block; }
+  table { border-collapse:collapse; width:100%; } td { padding:4px 6px; border-bottom:1px solid var(--line); }
+  .y { color:var(--ok); font-weight:700; } .n { color:var(--bad); font-weight:700; }
+  #stats { font:12px/1.6 ui-monospace,Consolas,monospace; color:var(--t2); white-space:pre-wrap; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+  <h1>NooX<span>Cord</span> · P2</h1>
+  <p class="sub">Tünel (yalnızca HTTPS/WebSocket) üzerinden ses + görüntü testi</p>
+
+  <div class="card">
+    <b>Bu cihazın yetenekleri</b>
+    <table id="caps"></table>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button class="primary" id="btnView">İzleyici olarak katıl</button>
+      <button id="btnSend">Yayıncı ol</button>
+    </div>
+    <div class="row hidden" id="sendOpts" style="margin-top:10px">
+      <select id="vsrc"><option value="test">Görüntü: Test deseni</option><option value="screen">Görüntü: Ekran</option><option value="none">Görüntü: Yok</option></select>
+      <select id="asrc"><option value="tone">Ses: Test tonu</option><option value="mic">Ses: Mikrofon</option><option value="none">Ses: Yok</option></select>
+      <select id="res"><option value="1280x720">720p</option><option value="1920x1080">1080p</option><option value="854x480">480p</option></select>
+      <select id="fps"><option>30</option><option>60</option><option>15</option></select>
+      <button class="primary" id="btnStart">Başlat</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <canvas id="cv" width="1280" height="720"></canvas>
+    <div id="stats" style="margin-top:8px">Bekleniyor…</div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

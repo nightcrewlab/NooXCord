@@ -1,0 +1,10 @@
+.kinds { display: flex; flex-direction: column; gap: 8px; }
+.kind {
+  display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: var(--nx-radius-m);
+  background: var(--nx-bg-2); border: 1px solid var(--nx-line); color: var(--nx-text-2); cursor: pointer; text-align: left;
+}
+.kind span { display: flex; flex-direction: column; }
+.kind b { color: var(--nx-text-1); }
+.kind small { font-size: 13px; }
+.kind:hover { border-color: #384256; }
+.kindOn { border-color: var(--nx-accent); background: rgba(255, 122, 69, .08); color: var(--nx-accent); }

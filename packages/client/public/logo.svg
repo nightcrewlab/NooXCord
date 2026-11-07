@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="g" x1="120" y1="120" x2="392" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF7A45"/>
+      <stop offset="1" stop-color="#FFB347"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#171B23"/>
+      <stop offset="1" stop-color="#0B0D11"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="496" height="496" rx="116" fill="url(#bg)"/>
+  <rect x="9.5" y="9.5" width="493" height="493" rx="114.5" fill="none" stroke="#262C38" stroke-width="3"/>
+  <!-- sound waves leaving the centre -->
+  <g fill="none" stroke="url(#g)" stroke-linecap="round">
+    <path d="M118 176 A160 160 0 0 0 118 336" stroke-width="20" opacity=".5"/>
+    <path d="M394 176 A160 160 0 0 1 394 336" stroke-width="20" opacity=".5"/>
+    <!-- the X: two bowed strokes -->
+    <path d="M162 140 C236 206 276 306 350 372" stroke-width="46"/>
+    <path d="M350 140 C276 206 236 306 162 372" stroke-width="46"/>
+  </g>
+  <!-- connection node at the crossing -->
+  <circle cx="256" cy="256" r="34" fill="#0B0D11"/>
+  <circle cx="256" cy="256" r="15" fill="#FFE3C7"/>
+</svg>

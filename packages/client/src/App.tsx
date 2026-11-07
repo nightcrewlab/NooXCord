@@ -1,0 +1,55 @@
+import { useEffect, useState } from "react";
+import { AuthScreen } from "./features/auth/AuthScreen";
+import { HostPicker } from "./features/hosts/HostPicker";
+import { AppShell } from "./features/layout/AppShell";
+import { t } from "./i18n";
+import { platform } from "./platform";
+import { useStore } from "./state/store";
+import { ConfirmProvider, MenuProvider, Spinner, Toasts } from "./ui";
+
+/** Invite code from ?invite=… (web links), consumed once after login. */
+const pendingInvite = new URLSearchParams(location.search).get("invite");
+
+export function App() {
+  const screen = useStore((st) => st.screen);
+  const openHost = useStore((st) => st.openHost);
+  const connStatus = useStore((st) => st.connStatus);
+  const conn = useStore((st) => st.conn);
+  const selectGuild = useStore((st) => st.selectGuild);
+  const toast = useStore((st) => st.toast);
+  const [booting, setBooting] = useState(true);
+
+  // Resume the last host (desktop) or the page's own host (web).
+  useEffect(() => {
+    void (async () => {
+      const url = platform.fixedHost ?? (await platform.hosts.getLast());
+      if (url) await openHost(url).catch(() => {});
+      setBooting(false);
+    })();
+  }, [openHost]);
+
+  useEffect(() => {
+    if (connStatus !== "ready" || !conn || !pendingInvite) return;
+    history.replaceState(null, "", location.pathname);
+    conn.call("invite.join", { code: pendingInvite }).then((gs) => selectGuild(gs.guild.id), (e: Error) => toast(e.message, "error"));
+  }, [connStatus, conn, selectGuild, toast]);
+
+  return (
+    <ConfirmProvider>
+      <MenuProvider>
+        {booting ? (
+          <div style={{ height: "100%", display: "grid", placeItems: "center", color: "var(--nx-text-2)" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}><Spinner />{t("common.loading")}</div>
+          </div>
+        ) : screen === "hosts" ? (
+          <HostPicker />
+        ) : screen === "auth" ? (
+          <AuthScreen />
+        ) : (
+          <AppShell />
+        )}
+        <Toasts />
+      </MenuProvider>
+    </ConfirmProvider>
+  );
+}

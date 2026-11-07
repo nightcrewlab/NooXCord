@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+release/
+target/
+*.node
+*.log
+.tools/
+prototypes/**/captures/
+tunnel-qr.png
+.data/
+.data-*/

@@ -1,0 +1,26 @@
+{
+  "name": "@nooxcord/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "dev": "tsx watch --clear-screen=false src/dev.ts",
+    "start": "tsx src/dev.ts",
+    "test": "tsx test/smoke.ts && tsx test/unfurl.ts"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^10.1.8",
+    "@fastify/rate-limit": "^11.2.2",
+    "@fastify/static": "^10.1.10",
+    "@nooxcord/shared": "workspace:^",
+    "fastify": "^5.12.8",
+    "mediasoup": "3.32.2",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15"
+  }
+}

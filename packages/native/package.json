@@ -1,0 +1,11 @@
+{
+  "name": "@nooxcord/native",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "cargo build --release && node scripts/copy.mjs"
+  }
+}
