@@ -670,7 +670,8 @@ class VoiceEngine {
   async watch(userId: string): Promise<void> {
     const conn = this.conn;
     if (!conn || !useVoice.getState().channelId) return;
-    setV((s) => ({ watching: { ...s.watching, [userId]: s.watching[userId] ?? null }, focus: s.focus ?? userId }));
+    // First stream: it fills the stage. Another one: side by side (no focus) until one is clicked.
+    setV((s) => ({ watching: { ...s.watching, [userId]: s.watching[userId] ?? null }, focus: Object.keys(s.watching).some((id) => id !== userId) ? null : userId }));
     try {
       const list = await conn.call("stream.watch", { userId, watching: true });
       for (const p of list) this.producers.set(p.id, p);

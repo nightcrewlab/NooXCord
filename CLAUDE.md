@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.7.exe` (144 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.8.exe` (144 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -152,7 +152,7 @@ Masaüstü kendi kendine testleri (pencere göstermeden, geçici userData ile):
 NX_SELFTEST=1 electron apps/desktop        # host utilityProcess, safeStorage, port çakışması
 NX_SELFTEST=ui NX_UITEST_HOST=http://127.0.0.1:47820 NX_SHOT=shot.png electron apps/desktop   # arayüz + file:// → host HTTP/WS
 # Faz 2-3: 3 kullanıcı, 2 yayın, herkes izliyor; C tünel modunda (NXM-WS). Uygulamanın kendi host'u (47850) ile
-pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (24 kontrol, kamera + tünelden ekran yayını + tünel kalitesi dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
+pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (26 kontrol, kamera + tünelden ekran yayını + tünel kalitesi + tiyatro görünümü dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
 # UI testi giriş yapıp bir betik çalıştırabilir: NX_UITEST_TOKEN=<token> NX_UITEST_JS="<js>" (ör. ayarlar sayfasını açmak)
 # Güncelleme köşe kartı: NX_UITEST_UPDATE=downloading|ready (sahte durum, sürüm 9.9.9)
 ```
@@ -243,7 +243,7 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 - Yayın başladığında yayıncı **tek bir kare** yakalar (JPEG, 480px genişlik) ve host'a gönderir → kanal görünümünde **tek seferlik thumbnail** kartı (canlı güncellenmez; trafik tasarrufu). Kartta: yayıncı adı, kalite rozeti, izleyici sayısı, **"Yayını İzle"** butonu.
 - "Yayını İzle"ye basılmadan video consumer **oluşturulmaz** (bant genişliği).
 - Birden fazla yayın aynı anda izlenebilir: ızgara görünümü, odak (büyük) görünümü, her yayın için ayrı ses seviyesi, tam ekran, ayrı pencereye çıkar (pop-out, masaüstü).
-- **Tiyatro görünümü:** sesteyken bir yayın izlenmeye başlanınca üye listesi gizlenir ve yayın sahnenin tamamını kaplar. Altta izlenmeyen herkesin şeridi durur (avatar veya küçük kamera, konuşan yeşil çerçeve; izlenmeyen yayıncıya tıklayınca izlenir); şerit küçük tutamaçla gizlenir/geri gelir (`stripHidden` ayarı). Kendisi de yayındaysa şeridin üstünde "Senin yayının" çubuğu (izleyiciler + sağ tık kontrol ver, tünel kalitesi, durdur).
+- **Tiyatro görünümü:** sesteyken bir yayın izlenmeye başlanınca üye listesi gizlenir ve yayın sahnenin tamamını kaplar. Altta izlenmeyen herkesin şeridi durur (avatar veya küçük kamera, konuşan yeşil çerçeve; izlenmeyen yayın tek seferlik önizlemesiyle durur, tıklayınca izlenir); birden fazla yayın izlenirken yan yana durur, birine tıklayınca o sahneyi kaplar ve diğerleri gizlenir, ona tekrar tıklayınca yine yan yana (tam ekran düğmesi ve uzaktan kontrol tıklamaları bunu tetiklemez); şerit küçük tutamaçla gizlenir/geri gelir (`stripHidden` ayarı). Kendisi de yayındaysa şeridin üstünde "Senin yayının" çubuğu (izleyiciler + sağ tık kontrol ver, tünel kalitesi, durdur).
 - İzlenmeyen yayınlar için mediasoup consumer'ları `pause` edilir; görünmeyen (scroll dışı) ızgara hücrelerinde düşük simulcast katmanına geçilir.
 
 ---

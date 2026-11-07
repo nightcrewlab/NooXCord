@@ -238,3 +238,9 @@
 .ownBar { flex: none; display: flex; align-items: center; gap: 10px; margin: 10px 12px 0; padding: 6px 10px; border-radius: 10px; background: var(--nx-bg-2); border: 1px solid var(--nx-line); flex-wrap: wrap; }
 .ownBarText { font-size: 13px; font-weight: 600; color: var(--nx-text-2); }
 .ownBar .viewerList { padding: 0; border: 0; }
+.stripThumb { position: absolute; inset: 0; display: grid; place-items: center; background: #07080b center / cover no-repeat; color: var(--nx-text-3); }
+.stripWatch {
+  position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 4px;
+  background: rgba(5, 6, 9, .55); color: #fff; font-size: 12px; font-weight: 700; opacity: 0; transition: opacity var(--nx-fast);
+}
+.stripItem:hover .stripWatch { opacity: 1; }

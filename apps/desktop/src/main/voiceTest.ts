@@ -115,6 +115,33 @@ export async function voiceSelfTest(): Promise<void> {
     });
     const tiles = await c.webContents.executeJavaScript(`Object.values(window.__nx.useVoice.getState().watching).filter(w => w && w.hasVideo).length`);
     check("C watches 2 streams at once", tiles === 2, `${tiles}`);
+
+    // Theater layout: two watched streams side by side; focusing one hides the other; clicking it again goes back.
+    const stageVideos = () => c.webContents.executeJavaScript(`document.querySelectorAll("main video").length`);
+    const shot = async (suffix: string) => {
+      if (!process.env.NX_SHOT) return;
+      await c.webContents.executeJavaScript(`document.getAnimations().forEach((a) => a.finish())`);
+      fs.writeFileSync(process.env.NX_SHOT.replace(/\.png$/, `-${suffix}.png`), (await c.webContents.capturePage()).toPNG());
+    };
+    const sideBySide = [await c.webContents.executeJavaScript(`window.__nx.useVoice.getState().focus`), await stageVideos()];
+    await shot("grid");
+    await c.webContents.executeJavaScript(`document.querySelectorAll("main video")[0].closest("[class*=_tile_]").click()`);
+    await sleep(300);
+    const focusedVideos = await stageVideos();
+    await shot("focus");
+    await c.webContents.executeJavaScript(`document.querySelectorAll("main video")[0].closest("[class*=_tile_]").click()`);
+    await sleep(300);
+    const backVideos = await stageVideos();
+    check("theater: side by side -> click focuses (other hidden) -> click again side by side", sideBySide[0] === null && sideBySide[1] === 2 && focusedVideos === 1 && backVideos === 2, `${JSON.stringify(sideBySide)} ${focusedVideos} ${backVideos}`);
+    // An unwatched stream sits in the strip with its preview; clicking it watches it again.
+    await c.webContents.executeJavaScript(`window.__nx.voice.unwatch(${JSON.stringify(idb)})`);
+    await sleep(800);
+    const stripLive = await c.webContents.executeJavaScript(`document.querySelectorAll("main [class*=_stripThumb_]").length`);
+    const oneLeft = await stageVideos();
+    await c.webContents.executeJavaScript(`document.querySelector("main [class*=_stripThumb_]").closest("[class*=_stripItem_]").click()`);
+    await sleep(1500);
+    const rewatched = await c.webContents.executeJavaScript(`Object.keys(window.__nx.useVoice.getState().watching).length`);
+    check("theater: unwatched stream shows in the strip, click watches it", stripLive === 1 && oneLeft === 1 && rewatched === 2, `${stripLive} ${oneLeft} ${rewatched}`);
     const viewers = await a.webContents.executeJavaScript(`window.__nx.useStore.getState().guilds[${JSON.stringify(guildId)}].voice.find(v => v.userId === ${JSON.stringify(ida)}).stream.viewers.length`);
     check("viewer count on A's stream", viewers === 2, `${viewers}`);
     const videoSize = await c.webContents.executeJavaScript(`Promise.resolve([...document.querySelectorAll("video")].map(v => v.videoWidth + "x" + v.videoHeight))`);

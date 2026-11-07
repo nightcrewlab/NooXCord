@@ -138,21 +138,28 @@ function ParticipantStrip({ states, meId, onVolume }: { states: VoiceState[]; me
 
 function StripPerson({ state, isMe, onVolume }: { state: VoiceState; isMe: boolean; onVolume: (e: React.MouseEvent, id: string, name: string) => void }) {
   const user = useStore((st) => st.users[state.userId]);
+  const http = useStore((st) => st.http);
   const speaking = useIsSpeaking(state.channelId, state.userId);
   const remoteCam = useVoice((x) => (isMe ? undefined : x.cams[state.userId]));
   const myCam = useVoice((x) => (isMe ? x.camera : null));
   if (!user) return null;
   const cam = isMe ? (myCam ? voice.localCamera() : null) : remoteCam ?? null;
   const live = !!state.stream && !isMe;
+  const thumb = live ? http?.url(state.stream!.thumbnail) : undefined;
   const name = `${user.nickname}${isMe ? ` (${t("voice.you")})` : ""}`;
   return (
     <div
-      className={cx(s.stripItem, cam && s.stripCam, speaking && s.speaking, live && s.tileClickable)}
+      className={cx(s.stripItem, (cam || live) && s.stripCam, speaking && s.speaking, live && s.tileClickable)}
       title={live ? `${name} · ${t("stream.watch")}` : name}
       onClick={() => live && void voice.watch(state.userId)}
       onContextMenu={(e) => !isMe && onVolume(e, user.id, user.nickname)}
     >
-      {cam ? <CamVideo stream={cam} mirror={isMe && myCam?.facing === "user"} /> : <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={48} /></span>}
+      {live ? (
+        <>
+          <span className={s.stripThumb} style={thumb ? { backgroundImage: `url("${thumb}")` } : undefined}>{!thumb && <Icon name="monitor" size={24} />}</span>
+          <span className={s.stripWatch}><Icon name="eye" size={18} />{t("stream.watch")}</span>
+        </>
+      ) : cam ? <CamVideo stream={cam} mirror={isMe && myCam?.facing === "user"} /> : <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={48} /></span>}
       <span className={s.stripIcons}>
         {(state.muted || state.suppressed) && <Icon name="mic-off" size={14} label={t("voice.mute")} />}
         {state.deafened && <Icon name="headphones-off" size={14} label={t("voice.deafen")} />}
@@ -306,23 +313,23 @@ function ViewerList({ viewers, controllerId }: { viewers: string[]; controllerId
   );
 }
 
-/** Streams being watched: one big focused tile + thumbnails, or an even grid. */
+/**
+ * Streams being watched. Several: side by side; clicking one makes it fill the stage and hides the others,
+ * clicking the focused one goes back to side by side. One: it fills the stage.
+ */
 function WatchArea({ ids, focus, states }: { ids: string[]; focus: string | null; states: VoiceState[] }) {
   const watching = useVoice((x) => x.watching);
   const focused = focus && ids.includes(focus) ? focus : null;
   if (focused && ids.length > 1) {
     return (
-      <div className={s.watchArea}>
-        <WatchTile userId={focused} w={watching[focused] ?? null} state={states.find((x) => x.userId === focused)} big />
-        <div className={s.thumbs}>
-          {ids.filter((id) => id !== focused).map((id) => <WatchTile key={id} userId={id} w={watching[id] ?? null} state={states.find((x) => x.userId === id)} />)}
-        </div>
+      <div className={s.watchFocus}>
+        <WatchTile userId={focused} w={watching[focused] ?? null} state={states.find((x) => x.userId === focused)} big onPick={() => voice.setFocus(null)} />
       </div>
     );
   }
   return (
     <div className={ids.length === 1 ? s.watchFocus : s.watchGrid}>
-      {ids.map((id) => <WatchTile key={id} userId={id} w={watching[id] ?? null} state={states.find((x) => x.userId === id)} big={ids.length === 1} />)}
+      {ids.map((id) => <WatchTile key={id} userId={id} w={watching[id] ?? null} state={states.find((x) => x.userId === id)} big={ids.length === 1} onPick={ids.length > 1 ? () => voice.setFocus(id) : undefined} />)}
     </div>
   );
 }
@@ -356,7 +363,7 @@ async function toggleFullscreen(el: HTMLElement, fallback: () => void): Promise<
   fallback();
 }
 
-function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream | null; state: VoiceState | undefined; big?: boolean }) {
+function WatchTile({ userId, w, state, big, onPick }: { userId: string; w: WatchedStream | null; state: VoiceState | undefined; big?: boolean; onPick?: () => void }) {
   const user = useStore((st) => st.users[userId]);
   const deafened = useVoice((x) => x.deafened);
   const focus = useVoice((x) => x.focus);
@@ -375,7 +382,7 @@ function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream
   // Any client may control (browser and phone too) when a role allows it; only desktop streamers can be controlled.
   const canAsk = big && live && !!state?.stream?.controllable && has(useStore.getState().guilds[state.guildId]?.myPerms ?? 0, P.REQUEST_REMOTE_CONTROL);
   return (
-    <div ref={ref} className={cx(s.tile, big && s.big, !big && s.tileClickable, pseudo && s.pseudoFs)} onClick={() => !big && voice.setFocus(userId)}>
+    <div ref={ref} className={cx(s.tile, big && s.big, onPick && !rc.controlling && s.tileClickable, pseudo && s.pseudoFs)} onClick={() => { if (!rc.controlling && !pseudo && !(document as FsDoc).fullscreenElement && !(document as FsDoc).webkitFullscreenElement) onPick?.(); }}>
       {w && live ? <StreamVideo stream={w.stream} muted={deafened} volume={vol} /> : <div className={s.tileCenter}><Spinner />{t("stream.loading")}</div>}
       {rc.controlling && live && <RemoteSurface tileRef={ref} />}
       <div className={s.tileBar} onClick={(e) => e.stopPropagation()}>
