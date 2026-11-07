@@ -64,11 +64,11 @@ export function GuildRail() {
           </div>
         );
       })}
-      {!guest && <div className={s.railItem}>
-        <button className={cx(s.railBtn, s.railAdd)} title={t("rail.addGuild")} aria-label={t("rail.addGuild")} onClick={() => setCreating(true)}>
+      <div className={s.railItem}>
+        <button className={cx(s.railBtn, s.railAdd)} title={guest ? t("guild.joinTitle") : t("rail.addGuild")} aria-label={guest ? t("guild.joinTitle") : t("rail.addGuild")} onClick={() => setCreating(true)}>
           <Icon name="plus" size={22} />
         </button>
-      </div>}
+      </div>
       {creating && <CreateGuildModal onClose={() => setCreating(false)} />}
     </nav>
   );

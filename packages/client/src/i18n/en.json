@@ -442,5 +442,7 @@
   "net.firewallOff": "No rule. If others cannot connect over LAN/Hamachi, allow it (asks for administrator consent).",
   "net.firewallAllow": "Allow",
   "net.firewallRedo": "Renew",
-  "net.firewallFailed": "The firewall rule could not be added (was consent denied?)."
+  "net.firewallFailed": "The firewall rule could not be added (was consent denied?).",
+  "guild.joinGuestDesc": "Paste the invite code or link you got from the server owner.",
+  "guild.emptyGuestDesc": "Join a server with an invite code."
 }

@@ -18,6 +18,7 @@ import { openShareModal, useShareModal } from "../voice/common";
 import s from "./layout.module.css";
 
 export function AppShell() {
+  const guest = useStore((st) => !!st.me?.guest);
   const ready = useStore((st) => !!st.me && st.connStatus !== "connecting");
   const connStatus = useStore((st) => st.connStatus);
   const selectedGuild = useStore((st) => st.selectedGuild);
@@ -79,8 +80,8 @@ export function AppShell() {
             <div className={s.emptyInner}>
               <div className={s.emptyIcon}><Icon name="server" size={30} /></div>
               <h2 className={s.emptyTitle}>{t("guild.empty")}</h2>
-              <p className={s.emptyDesc}>{t("guild.emptyDesc")}</p>
-              <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>{t("rail.addGuild")}</Button>
+              <p className={s.emptyDesc}>{guest ? t("guild.emptyGuestDesc") : t("guild.emptyDesc")}</p>
+              <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>{guest ? t("guild.joinTitle") : t("rail.addGuild")}</Button>
             </div>
           </div>
           {creating && <CreateGuildModal onClose={() => setCreating(false)} />}
@@ -104,6 +105,7 @@ type MobileTab = "servers" | "chat" | "voice";
 
 /** One full-screen pane at a time plus a bottom tab bar: Servers / Chat / Voice / Profile. */
 function MobileShell({ selected, onCreate }: { selected: Channel | undefined; onCreate: () => void }) {
+  const guest = useStore((st) => !!st.me?.guest);
   const selectedGuild = useStore((st) => st.selectedGuild);
   const guilds = useStore((st) => st.guilds);
   const showMembers = useStore((st) => st.showMembers);
@@ -146,8 +148,8 @@ function MobileShell({ selected, onCreate }: { selected: Channel | undefined; on
             <div className={s.empty}><div className={s.emptyInner}>
               <div className={s.emptyIcon}><Icon name="server" size={30} /></div>
               <h2 className={s.emptyTitle}>{t("guild.empty")}</h2>
-              <p className={s.emptyDesc}>{t("guild.emptyDesc")}</p>
-              <Button variant="primary" icon="plus" onClick={onCreate}>{t("rail.addGuild")}</Button>
+              <p className={s.emptyDesc}>{guest ? t("guild.emptyGuestDesc") : t("guild.emptyDesc")}</p>
+              <Button variant="primary" icon="plus" onClick={onCreate}>{guest ? t("guild.joinTitle") : t("rail.addGuild")}</Button>
             </div></div>
           </main>
         )}

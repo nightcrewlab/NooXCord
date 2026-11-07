@@ -3,7 +3,7 @@ import { t } from "../../i18n";
 import { useStore } from "../../state/store";
 import { Button, Field, Modal } from "../../ui";
 
-/** Create a new guild, or join one with an invite code (accepts a full link too). */
+/** Create a new guild, or join one with an invite code (accepts a full link too). Guests can only join. */
 export function CreateGuildModal({ onClose }: { onClose: () => void }) {
   const conn = useStore((st) => st.conn);
   const me = useStore((st) => st.me);
@@ -12,6 +12,7 @@ export function CreateGuildModal({ onClose }: { onClose: () => void }) {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState<"create" | "join" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const guest = !!me?.guest;
 
   async function create(e: FormEvent) {
     e.preventDefault();
@@ -47,7 +48,8 @@ export function CreateGuildModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Modal title={t("guild.createTitle")} description={t("guild.createDesc")} onClose={onClose}>
+    <Modal title={guest ? t("guild.joinTitle") : t("guild.createTitle")} description={guest ? t("guild.joinGuestDesc") : t("guild.createDesc")} onClose={onClose}>
+      {!guest && <>
       <form onSubmit={create} style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
         <div style={{ flex: 1 }}><Field label={t("guild.name")} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} /></div>
         <Button type="submit" variant="primary" loading={busy === "create"} disabled={!name.trim()}>{t("common.create")}</Button>
@@ -55,6 +57,7 @@ export function CreateGuildModal({ onClose }: { onClose: () => void }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, color: "var(--nx-text-3)", fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em" }}>
         <span style={{ flex: 1, height: 1, background: "var(--nx-line)" }} />{t("guild.or")}<span style={{ flex: 1, height: 1, background: "var(--nx-line)" }} />
       </div>
+      </>}
       <form onSubmit={join} style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
         <div style={{ flex: 1 }}><Field label={t("guild.inviteCode")} placeholder="aB3dE5fG" value={code} onChange={(e) => setCode(e.target.value)} spellCheck={false} hint={t("guild.joinDesc")} /></div>
         <Button type="submit" loading={busy === "join"} disabled={!code.trim()} style={{ marginBottom: 22 }}>{t("guild.join")}</Button>

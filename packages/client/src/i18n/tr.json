@@ -442,5 +442,7 @@
   "net.firewallOff": "Kural yok. LAN/Hamachi'den bağlanılamıyorsa izin ver (yönetici onayı istenir).",
   "net.firewallAllow": "İzin ver",
   "net.firewallRedo": "Yenile",
-  "net.firewallFailed": "Güvenlik duvarı kuralı eklenemedi (onay verilmedi mi?)."
+  "net.firewallFailed": "Güvenlik duvarı kuralı eklenemedi (onay verilmedi mi?).",
+  "guild.joinGuestDesc": "Sunucunun sahibinden aldığın davet kodunu ya da bağlantısını yapıştır.",
+  "guild.emptyGuestDesc": "Bir sunucuya girmek için davet koduyla katıl."
 }
