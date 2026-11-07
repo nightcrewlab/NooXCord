@@ -75,6 +75,12 @@ contextBridge.exposeInMainWorld("nx", {
     attention: () => call("app:attention"),
     openLogs: () => call("app:openLogs"),
     setTrayState: (s: unknown) => ipcRenderer.send("tray:state", s),
+    takeJoin: () => call("app:takeJoin"),
+    onJoin: (cb: (j: unknown) => void) => {
+      const fn = (_e: unknown, j: unknown) => cb(j);
+      ipcRenderer.on("app:join", fn);
+      return () => ipcRenderer.removeListener("app:join", fn);
+    },
     onTrayAction: (cb: (a: string) => void) => {
       const fn = (_e: unknown, a: string) => cb(a);
       ipcRenderer.on("tray:action", fn);

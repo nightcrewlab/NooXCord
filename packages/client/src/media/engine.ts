@@ -1,4 +1,5 @@
 import type { Device, types as msc } from "mediasoup-client";
+import { denoise, type Denoised } from "./denoise";
 import { remote, useRemote } from "./remote";
 import { create } from "zustand";
 import { STREAM_PRESETS, type EventName, type Events, type MediaSource, type RemoteProducer, type StreamPreset, type TransportParams } from "@nooxcord/shared";
@@ -40,6 +41,8 @@ export interface ShareOptions {
   audio: boolean;
   /** Tests only: a ready-made video track instead of a capture. */
   testTrack?: MediaStreamTrack;
+  /** Test only: stream audio instead of the system sound. */
+  testAudio?: MediaStreamTrack;
 }
 
 interface VoiceUi {
@@ -101,14 +104,18 @@ class VoiceEngine {
   private seq = 0;
   private mode: VoiceTransport = "rtc";
   private wsm: WsMedia | null = null;
-  /** WebRTC failed on this host once: use tunnel mode from now on. */
+  /** Always use tunnel mode (tests). */
   private forceWs = false;
+  /** WebRTC failed during this call: stay on tunnel mode until the user joins again. */
+  private fallbackWs = false;
   private micWsId: string | null = null;
+  private errRejoinAt = 0;
 
   private micStream: MediaStream | null = null;
   private micSendTrack: MediaStreamTrack | null = null;
   private micProducer: msc.Producer | null = null;
   private micMeter: LevelMeter | null = null;
+  private denoised: Denoised | null = null;
   private gate = new VadGate();
   private pttDown = false;
   private offPtt: (() => void) | null = null;
@@ -139,6 +146,8 @@ class VoiceEngine {
     audioContext(); // unlock audio inside the gesture
     const micPromise = this.openMic(); // getUserMedia before the first await (iOS)
     const seq = ++this.seq;
+    // A new join tries WebRTC again: an earlier failure (a dropped connection) must not pin tunnel mode forever.
+    this.fallbackWs = false;
     if (useVoice.getState().channelId) await this.teardown(true);
     setV({ status: "connecting", guildId, channelId, watching: {}, focus: null, sharing: null });
     this.bindConn(conn);
@@ -171,7 +180,7 @@ class VoiceEngine {
   private async connect(conn: HostConnection, channelId: string, seq: number): Promise<void> {
     const { muted, deafened } = useVoice.getState();
     const base = useStore.getState().http?.base ?? location.origin;
-    const mode: VoiceTransport = wsMediaSupported() && (this.forceWs || isTunnelHost(base)) ? "ws" : "rtc";
+    const mode: VoiceTransport = wsMediaSupported() && (this.forceWs || this.fallbackWs || isTunnelHost(base)) ? "ws" : "rtc";
     const res = await conn.call("voice.join", { channelId, muted, deafened, transport: mode });
     if (seq !== this.seq) {
       conn.call("voice.leave", {}).catch(() => {});
@@ -208,9 +217,9 @@ class VoiceEngine {
       transport.on("connectionstatechange", (st) => {
         if (st !== "failed" || seq !== this.seq) return;
         const v = useVoice.getState();
-        if (wsMediaSupported() && !this.forceWs && v.guildId && v.channelId) {
+        if (wsMediaSupported() && !this.forceWs && !this.fallbackWs && v.guildId && v.channelId) {
           // UDP/TCP media port unreachable: fall back to WebSocket media through the main port.
-          this.forceWs = true;
+          this.fallbackWs = true;
           useStore.getState().toast(t("err.voiceFallbackWs"), "info");
           void this.rejoin(v.guildId, v.channelId);
           return;
@@ -284,6 +293,12 @@ class VoiceEngine {
       case "voice.ended": {
         if (!v.channelId) break;
         const { reason } = raw as Events["voice.ended"];
+        if (reason === "error" && v.guildId && Date.now() - this.errRejoinAt > 10_000) {
+          this.errRejoinAt = Date.now();
+          // The host's media server restarted: our session is gone, join again.
+          void this.rejoin(v.guildId, v.channelId);
+          break;
+        }
         this.seq++;
         void this.teardown(false);
         useStore.getState().toast(reason === "replaced" ? t("err.voiceReplaced") : t("err.voiceRemoved"), "info");
@@ -363,7 +378,8 @@ class VoiceEngine {
         audio: {
           deviceId: s.inputDeviceId ? { exact: s.inputDeviceId } : undefined,
           echoCancellation: s.echoCancellation,
-          noiseSuppression: s.noiseSuppression,
+          // Our own model replaces the browser's suppressor (both at once smear speech).
+          noiseSuppression: s.noiseMode === "browser",
           autoGainControl: s.autoGainControl,
           channelCount: 1,
         },
@@ -376,7 +392,14 @@ class VoiceEngine {
       useStore.getState().toast(msg, "error");
       return;
     }
-    const track = this.micStream.getAudioTracks()[0]!;
+    let track = this.micStream.getAudioTracks()[0]!;
+    const stream = this.micStream;
+    this.denoised = await denoise(track, s.noiseMode).catch((e: unknown) => {
+      console.warn("[voice] noise suppression unavailable", e);
+      return null;
+    });
+    if (this.micStream !== stream) { this.denoised?.stop(); this.denoised = null; return; } // closed meanwhile
+    if (this.denoised) track = this.denoised.track; // the gate also hears the cleaned sound: fewer false opens
     // The producer gets a clone so the gate can silence it while the meter still hears the original.
     this.micSendTrack = track.clone();
     this.micSendTrack.enabled = false;
@@ -388,6 +411,8 @@ class VoiceEngine {
   private closeMic() {
     this.micMeter?.stop();
     this.micMeter = null;
+    this.denoised?.stop();
+    this.denoised = null;
     this.micStream?.getTracks().forEach((t) => t.stop());
     this.micSendTrack?.stop();
     this.micStream = null;
@@ -857,10 +882,10 @@ class VoiceEngine {
     const fps = opts.preset === "source" ? Math.min(opts.sourceSize?.refreshRate ?? 60, 120) : preset.fps;
 
     let stream: MediaStream;
-    if (opts.testTrack) stream = new MediaStream([opts.testTrack]);
+    if (opts.testTrack) stream = new MediaStream(opts.testAudio ? [opts.testTrack, opts.testAudio] : [opts.testTrack]);
     else {
       if (platform.media && opts.sourceId) await platform.media.selectSource(opts.sourceId);
-      const webAudio = !platform.media && opts.audio && !tunnel; // tunnel mode carries no stream audio
+      const webAudio = !platform.media && opts.audio;
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: { width: { max: width }, height: { max: height }, frameRate: { ideal: fps, max: fps } },
         audio: webAudio ? { suppressLocalAudioPlayback: false } : false,
@@ -870,7 +895,7 @@ class VoiceEngine {
     }
     this.stopScreenLocal();
     this.screenStream = stream;
-    this.shareOpts = { ...opts, testTrack: undefined };
+    this.shareOpts = { ...opts, testTrack: undefined, testAudio: undefined };
     const video = stream.getVideoTracks()[0];
     if (!video) throw new Error(t("err.noVideo"));
     video.contentHint = opts.contentHint;
@@ -878,11 +903,11 @@ class VoiceEngine {
 
     // Desktop system audio, NooXCord's own sound excluded (CLAUDE.md §6.3).
     let audioTrack = stream.getAudioTracks()[0] ?? null;
-    if (!audioTrack && opts.audio && platform.media && !tunnel) audioTrack = await this.startSystemAudio();
+    if (!audioTrack && opts.audio && platform.media) audioTrack = await this.startSystemAudio();
     if (audioTrack) stream.addTrack(audioTrack);
 
     try {
-      await this.publishScreen({ ...opts, testTrack: undefined });
+      await this.publishScreen({ ...opts, testTrack: undefined, testAudio: undefined });
     } catch (e) {
       this.stopScreenLocal();
       throw e;
@@ -964,18 +989,29 @@ class VoiceEngine {
     if (useVoice.getState().sharing) await this.conn?.call("stream.tunnelQuality", { high });
   }
 
-  /** Tunnel mode: the browser encodes H.264 itself (≤1280x720, 15 fps), no stream audio. */
+  /** Tunnel mode: the client encodes H.264 itself (≤1280x720, 15 fps); stream audio goes as stereo Opus. */
   private async publishScreenWs(stream: MediaStream | null): Promise<void> {
     const wsm = this.wsm, conn = this.conn;
     const video = stream?.getVideoTracks()[0];
     if (!wsm || !conn || !video) return;
-    stream!.getAudioTracks().forEach((a) => { a.stop(); stream!.removeTrack(a); });
     await wsm.startVideo("screen", video);
     const { id } = await conn.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen" });
     this.screenWsId = id;
+    let audio = stream!.getAudioTracks()[0] ?? null;
+    if (audio) {
+      try {
+        await wsm.startScreenAudio(audio);
+        await conn.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "screen-audio" });
+      } catch (e) {
+        // An older host or no Opus encoder: share without sound rather than fail.
+        wsm.stopScreenAudio();
+        audio = null;
+        useStore.getState().toast(t("err.streamAudioTunnel", { msg: (e as Error).message }), "info");
+      }
+    }
     const st = video.getSettings();
     const w = st.width ?? 1280, h = st.height ?? 720, k = Math.min(1, 1280 / w, 720 / h);
-    await conn.call("stream.start", { width: Math.max(1, Math.round(w * k)), height: Math.max(1, Math.round(h * k)), fps: 15, audio: false });
+    await conn.call("stream.start", { width: Math.max(1, Math.round(w * k)), height: Math.max(1, Math.round(h * k)), fps: 15, audio: !!audio });
   }
 
   /** One-off 480px JPEG preview (CLAUDE.md §6.4). */
@@ -1015,6 +1051,7 @@ class VoiceEngine {
     this.screenProducer = this.screenAudioProducer = null;
     this.screenWsId = null;
     this.wsm?.stopVideo("screen");
+    this.wsm?.stopScreenAudio();
     this.screenStream?.getTracks().forEach((t) => t.stop());
     this.screenStream = null;
     this.shareOpts = null;
@@ -1029,6 +1066,11 @@ class VoiceEngine {
   /** My own outgoing screen (for the local preview tile). */
   localScreen(): MediaStream | null {
     return this.screenStream;
+  }
+
+  /** Debug/test helper: what I currently receive. */
+  debugConsumers(): { userId: string; source: MediaSource; live: boolean }[] {
+    return [...this.consumers.values()].map((c) => ({ userId: c.userId, source: c.source, live: !!c.track && c.track.readyState === "live" || !!c.wsAudio }));
   }
 
   /** Debug/test helper: transport stats summary. */
@@ -1063,7 +1105,7 @@ useStore.subscribe((s, prev) => {
 });
 
 // Dev/test hook (used by the Electron voice self-test).
-(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useStore, remote, useRemote };
+(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useStore, remote, useRemote, denoise, meter };
 
 /** Voices and cameras go to everyone in the channel; screen streams only to people watching them. */
 function autoConsumed(source: MediaSource): boolean {

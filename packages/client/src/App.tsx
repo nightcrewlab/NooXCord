@@ -34,7 +34,7 @@ if (platform.app) {
 }
 
 /** Invite code from ?invite=… (web links), consumed once after login. */
-const pendingInvite = new URLSearchParams(location.search).get("invite");
+const webInvite = new URLSearchParams(location.search).get("invite");
 
 export function App() {
   const screen = useStore((st) => st.screen);
@@ -44,21 +44,35 @@ export function App() {
   const selectGuild = useStore((st) => st.selectGuild);
   const toast = useStore((st) => st.toast);
   const [booting, setBooting] = useState(true);
+  const [pendingInvite, setPendingInvite] = useState(webInvite);
 
-  // Resume the last host (desktop) or the page's own host (web).
+  // Resume the last host (desktop) or the page's own host (web); a nooxcord://join link wins.
   useEffect(() => {
     void (async () => {
-      const url = platform.fixedHost ?? (await platform.hosts.getLast());
-      if (url) await openHost(url).catch(() => {});
+      const join = await platform.app?.takeJoin?.().catch(() => null);
+      if (join?.invite) setPendingInvite(join.invite);
+      const url = join?.url ?? platform.fixedHost ?? (await platform.hosts.getLast());
+      if (url) await openHost(url).catch(() => toast(t("hosts.unreachable"), "error"));
       setBooting(false);
     })();
-  }, [openHost]);
+  }, [openHost, toast]);
+
+  // A join link opened while the app runs (second instance): switch to that host.
+  useEffect(() => platform.app?.onJoin?.((j) => {
+    if (j.invite) setPendingInvite(j.invite);
+    if (useStore.getState().hostUrl === j.url) return;
+    void (async () => {
+      await useStore.getState().leaveHost();
+      await openHost(j.url).catch(() => toast(t("hosts.unreachable"), "error"));
+    })();
+  }), [openHost, toast]);
 
   useEffect(() => {
     if (connStatus !== "ready" || !conn || !pendingInvite) return;
-    history.replaceState(null, "", location.pathname);
+    if (webInvite) history.replaceState(null, "", location.pathname);
+    setPendingInvite(null);
     conn.call("invite.join", { code: pendingInvite }).then((gs) => selectGuild(gs.guild.id), (e: Error) => toast(e.message, "error"));
-  }, [connStatus, conn, selectGuild, toast]);
+  }, [connStatus, conn, pendingInvite, selectGuild, toast]);
 
   return (
     <ConfirmProvider>

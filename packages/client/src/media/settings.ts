@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { StreamPreset } from "@nooxcord/shared";
+import type { NoiseMode } from "./denoise";
 
 /** Per-device voice preferences, kept in localStorage. */
 export interface VoiceSettings {
@@ -14,7 +15,10 @@ export interface VoiceSettings {
   /** Voice activity threshold in dBFS; null = automatic (follows the noise floor). */
   vadThreshold: number | null;
   echoCancellation: boolean;
+  /** Kept for old saves; noiseMode decides. */
   noiseSuppression: boolean;
+  /** Microphone noise suppression: browser built-in, RNNoise or GTCRN (media/denoise.ts). */
+  noiseMode: NoiseMode;
   autoGainControl: boolean;
   /** Per-user playback volume 0–2 (1 = 100 %). */
   volumes: Record<string, number>;
@@ -39,6 +43,7 @@ const defaults: VoiceSettings = {
   vadThreshold: null,
   echoCancellation: true,
   noiseSuppression: true,
+  noiseMode: "rnnoise",
   autoGainControl: true,
   volumes: {},
   streamPreset: "standard",
@@ -52,7 +57,11 @@ const defaults: VoiceSettings = {
 function load(): VoiceSettings {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? { ...defaults, ...(JSON.parse(raw) as Partial<VoiceSettings>) } : defaults;
+    if (!raw) return defaults;
+    const saved = JSON.parse(raw) as Partial<VoiceSettings>;
+    // Saves from before noiseMode: a switched-off suppressor stays off.
+    if (!saved.noiseMode && saved.noiseSuppression === false) saved.noiseMode = "off";
+    return { ...defaults, ...saved };
   } catch {
     return defaults;
   }

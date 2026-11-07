@@ -10,7 +10,7 @@ import {
 import { Methods, RemoteInput } from "@nooxcord/shared/schemas";
 import type { Conn, Hub } from "./hub";
 import type { Store } from "./store";
-import { FRAME_CAM, FRAME_KEYREQ, FRAME_MIC, FRAME_SCREEN, FrameAssembler, audioFrame, buildRtp, keyFrameSsrcs, packetizeH264, parseRtp, videoFrame } from "./rtp";
+import { FRAME_CAM, FRAME_KEYREQ, FRAME_MIC, FRAME_SCREEN, FRAME_SCREEN_AUDIO, FrameAssembler, audioFrame, buildRtp, keyFrameSsrcs, packetizeH264, parseRtp, videoFrame } from "./rtp";
 import { fail, randomToken } from "./util";
 
 /*
@@ -36,14 +36,15 @@ interface WsLink {
   ticket: string;
   sock: WebSocket | null;
   nextTag: number;
-  micSsrc: number;
-  micSeq: number;
-  micTs: number;
+  /** Client-encoded Opus: [0] microphone, [1] stream audio. */
+  aud: [WsAudioIn, WsAudioIn];
   /** Browser-encoded H.264: [0] camera, [1] screen. */
   vid: [WsVideoIn, WsVideoIn];
   sent: number;
 }
 
+interface WsAudioIn { ssrc: number; seq: number; ts: number }
+const WS_AUDIO_SOURCES = ["mic", "screen-audio"] as const;
 interface WsVideoIn { ssrc: number; seq: number; lastKeyReq: number }
 const WS_VIDEO_SOURCES = ["camera", "screen"] as const;
 
@@ -95,6 +96,8 @@ export class Media {
   private worker: ms.Worker | null = null;
   private webRtcServer: ms.WebRtcServer | null = null;
   private starting: Promise<void> | null = null;
+  /** Addresses the current WebRtcServer listens on. */
+  private listening: string[] = [];
   private rooms = new Map<string, Room>();
   private peers = new Map<string, Peer>();
   private thumbs = new Map<string, Thumb>(); // userId -> latest stream thumbnail
@@ -208,7 +211,8 @@ export class Media {
         return;
       }
       if (!isBinary || data.length < 2) return;
-      if (data[0] === FRAME_MIC) this.micFrame(peer, data.subarray(1));
+      if (data[0] === FRAME_MIC) this.audioIn(peer, data.subarray(1), 0);
+      else if (data[0] === FRAME_SCREEN_AUDIO) this.audioIn(peer, data.subarray(1), 1);
       else if (data[0] === FRAME_CAM && data.length > 6) this.videoIn(peer, data, 0);
       else if (data[0] === FRAME_SCREEN && data.length > 6) this.videoIn(peer, data, 1);
     });
@@ -219,14 +223,15 @@ export class Media {
     });
   }
 
-  private micFrame(p: Peer, opus: Buffer): void {
-    const link = p.ws!;
-    const e = [...p.producers.values()].find((x) => x.source === "mic");
+  /** Tunnel-mode microphone / stream audio: one 20 ms Opus frame -> one RTP packet. */
+  private audioIn(p: Peer, opus: Buffer, which: 0 | 1): void {
+    const a = p.ws!.aud[which];
+    const e = [...p.producers.values()].find((x) => x.source === WS_AUDIO_SOURCES[which]);
     if (!e || e.producer.paused) return;
-    link.micSeq = (link.micSeq + 1) & 0xffff;
-    link.micTs = (link.micTs + 960) >>> 0; // 20 ms at 48 kHz
+    a.seq = (a.seq + 1) & 0xffff;
+    a.ts = (a.ts + 960) >>> 0; // 20 ms at 48 kHz
     try {
-      e.producer.send(buildRtp(MIC_PT, link.micSeq, link.micTs, link.micSsrc, opus));
+      e.producer.send(buildRtp(MIC_PT, a.seq, a.ts, a.ssrc, opus));
     } catch { /* producer closing */ }
   }
 
@@ -285,14 +290,26 @@ export class Media {
   // ---------- internals ----------
 
   private async ensureWorker(): Promise<void> {
+    // A network interface came or went (Hamachi connected later, Wi-Fi changed) while nobody is in voice:
+    // restart the media server so its ICE candidates match the machine's current addresses.
+    if (this.webRtcServer && this.rooms.size === 0 && listenIps(this.bind).join() !== this.listening.join()) {
+      this.log(`[media] network changed (${this.listening.join(", ")} -> ${listenIps(this.bind).join(", ")}), restarting`);
+      const w = this.worker;
+      this.worker = null;
+      this.webRtcServer = null;
+      w?.close();
+    }
     if (this.webRtcServer) return;
     this.starting ??= (async () => {
       const worker = await mediasoup.createWorker({ logLevel: "warn", rtcMinPort: 0, rtcMaxPort: 0 });
       worker.on("died", (err) => {
         this.log("[media] worker died", err);
+        if (this.worker !== worker) return;
         this.worker = null;
         this.webRtcServer = null;
-        for (const p of [...this.peers.values()]) this.leave(p, "error", true);
+        // Not silent: clients must learn their session is gone, or they sit in a dead call (they rejoin).
+        for (const p of [...this.peers.values()]) this.leave(p, "error");
+        this.rooms.clear();
       });
       const ips = listenIps(this.bind);
       try {
@@ -307,6 +324,7 @@ export class Media {
         throw e;
       }
       this.worker = worker;
+      this.listening = ips;
       this.log(`[media] mediasoup ${mediasoup.version} on ${ips.join(", ")} :${this.port}`);
     })().finally(() => (this.starting = null));
     try {
@@ -583,7 +601,7 @@ export class Media {
       };
       const ws: WsLink | null = tunnel
         ? {
-          ticket: randomToken(24), sock: null, nextTag: 1, micSsrc: (Math.random() * 0xffffffff) >>> 0, micSeq: 0, micTs: 0,
+          ticket: randomToken(24), sock: null, nextTag: 1, aud: [0, 1].map(() => ({ ssrc: (Math.random() * 0xffffffff) >>> 0, seq: 0, ts: 0 })) as [WsAudioIn, WsAudioIn],
           vid: [0, 1].map(() => ({ ssrc: (Math.random() * 0xffffffff) >>> 0, seq: 0, lastKeyReq: 0 })) as [WsVideoIn, WsVideoIn], sent: 0,
         }
         : null;
@@ -609,6 +627,13 @@ export class Media {
       }
       room.peers.set(conn.userId, peer);
       this.peers.set(conn.userId, peer);
+      this.log(`[voice] ${this.name(conn.userId)} joined ${ch!.name} via ${p.transport ?? "rtc"}${conn.desktop ? " (desktop)" : ""}`);
+      if (!tunnel) {
+        for (const t of [send, recv] as ms.WebRtcTransport[]) {
+          t.on("icestatechange", (st) => { if (st === "disconnected") this.log(`[voice] ${this.name(conn.userId)} ICE disconnected`); });
+          t.on("dtlsstatechange", (st) => { if (st === "failed" || st === "closed") this.log(`[voice] ${this.name(conn.userId)} DTLS ${st}`); });
+        }
+      }
       if (ws) {
         this.tickets.set(ws.ticket, peer);
         setTimeout(() => { if (this.tickets.get(ws.ticket) === peer) this.tickets.delete(ws.ticket); }, 30_000);
@@ -652,7 +677,6 @@ export class Media {
     "media.produce": async (conn, p) => {
       const peer = this.peerOf(conn);
       if (!peer.ws && p.transportId !== peer.send.id) fail("bad_request", "Yanlış transport.");
-      if (peer.ws && p.source === "screen-audio") fail("forbidden", "Tünel modunda yayın sesi gönderilemez.");
       const perms = this.store.perms(peer.room.guildId, peer.userId);
       const wantKind = p.source === "screen" || p.source === "camera" ? "video" : "audio";
       if (p.kind !== wantKind) fail("bad_request", "Kaynak türü uyuşmuyor.");
@@ -669,7 +693,9 @@ export class Media {
               codecs: [{ mimeType: "video/H264", payloadType: CAM_PT, clockRate: 90000, parameters: CAM_H264, rtcpFeedback: [{ type: "nack", parameter: "pli" }, { type: "ccm", parameter: "fir" }] }],
               encodings: [{ ssrc: peer.ws.vid[p.source === "camera" ? 0 : 1].ssrc }],
             }
-            : { codecs: [{ mimeType: "audio/opus", payloadType: MIC_PT, clockRate: 48000, channels: 2, parameters: { useinbandfec: 1 } }], encodings: [{ ssrc: peer.ws.micSsrc }] }
+            : p.source === "screen-audio"
+              ? { codecs: [{ mimeType: "audio/opus", payloadType: MIC_PT, clockRate: 48000, channels: 2, parameters: { useinbandfec: 1, stereo: 1, "sprop-stereo": 1 } }], encodings: [{ ssrc: peer.ws.aud[1].ssrc }] }
+              : { codecs: [{ mimeType: "audio/opus", payloadType: MIC_PT, clockRate: 48000, channels: 2, parameters: { useinbandfec: 1 } }], encodings: [{ ssrc: peer.ws.aud[0].ssrc }] }
           : (p.rtpParameters as unknown as ms.RtpParameters),
         appData: { userId: peer.userId, source: p.source },
       });

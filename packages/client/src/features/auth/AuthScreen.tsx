@@ -3,10 +3,22 @@ import { Icon } from "@nooxcord/icons";
 import { LIMITS } from "@nooxcord/shared";
 import { t } from "../../i18n";
 import { RpcError } from "../../net/connection";
-import { platform } from "../../platform";
+import { appJoinLink, platform } from "../../platform";
 import { useStore } from "../../state/store";
 import { Button, Field } from "../../ui";
 import { Welcome, welcomeStyles as s } from "./Welcome";
+
+/** Web (PC browser): open this host in the installed desktop app instead, tunnels included. */
+function OpenInApp() {
+  if (platform.kind !== "web" || platform.isMobile) return null;
+  const invite = new URLSearchParams(location.search).get("invite");
+  return (
+    <div className={s.switch}>
+      {t("auth.haveApp")}
+      <button type="button" onClick={() => { location.href = appJoinLink(location.origin, invite); }}>{t("auth.openInApp")}</button>
+    </div>
+  );
+}
 
 export function AuthScreen() {
   const hostInfo0 = useStore((st) => st.hostInfo);
@@ -59,6 +71,7 @@ export function AuthScreen() {
           {t("auth.haveAccount")}
           <button type="button" onClick={() => { setMode("login"); setError(null); }}>{t("auth.login")}</button>
         </div>
+        <OpenInApp />
       </Welcome>
     );
   }
@@ -107,6 +120,7 @@ export function AuthScreen() {
           <button type="button" onClick={() => { setMode("guest"); setError(null); }}>{t("auth.asGuest")}</button>
         </div>
       )}
+      <OpenInApp />
     </Welcome>
   );
 }

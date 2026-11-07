@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../../i18n";
-import { VadGate, meter, type LevelMeter } from "../../media/level";
+import { NOISE_MODES, denoise, type Denoised } from "../../media/denoise";
+import { VadGate, audioContext, meter, type LevelMeter } from "../../media/level";
 import { useVoice, voice, comboOf } from "../../media/engine";
 import { useVoiceSettings, type VoiceSettings } from "../../media/settings";
 import { platform } from "../../platform";
@@ -34,7 +35,8 @@ export function VoiceTab() {
   const [testLevel, setTestLevel] = useState<number | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [capMute, setCapMute] = useState(false);
-  const test = useRef<{ stream: MediaStream; meter: LevelMeter | null } | null>(null);
+  const test = useRef<{ stream: MediaStream; meter: LevelMeter | null; dn: Denoised | null; play: MediaStreamAudioSourceNode | null } | null>(null);
+  const [hearSelf, setHearSelf] = useState(false);
   const gate = useRef(new VadGate());
   const [autoTh, setAutoTh] = useState(-50);
 
@@ -51,10 +53,19 @@ export function VoiceTab() {
     stopTest();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { deviceId: st.inputDeviceId ? { exact: st.inputDeviceId } : undefined, echoCancellation: st.echoCancellation, noiseSuppression: st.noiseSuppression, autoGainControl: st.autoGainControl },
+        audio: { deviceId: st.inputDeviceId ? { exact: st.inputDeviceId } : undefined, echoCancellation: st.echoCancellation, noiseSuppression: st.noiseMode === "browser", autoGainControl: st.autoGainControl },
       });
-      test.current = { stream, meter: null };
-      test.current.meter = await meter(stream.getAudioTracks()[0]!, (db) => {
+      const cur = { stream, meter: null as LevelMeter | null, dn: null as Denoised | null, play: null as MediaStreamAudioSourceNode | null };
+      test.current = cur;
+      cur.dn = await denoise(stream.getAudioTracks()[0]!, useVoiceSettings.getState().noiseMode).catch(() => null);
+      if (test.current !== cur) return cur.dn?.stop();
+      const track = cur.dn?.track ?? stream.getAudioTracks()[0]!;
+      if (hearSelfRef.current) {
+        // Hear yourself through the same filter (headphones recommended).
+        cur.play = audioContext().createMediaStreamSource(new MediaStream([track]));
+        cur.play.connect(audioContext().destination);
+      }
+      cur.meter = await meter(track, (db) => {
         gate.current.update(db, useVoiceSettings.getState().vadThreshold);
         setTestLevel(db);
         setAutoTh(gate.current.autoThreshold);
@@ -67,6 +78,8 @@ export function VoiceTab() {
 
   function stopTest() {
     test.current?.meter?.stop();
+    test.current?.play?.disconnect();
+    test.current?.dn?.stop();
     test.current?.stream.getTracks().forEach((x) => x.stop());
     test.current = null;
     setTestLevel(null);
@@ -78,6 +91,9 @@ export function VoiceTab() {
     if (inCall) void voice.restartMic();
     if (test.current) void startTest();
   }
+
+  const hearSelfRef = useRef(hearSelf);
+  hearSelfRef.current = hearSelf;
 
   const inputs = devices.filter((d) => d.kind === "audioinput");
   const outputs = devices.filter((d) => d.kind === "audiooutput");
@@ -191,12 +207,26 @@ export function VoiceTab() {
         {testLevel === null
           ? <Button variant="secondary" icon="mic" onClick={() => void startTest()}>{t("settings.micTestStart")}</Button>
           : <Button variant="secondary" icon="mic-off" onClick={stopTest}>{t("settings.micTestStop")}</Button>}
+        <label className={s.row} style={{ gap: 8, fontSize: 13 }}>
+          {t("settings.hearSelf")}
+          <button role="switch" aria-checked={hearSelf} aria-label={t("settings.hearSelf")} className={s.toggle} onClick={() => { hearSelfRef.current = !hearSelf; setHearSelf(!hearSelf); if (test.current) void startTest(); }} />
+        </label>
+      </div>
+
+      <div>
+        <div className={s.label} style={{ marginBottom: 8 }}>{t("settings.noise")}</div>
+        <div className={vs.presets}>
+          {NOISE_MODES.map((m) => (
+            <button key={m} className={cx(vs.preset, st.noiseMode === m && vs.on)} onClick={() => setAndRestart({ noiseMode: m })}>{t(`settings.noise.${m}`)}</button>
+          ))}
+        </div>
+        <div className={s.hintText} style={{ marginTop: 6 }}>{t(`settings.noiseHint.${st.noiseMode}`)}</div>
       </div>
 
       <div>
         <div className={s.label} style={{ marginBottom: 8 }}>{t("settings.processing")}</div>
         <div className={s.perms}>
-          {([["echoCancellation", "settings.echo"], ["noiseSuppression", "settings.noise"], ["autoGainControl", "settings.agc"]] as const).map(([k, label]) => (
+          {([["echoCancellation", "settings.echo"], ["autoGainControl", "settings.agc"]] as const).map(([k, label]) => (
             <div key={k} className={s.perm}>
               <span>{t(label)}</span>
               <button role="switch" aria-checked={st[k]} aria-label={t(label)} className={s.toggle} onClick={() => setAndRestart({ [k]: !st[k] })} />

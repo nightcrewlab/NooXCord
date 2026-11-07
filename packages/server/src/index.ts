@@ -316,7 +316,8 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req: import("node:http").IncomingMessage) => {
+    const ip = String(req.headers["cf-connecting-ip"] ?? req.socket.remoteAddress ?? "?");
     let conn: Conn | null = null;
     let tokens = 40; // request budget, refilled 20/s
     const refill = setInterval(() => (tokens = Math.min(40, tokens + 20)), 1000);
@@ -337,6 +338,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
         clearTimeout(authTimer);
         conn = { ws, userId: uid, lastSeen, desktop: f.d?.client === "desktop" };
         const cameOnline = hub.add(conn);
+        console.log(`[ws] ${store.userRow(uid)!.nickname} connected (${conn.desktop ? "desktop" : "browser"}, ${ip})`);
         const guildIds = store.guildIdsOf(uid);
         hub.send(conn, {
           t: "evt", e: "ready",
@@ -372,11 +374,12 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
       if (ws.readyState === 1) ws.send('{"t":"ping"}');
     }, PING_INTERVAL_MS);
 
-    ws.on("close", () => {
+    ws.on("close", (code: number) => {
       clearInterval(refill);
       clearInterval(ping);
       clearTimeout(authTimer);
       if (stopping) return; // DB may already be closed
+      if (conn) console.log(`[ws] ${store.userRow(conn.userId)?.nickname ?? conn.userId} disconnected (${code})`);
       if (conn) media?.connClosed(conn);
       if (conn && hub.remove(conn)) {
         const row = store.userRow(conn.userId);

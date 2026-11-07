@@ -90,6 +90,14 @@ export interface OverlayMember {
 }
 
 /** Shape of the preload bridge (apps/desktop/src/preload). */
+/** nooxcord://join?url=…&invite=… (CLAUDE.md §10.6). */
+export interface JoinLink { url: string; invite: string | null }
+
+/** Link that opens this host in the desktop app (shown on the web client). */
+export function appJoinLink(hostUrl: string, invite?: string | null): string {
+  return `nooxcord://join?url=${encodeURIComponent(hostUrl)}${invite ? `&invite=${encodeURIComponent(invite)}` : ""}`;
+}
+
 export interface NxBridge {
   platform: "desktop";
   version: string;
@@ -162,6 +170,10 @@ export interface NxBridge {
     openLogs(): Promise<void>;
     setTrayState(s: TrayState): void;
     onTrayAction(cb: (a: "mute" | "deafen") => void): () => void;
+    /** nooxcord://join link the app was started with (once). */
+    takeJoin?(): Promise<JoinLink | null>;
+    /** nooxcord://join link opened while the app runs. */
+    onJoin?(cb: (j: JoinLink) => void): () => void;
   };
   updates: {
     get(): Promise<UpdateState>;

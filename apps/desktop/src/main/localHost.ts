@@ -1,4 +1,5 @@
 import { app, utilityProcess, type UtilityProcess } from "electron";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { hosts } from "./hosts";
@@ -33,6 +34,27 @@ export const workerBin = (): string =>
 const hostEnv = (): NodeJS.ProcessEnv => (app.isPackaged ? { ...process.env, MEDIASOUP_WORKER_BIN: workerBin() } : process.env);
 const webDir = () => (app.isPackaged ? path.join(process.resourcesPath, "web") : path.join(__dirname, "../../../packages/client/dist"));
 
+/** Host process output goes to %APPDATA%/NooXCord/logs/host.log (rotated at 2 MB) for "what went wrong" reports. */
+function pipeLog(proc: UtilityProcess): void {
+  const dir = path.join(app.getPath("userData"), "logs");
+  const file = path.join(dir, "host.log");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    if (fs.existsSync(file) && fs.statSync(file).size > 2 * 1024 * 1024) fs.renameSync(file, file + ".1");
+  } catch { /* logging is best effort */ }
+  const out = fs.createWriteStream(file, { flags: "a" });
+  out.on("error", () => {});
+  const stamp = () => new Date().toISOString();
+  out.write(`\n${stamp()} ---- host started ----\n`);
+  const tee = (chunk: Buffer, std: NodeJS.WriteStream) => {
+    out.write(String(chunk).split(/\r?\n/).filter(Boolean).map((l) => `${stamp()} ${l}\n`).join(""));
+    if (!app.isPackaged) std.write(chunk);
+  };
+  proc.stdout?.on("data", (c: Buffer) => tee(c, process.stdout));
+  proc.stderr?.on("data", (c: Buffer) => tee(c, process.stderr));
+  proc.on("exit", (code) => { out.end(`${stamp()} ---- host exited (${code}) ----\n`); });
+}
+
 /** Host-owner settings handed to the server (never changeable over the network). */
 function hostConfig() {
   const p = hosts.localHostPrefs();
@@ -53,8 +75,9 @@ export function start(port: unknown): Promise<LocalHostStatus> {
   if (!Number.isInteger(p) || p < 1024 || p > 65535) return Promise.resolve({ ...current, error: s("main.err.portRange") });
   if (child) return Promise.resolve(current);
   return new Promise((resolve) => {
-    const proc = utilityProcess.fork(path.join(__dirname, "host.cjs"), [], { serviceName: "NooXCord Host", stdio: "inherit", env: hostEnv() });
+    const proc = utilityProcess.fork(path.join(__dirname, "host.cjs"), [], { serviceName: "NooXCord Host", stdio: "pipe", env: hostEnv() });
     child = proc;
+    pipeLog(proc);
     const timer = setTimeout(() => finish({ running: false, port: null, lanAddresses: [], error: s("main.err.hostTimeout") }), 15_000);
     const finish = (st: LocalHostStatus) => {
       clearTimeout(timer);

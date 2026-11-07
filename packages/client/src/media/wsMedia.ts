@@ -14,14 +14,20 @@ const FRAME_MIC = 3;
 const FRAME_CAM = 4;
 const FRAME_KEYREQ = 5;
 const FRAME_SCREEN = 6;
+const FRAME_SCREEN_AUDIO = 7;
 /** The host closes the media socket above 1 MB per message; bigger frames are dropped here. */
 const MAX_VIDEO_FRAME = 900_000;
 
 const CAPTURE = `
 class NxCapture extends AudioWorkletProcessor {
+  constructor(o) { super(); this.n = (o.processorOptions && o.processorOptions.channels) || 1; }
   process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (ch) this.port.postMessage(ch.slice(0));
+    const inp = inputs[0];
+    if (inp && inp[0]) {
+      const out = [];
+      for (let k = 0; k < this.n; k++) out.push((inp[k] || inp[0]).slice(0));
+      this.port.postMessage(out);
+    }
     return true;
   }
 }
@@ -73,7 +79,8 @@ export class WsMedia {
   private ws: WebSocket | null = null;
   private audio = new Map<number, AudioSink>();
   private video = new Map<number, VideoSink>();
-  private mic: { enc: AudioEncoder; node: AudioWorkletNode; src: MediaStreamAudioSourceNode; sink: GainNode } | null = null;
+  private mic: OpusSender | null = null;
+  private screenAudio: OpusSender | null = null;
   private micOpen = false;
   /** Outgoing H.264 (camera, screen share). */
   private senders: Record<VideoKind, VideoSender | null> = { camera: null, screen: null };
@@ -110,6 +117,7 @@ export class WsMedia {
     ws?.close();
     for (const tag of [...this.audio.keys(), ...this.video.keys()]) this.remove(tag);
     this.stopMic();
+    this.stopScreenAudio();
     this.stopVideo("camera");
     this.stopVideo("screen");
   }
@@ -246,8 +254,36 @@ export class WsMedia {
 
   /** Encodes the microphone to Opus (20 ms frames) and sends it while the voice gate is open. */
   async startMic(track: MediaStreamTrack): Promise<void> {
+    const snd = await this.opusSender(track, FRAME_MIC, 1, 32_000, () => this.micOpen);
+    this.stopMic();
+    this.mic = snd;
+  }
+
+  setMicOpen(open: boolean): void {
+    this.micOpen = open;
+  }
+
+  stopMic(): void {
+    this.mic?.stop();
+    this.mic = null;
+  }
+
+  /** Stream audio (tab / system sound the browser gave with getDisplayMedia): stereo Opus, always open. */
+  async startScreenAudio(track: MediaStreamTrack): Promise<void> {
+    const snd = await this.opusSender(track, FRAME_SCREEN_AUDIO, 2, 96_000, () => true);
+    this.stopScreenAudio();
+    this.screenAudio = snd;
+  }
+
+  stopScreenAudio(): void {
+    this.screenAudio?.stop();
+    this.screenAudio = null;
+  }
+
+  /** Track -> AudioWorklet -> 48 kHz 20 ms blocks -> WebCodecs Opus -> [frame][opus] on the socket. */
+  private async opusSender(track: MediaStreamTrack, frame: number, channels: 1 | 2, bitrate: number, open: () => boolean): Promise<OpusSender> {
     if (typeof AudioEncoder === "undefined") throw new Error(t("err.wsNoEncoder"));
-    const config: AudioEncoderConfig = { codec: "opus", sampleRate: 48000, numberOfChannels: 1, bitrate: 32_000 };
+    const config: AudioEncoderConfig = { codec: "opus", sampleRate: 48000, numberOfChannels: channels, bitrate };
     if (!(await AudioEncoder.isConfigSupported(config)).supported) throw new Error(t("err.wsNoOpus"));
     const c = audioContext();
     captureLoaded ??= (async () => {
@@ -255,13 +291,12 @@ export class WsMedia {
       try { await c.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
     })();
     await captureLoaded;
-    this.stopMic();
     const enc = new AudioEncoder({
       output: (chunk) => {
         const ws = this.ws;
-        if (!ws || ws.readyState !== 1 || ws.bufferedAmount > 64_000) return;
+        if (!ws || ws.readyState !== 1 || ws.bufferedAmount > 64_000 * channels) return;
         const out = new Uint8Array(1 + chunk.byteLength);
-        out[0] = FRAME_MIC;
+        out[0] = frame;
         chunk.copyTo(out.subarray(1));
         ws.send(out);
         this.stats.sentBytes += out.byteLength;
@@ -270,44 +305,39 @@ export class WsMedia {
     });
     enc.configure(config);
     const src = c.createMediaStreamSource(new MediaStream([track]));
-    const node = new AudioWorkletNode(c, "nx-capture");
+    const node = new AudioWorkletNode(c, "nx-capture", { processorOptions: { channels } });
     const sink = c.createGain();
     sink.gain.value = 0;
     src.connect(node).connect(sink).connect(c.destination);
     const rate = c.sampleRate;
     const FRAME = 960;
-    let acc = new Float32Array(FRAME), fill = 0, samples = 0, pos = 0;
+    let acc = new Float32Array(FRAME * channels), fill = 0, samples = 0, pos = 0;
     const step = rate / 48000; // resample if the context is not 48 kHz
     node.port.onmessage = (e) => {
-      const block = e.data as Float32Array;
-      if (!this.micOpen) { fill = 0; return; } // gate closed: send nothing (like DTX)
-      for (; pos < block.length; pos += step) {
-        acc[fill++] = block[Math.floor(pos)]!;
-        if (fill === FRAME) {
+      const planes = e.data as Float32Array[];
+      const n = planes[0]?.length ?? 0;
+      if (!open()) { fill = 0; return; } // gate closed: send nothing (like DTX)
+      for (; pos < n; pos += step) {
+        const i = Math.floor(pos);
+        for (let k = 0; k < channels; k++) acc[k * FRAME + fill] = (planes[k] ?? planes[0]!)[i]!;
+        if (++fill === FRAME) {
           if (enc.state === "configured") {
-            enc.encode(new AudioData({ format: "f32-planar", sampleRate: 48000, numberOfFrames: FRAME, numberOfChannels: 1, timestamp: Math.round((samples / 48000) * 1e6), data: acc }));
+            enc.encode(new AudioData({ format: "f32-planar", sampleRate: 48000, numberOfFrames: FRAME, numberOfChannels: channels, timestamp: Math.round((samples / 48000) * 1e6), data: acc }));
           }
           samples += FRAME;
-          acc = new Float32Array(FRAME);
+          acc = new Float32Array(FRAME * channels);
           fill = 0;
         }
       }
-      pos -= block.length;
+      pos -= n;
     };
-    this.mic = { enc, node, src, sink };
-  }
-
-  setMicOpen(open: boolean): void {
-    this.micOpen = open;
-  }
-
-  stopMic(): void {
-    const m = this.mic;
-    if (!m) return;
-    this.mic = null;
-    m.node.port.onmessage = null;
-    try { m.src.disconnect(); m.node.disconnect(); m.sink.disconnect(); } catch { /* closed */ }
-    try { m.enc.close(); } catch { /* closed */ }
+    return {
+      stop: () => {
+        node.port.onmessage = null;
+        try { src.disconnect(); node.disconnect(); sink.disconnect(); } catch { /* closed */ }
+        try { enc.close(); } catch { /* closed */ }
+      },
+    };
   }
 
   // ---------- camera / screen ----------
@@ -414,6 +444,8 @@ export class WsMedia {
 }
 
 export type VideoKind = "camera" | "screen";
+
+interface OpusSender { stop(): void }
 
 interface VideoProfile {
   frame: number;

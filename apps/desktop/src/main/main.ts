@@ -25,6 +25,30 @@ initLogs();
 
 let mainWindow: BrowserWindow | null = null;
 
+/*
+ * nooxcord://join?url=<host origin>[&invite=<code>] (CLAUDE.md §10.6): opens a host, a tunnel URL
+ * included, straight in the app. The installer registers the scheme; Windows passes the link in argv.
+ */
+interface JoinLink { url: string; invite: string | null }
+function parseJoin(argv: readonly string[]): JoinLink | null {
+  const raw = argv.find((a) => /^nooxcord:\/\//i.test(a));
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    const q = u.searchParams;
+    let host = q.get("url");
+    if (!host && q.get("h")) host = `http://${q.get("h")}:${q.get("p") ?? "47820"}`;
+    if (!host) return null;
+    const h = new URL(host);
+    if (h.protocol !== "http:" && h.protocol !== "https:") return null;
+    const invite = q.get("invite") ?? q.get("code");
+    return { url: h.origin, invite: invite && /^[\w-]{1,64}$/.test(invite) ? invite : null };
+  } catch {
+    return null;
+  }
+}
+let pendingJoin: JoinLink | null = parseJoin(process.argv);
+
 const isSafeExternal = (url: unknown): url is string => {
   if (typeof url !== "string") return false;
   try {
@@ -48,6 +72,11 @@ function registerIpc(): void {
   ipcMain.handle("localHost:stop", async () => {
     hostStopped();
     return localHost.stop();
+  });
+  ipcMain.handle("app:takeJoin", () => {
+    const j = pendingJoin;
+    pendingJoin = null;
+    return j;
   });
   ipcMain.handle("shell:openExternal", (_e, url) => (isSafeExternal(url) ? shell.openExternal(url) : undefined));
   registerMediaIpc(() => mainWindow);
@@ -104,7 +133,11 @@ function createMainWindow(): void {
   else void mainWindow.loadFile(app.isPackaged ? path.join(process.resourcesPath, "web/index.html") : path.join(__dirname, "../../../packages/client/dist/index.html"));
 }
 
-app.on("second-instance", () => showMain());
+app.on("second-instance", (_e, argv) => {
+  showMain();
+  const join = parseJoin(argv);
+  if (join) mainWindow?.webContents.send("app:join", join);
+});
 
 /** Headless check used during development: NX_SELFTEST=1 electron . */
 async function selfTest(): Promise<void> {
@@ -187,6 +220,7 @@ async function uiSelfTest(): Promise<void> {
 
 void app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
+  if (app.isPackaged) app.setAsDefaultProtocolClient("nooxcord"); // the installer does it too; keeps it after a move
   registerIpc();
   if (process.env.NX_SELFTEST === "1") return void selfTest();
   if (process.env.NX_SELFTEST === "ui") return void uiSelfTest();

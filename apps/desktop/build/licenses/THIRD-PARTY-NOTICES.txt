@@ -6,3 +6,6 @@ NooXCord bundles the following third-party software:
 - Microsoft Visual C++ runtime (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll),
   redistributed under the Microsoft Visual Studio redistribution terms
 - Inter and Space Grotesk fonts (SIL Open Font License 1.1)
+- @sapphi-red/web-noise-suppressor (MIT, Copyright (c) 2022 sapphi-red), which includes
+  RNNoise (BSD-3-Clause, Copyright (c) Xiph.Org Foundation, Mozilla, Jean-Marc Valin),
+  GTCRN (MIT, Copyright (c) 2024 Rong Xiaobin) and pffft (BSD-style)

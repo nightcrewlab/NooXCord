@@ -164,9 +164,11 @@ try {
   const role2 = await A.call<{ id: string }>("role.create", { guildId: gs.guild.id, name: "Yayin", perms: P.STREAM });
   await A.call("member.setRoles", { guildId: gs.guild.id, userId: G.id, roleIds: [role.id, role2.id] });
   await G.waitFor<{ myPerms: number }>("perms.update", (d) => (d.myPerms & P.STREAM) !== 0);
-  await rejects(G.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "screen-audio" }), "forbidden");
+  // Stream audio rides the tunnel too (stereo Opus); kind must match the source.
+  await rejects(G.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen-audio" }), "bad_request");
+  await G.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "screen-audio" });
   await G.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen" });
-  const gl = await G.call<VoiceState>("stream.start", { width: 1280, height: 720, fps: 15, audio: false });
+  const gl = await G.call<VoiceState>("stream.start", { width: 1280, height: 720, fps: 15, audio: true });
   assert.equal(gl.stream?.controllable, false);
   await B.call("stream.watch", { userId: G.id, watching: true });
   await rejects(B.call("remote.request", { userId: G.id }), "forbidden");

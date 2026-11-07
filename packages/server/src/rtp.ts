@@ -11,6 +11,8 @@
  * Client -> server:
  *   [0]=3 mic   | opus (20 ms, 48 kHz)
  *   [0]=4 cam   | [1] flags (1 key) | [2..5] timestamp (90 kHz) | H.264 access unit, Annex-B
+ *   [0]=6 screen| same as cam
+ *   [0]=7 screen audio | stereo opus (20 ms, 48 kHz)
  */
 
 export const FRAME_AUDIO = 1;
@@ -20,6 +22,8 @@ export const FRAME_CAM = 4;
 export const FRAME_KEYREQ = 5;
 /** Tunnel-mode screen share: same layout as FRAME_CAM. */
 export const FRAME_SCREEN = 6;
+/** Tunnel-mode stream audio: same layout as FRAME_MIC (stereo Opus). */
+export const FRAME_SCREEN_AUDIO = 7;
 
 export interface RtpPacket {
   marker: boolean;

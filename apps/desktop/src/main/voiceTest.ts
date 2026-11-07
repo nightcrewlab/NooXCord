@@ -42,14 +42,19 @@ const call = (win: BrowserWindow, m: string, d: unknown) =>
   win.webContents.executeJavaScript(`window.__nx.useStore.getState().conn.call(${JSON.stringify(m)}, ${JSON.stringify(d)})`);
 
 /** Starts a screen share from an animated canvas (stand-in for desktopCapturer). */
-const shareCanvas = (win: BrowserWindow, color: string) =>
+const shareCanvas = (win: BrowserWindow, color: string, tone = false) =>
   win.webContents.executeJavaScript(`(async () => {
     const c = document.createElement("canvas"); c.width = 1280; c.height = 720;
     const g = c.getContext("2d"); let f = 0;
     setInterval(() => { f++; g.fillStyle = ${JSON.stringify(color)}; g.fillRect(0, 0, 1280, 720);
       g.fillStyle = "#fff"; g.font = "bold 96px sans-serif"; g.fillText("NooXCord test " + f, 80 + (f * 7) % 400, 380); }, 33);
     const track = c.captureStream(30).getVideoTracks()[0];
-    await window.__nx.voice.startScreen({ preset: "low", contentHint: "motion", audio: false, testTrack: track });
+    let testAudio;
+    if (${tone}) {
+      const ac = new AudioContext({ sampleRate: 48000 }); const o = ac.createOscillator(); o.frequency.value = 440;
+      const d = ac.createMediaStreamDestination(); o.connect(d); o.start(); testAudio = d.stream.getAudioTracks()[0];
+    }
+    await window.__nx.voice.startScreen({ preset: "low", contentHint: "motion", audio: !!testAudio, testTrack: track, testAudio });
     return window.__nx.useVoice.getState().sharing;
   })()`);
 
@@ -216,8 +221,8 @@ export async function voiceSelfTest(): Promise<void> {
     check("WebRTC user sees a WebRTC camera", bSeesA.n > 20 && bSeesA.w > 0, JSON.stringify(bSeesA));
 
     // Screen share from the tunnel user (WebCodecs H.264 next to the camera encoder), watched over WebRTC.
-    const sc = await shareCanvas(c, "#2e7a12");
-    check("tunnel user starts a screen share", !!sc, JSON.stringify(sc));
+    const sc = await shareCanvas(c, "#2e7a12", true);
+    check("tunnel user starts a screen share (with audio)", !!sc && sc.audio === true, JSON.stringify(sc));
     await b.webContents.executeJavaScript(`window.__nx.voice.watch(${JSON.stringify(idc)})`);
     await sleep(1500);
     const bSeesCScreen = await b.webContents.executeJavaScript(`(async () => {
@@ -231,8 +236,34 @@ export async function voiceSelfTest(): Promise<void> {
       v.remove(); return { n, w: v.videoWidth, h: v.videoHeight };
     })()`);
     check("WebRTC user watches the tunnel user's screen", bSeesCScreen.n > 15 && bSeesCScreen.w > 0, JSON.stringify(bSeesCScreen));
+    // Stream audio over the tunnel: WebCodecs Opus -> [7] frames -> host RTP -> WebRTC viewer.
+    const bHearsC = await b.webContents.executeJavaScript(`(async () => {
+      const list = window.__nx.voice.debugConsumers().filter((x) => x.userId === ${JSON.stringify(idc)} && x.source === "screen-audio");
+      const s0 = (await window.__nx.voice.stats()).audioRecvBytes;
+      await new Promise((r) => setTimeout(r, 2000));
+      const s1 = (await window.__nx.voice.stats()).audioRecvBytes;
+      return { consumers: list.length, live: list.every((x) => x.live), bytes2s: s1 - s0 };
+    })()`);
+    check("WebRTC user hears the tunnel user's stream audio", bHearsC.consumers === 1 && bHearsC.live, JSON.stringify(bHearsC));
     await c.webContents.executeJavaScript(`window.__nx.voice.stopScreen()`);
     await sleep(400);
+
+    // Noise suppression models load and run (WASM in an AudioWorklet, CSP allows it).
+    const dn = await a.webContents.executeJavaScript(`(async () => {
+      const out = {};
+      for (const mode of ["rnnoise", "gtcrn"]) {
+        try {
+          const ac = new AudioContext({ sampleRate: 48000 }); const o = ac.createOscillator(); const n = ac.createGain(); n.gain.value = 0.5;
+          const d = ac.createMediaStreamDestination(); o.connect(n).connect(d); o.start();
+          const r = await window.__nx.denoise(d.stream.getAudioTracks()[0], mode);
+          let peak = -200; const m = await window.__nx.meter(r.track, (db) => { peak = Math.max(peak, db); });
+          await new Promise((res) => setTimeout(res, 1200)); m.stop(); r.stop(); o.stop(); ac.close();
+          out[mode] = { ok: !!r, ran: peak > -200 };
+        } catch (e) { out[mode] = { ok: false, err: String(e) }; }
+      }
+      return out;
+    })()`);
+    check("noise suppression: RNNoise and GTCRN run", dn.rnnoise?.ran === true && dn.gtcrn?.ran === true, JSON.stringify(dn));
 
     if (process.env.NX_SHOT) {
       const img = await c.webContents.capturePage();
