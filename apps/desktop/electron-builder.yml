@@ -31,6 +31,14 @@ extraFiles:
     to: .
     filter: ["*.dll"]
 
+# Auto-update feed (electron-updater reads app-update.yml written from this). Releases: gh release create vX.Y.Z
+# with NooXCord-Setup-X.Y.Z.exe, its .blockmap and latest.yml from release/.
+publish:
+  provider: github
+  owner: nightcrewlab
+  repo: NooXCord
+  releaseType: release
+
 protocols:
   - name: NooXCord
     schemes: [nooxcord]

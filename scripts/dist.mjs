@@ -28,6 +28,8 @@ fs.mkdirSync(stage, { recursive: true });
 
 // ---------- app folder ----------
 fs.cpSync(path.join(desktop, "out"), path.join(stage, "out"), { recursive: true, filter: (f) => !f.endsWith(".map") });
+// tray / window icons: main.cjs loads them from ../resources relative to out/ (inside app.asar)
+fs.cpSync(path.join(desktop, "resources"), path.join(stage, "resources"), { recursive: true });
 
 // Runtime modules: copy each package and its dependency closure (hoisted layout, nested node_modules respected).
 const nm = path.join(stage, "node_modules");
