@@ -21,6 +21,10 @@ export interface VoiceSettings {
   streamPreset: StreamPreset;
   contentHint: "motion" | "detail";
   streamAudio: boolean;
+  /** Tunnel-mode viewers of my stream get the full quality layer (else the small one). */
+  streamTunnelHigh: boolean;
+  /** Theater view (watching a stream): the participant strip under it is collapsed. */
+  stripHidden: boolean;
   overlay: boolean;
 }
 
@@ -40,6 +44,8 @@ const defaults: VoiceSettings = {
   streamPreset: "standard",
   contentHint: "motion",
   streamAudio: true,
+  streamTunnelHigh: false,
+  stripHidden: false,
   overlay: true,
 };
 

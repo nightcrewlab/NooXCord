@@ -88,6 +88,7 @@ export interface MethodResults {
   "media.layers": null;
   "stream.start": VoiceState;
   "stream.stop": null;
+  "stream.tunnelQuality": null;
   "stream.watch": RemoteProducer[];
   "remote.request": null;
   "remote.respond": null;

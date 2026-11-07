@@ -953,7 +953,14 @@ class VoiceEngine {
       height: Math.max(1, Math.round(st.height ?? 720)),
       fps: Math.max(1, Math.round(st.frameRate ?? preset.fps)),
       audio: !!audio,
+      tunnelHigh: useVoiceSettings.getState().streamTunnelHigh,
     });
+  }
+
+  /** Streamer: full or small quality for viewers who watch through a tunnel; also remembered for next time. */
+  async setTunnelQuality(high: boolean): Promise<void> {
+    useVoiceSettings.getState().set({ streamTunnelHigh: high });
+    if (useVoice.getState().sharing) await this.conn?.call("stream.tunnelQuality", { high });
   }
 
   /** Tunnel mode: the browser encodes H.264 itself (≤1280x720, 15 fps), no stream audio. */

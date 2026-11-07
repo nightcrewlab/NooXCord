@@ -118,6 +118,8 @@ export interface StreamInfo {
   controllerId: string | null;
   /** The streamer runs the desktop app (SendInput), so viewers may ask for control. */
   controllable: boolean;
+  /** Streamer's choice for tunnel-mode viewers: full simulcast layer (true) or the small one. */
+  tunnelHigh: boolean;
 }
 
 /**

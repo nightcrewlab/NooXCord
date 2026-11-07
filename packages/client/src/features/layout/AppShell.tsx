@@ -30,6 +30,9 @@ export function AppShell() {
   const shareOpen = useShareModal((x) => x.open);
   const selected = gs?.channels.find((c) => c.id === selectedChannel);
   const mobile = useMobile();
+  // Watching a stream in the open voice channel: the stage takes the whole right side (no member list).
+  const theater = useVoice((x) => selected?.kind === "voice" && x.channelId === selected.id && Object.keys(x.watching).length > 0);
+  const members = showMembers && !theater;
 
   // Pick the first text channel when a guild is opened (or the selected one disappears).
   useEffect(() => {
@@ -59,7 +62,7 @@ export function AppShell() {
   }
 
   return (
-    <div className={s.shell} style={{ gridTemplateColumns: `72px ${gs || selectedGuild === DM_HOME ? "248px" : ""} minmax(0, 1fr) ${gs && showMembers ? "auto" : ""}` }}>
+    <div className={s.shell} style={{ gridTemplateColumns: `72px ${gs || selectedGuild === DM_HOME ? "248px" : ""} minmax(0, 1fr) ${gs && members ? "auto" : ""}` }}>
       {connStatus === "reconnecting" && <div className={s.banner} role="status">{t("conn.reconnecting")}</div>}
       <GuildRail />
       {shareOpen && <ShareModal onClose={() => useShareModal.setState({ open: false })} />}
@@ -72,7 +75,7 @@ export function AppShell() {
         <>
           <ChannelPanel guildId={selectedGuild} />
           {selected?.kind === "voice" ? <VoiceStage guildId={selectedGuild} channel={selected} onShare={openShareModal} /> : <ChatView guildId={selectedGuild} channelId={selectedChannel} />}
-          {showMembers && <MemberPanel guildId={selectedGuild} />}
+          {members && <MemberPanel guildId={selectedGuild} />}
         </>
       ) : (
         <main className={s.card}>

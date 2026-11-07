@@ -115,6 +115,18 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
       </div>
 
       <div>
+        <div className={s.sectionTitle}>{t("stream.tunnelQuality")}</div>
+        <div className={s.presets}>
+          {[true, false].map((high) => (
+            <button key={String(high)} className={cx(s.preset, settings.streamTunnelHigh === high && s.on)} onClick={() => settings.set({ streamTunnelHigh: high })}>
+              {high ? t("stream.tunnelHigh") : t("stream.tunnelLow")}
+            </button>
+          ))}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.tunnelQualityDesc")}</div>
+      </div>
+
+      <div>
         <div className={s.sectionTitle}>{t("stream.hint")}</div>
         <div className={s.presets}>
           {(["motion", "detail"] as const).map((h) => (

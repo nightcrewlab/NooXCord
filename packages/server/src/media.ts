@@ -52,6 +52,7 @@ const CAM_PT = 101;
 /** Tunnel-mode cameras and screens are encoded by WebCodecs in the browser: H.264 constrained baseline. */
 const CAM_H264 = { "packetization-mode": 1, "profile-level-id": "42e01f", "level-asymmetry-allowed": 1 };
 const VIDEO_BACKLOG = 1_500_000; // bytes queued on the socket before we skip to the next key frame
+const TUNNEL_HIGH_RETRY = 20_000; // after a tunnel viewer fell behind on the full layer, small layer this long
 const AUDIO_BACKLOG = 4_000_000;
 
 interface Peer {
@@ -99,6 +100,8 @@ export class Media {
   private thumbs = new Map<string, Thumb>(); // userId -> latest stream thumbnail
   private tickets = new Map<string, Peer>();
   private closed = false;
+  /** Tunnel consumers of screen streams: re-applies the streamer's layer choice. */
+  private layerPickers = new Map<string, () => void>();
   /** Remote control: last input per streamer, last request per viewer>streamer pair, input rate per viewer. */
   private rcLastInput = new Map<string, number>();
   private rcLastRequest = new Map<string, number>();
@@ -498,6 +501,27 @@ export class Media {
       return tag;
     }
     const vp8 = mime === "video/vp8";
+    // Simulcast layer for this viewer: the streamer chooses (StreamInfo.tunnelHigh); a viewer that cannot
+    // keep up with the full layer drops to the small one for a while, then tries again.
+    let downUntil = 0;
+    let retry: NodeJS.Timeout | null = null;
+    const pickLayer = () => {
+      if (consumer.type !== "simulcast" || consumer.closed) return;
+      const high = this.tunnelHighFor(peer, consumer.producerId) && Date.now() >= downUntil;
+      consumer.setPreferredLayers({ spatialLayer: high ? 1 : 0 }).catch(() => {});
+    };
+    const fellBehind = () => {
+      if (consumer.type !== "simulcast" || !this.tunnelHighFor(peer, consumer.producerId) || Date.now() < downUntil) return;
+      downUntil = Date.now() + TUNNEL_HIGH_RETRY;
+      pickLayer();
+      if (retry) clearTimeout(retry);
+      retry = setTimeout(pickLayer, TUNNEL_HIGH_RETRY + 50);
+    };
+    this.layerPickers.set(consumer.id, pickLayer);
+    consumer.observer.once("close", () => {
+      this.layerPickers.delete(consumer.id);
+      if (retry) clearTimeout(retry);
+    });
     let lastKeyReq = 0;
     const needKey = () => {
       const now = Date.now();
@@ -507,6 +531,7 @@ export class Media {
     };
     const asm = new FrameAssembler(vp8 ? "vp8" : "h264", (f) => {
       if (!this.wsSend(peer, videoFrame(tag, f, vp8), VIDEO_BACKLOG)) {
+        fellBehind();
         asm.skipToKey();
         needKey();
       }
@@ -515,9 +540,23 @@ export class Media {
       const r = parseRtp(b);
       if (r) asm.push(r);
     });
-    // Tunnels are slow: start on the small simulcast layer.
-    if (consumer.type === "simulcast") consumer.setPreferredLayers({ spatialLayer: 0 }).catch(() => {});
+    pickLayer();
     return tag;
+  }
+
+  /** Does the owner of this producer want tunnel viewers on the full layer? */
+  private tunnelHighFor(viewer: Peer, producerId: string): boolean {
+    for (const p of viewer.room.peers.values()) if (p.producers.has(producerId)) return !!p.state.stream?.tunnelHigh;
+    return false;
+  }
+
+  /** Re-applies the layer choice to every tunnel consumer of this streamer's screen. */
+  private repickLayers(streamer: Peer): void {
+    const ids = new Set([...streamer.producers.values()].filter((e) => e.source === "screen").map((e) => e.producer.id));
+    for (const other of streamer.room.peers.values()) {
+      if (!other.ws) continue;
+      for (const c of other.consumers.values()) if (ids.has(c.producerId)) this.layerPickers.get(c.id)?.();
+    }
   }
 
   // ---------- RPC handlers ----------
@@ -735,10 +774,23 @@ export class Media {
           viewers: peer.state.stream?.viewers ?? [],
           controllerId: peer.state.stream?.controllerId ?? null,
           controllable: this.rcStreamer(peer),
+          tunnelHigh: p.tunnelHigh ?? peer.state.stream?.tunnelHigh ?? false,
         },
       };
       this.broadcastState(peer);
+      this.repickLayers(peer);
       return peer.state;
+    },
+
+    "stream.tunnelQuality": (conn, p) => {
+      const peer = this.peerOf(conn);
+      const s = peer.state.stream;
+      if (!s) fail("bad_request", "Yayın açık değil.");
+      if (s!.tunnelHigh === p.high) return null;
+      peer.state = { ...peer.state, stream: { ...s!, tunnelHigh: p.high } };
+      this.broadcastState(peer);
+      this.repickLayers(peer);
+      return null;
     },
 
     "stream.stop": (conn) => {

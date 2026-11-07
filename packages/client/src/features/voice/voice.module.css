@@ -187,3 +187,54 @@
 /* window-filling fallback when the browser has no fullscreen API for this element */
 .tile.pseudoFs { position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100dvh; min-height: 0; aspect-ratio: auto; border: 0; border-radius: 0; }
 .tile.pseudoFs .tileBar { opacity: 1; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+
+.tunnelQ {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--nx-line);
+  border-radius: var(--nx-radius-s);
+  background: var(--nx-bg-1);
+  color: var(--nx-text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tunnelQ:hover { background: var(--nx-bg-3); color: var(--nx-text-1); }
+.tunnelQ b { color: var(--nx-text-1); font-weight: 600; }
+
+/* ---------- theater: watched stream fills the stage, participants in a strip below ---------- */
+.theater { background: #050609; }
+.theaterMain { flex: 1; min-height: 0; padding: 12px 12px 0; display: flex; }
+.theaterMain > * { flex: 1; min-width: 0; min-height: 0; }
+.theater .watchFocus { grid-template-rows: minmax(0, 1fr); height: 100%; }
+.theater .watchArea { height: 100%; }
+.theater .watchArea > .tile { flex: 1; min-height: 0; }
+.theater .tile.big { height: 100%; min-height: 0; }
+.theater .watchGrid { height: 100%; overflow-y: auto; align-content: center; }
+
+.strip { flex: none; position: relative; padding: 18px 12px 10px; }
+.stripHidden { padding: 14px 12px 4px; }
+.stripHandle {
+  position: absolute; top: 0; left: 50%; transform: translate(-50%, -2px); z-index: 4;
+  display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px; border-radius: 0 0 10px 10px;
+  border: 1px solid var(--nx-line); border-top: 0; background: var(--nx-bg-2); color: var(--nx-text-2);
+  font: 600 11px var(--nx-font); cursor: pointer;
+}
+.stripHandle:hover { color: var(--nx-text-1); background: var(--nx-bg-3); }
+.stripRow { display: flex; justify-content: center; gap: 10px; overflow-x: auto; padding: 2px; }
+.stripItem {
+  position: relative; flex: none; width: 96px; height: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  border-radius: 12px; background: var(--nx-bg-2); border: 1px solid var(--nx-line); transition: border-color 120ms, box-shadow 120ms; overflow: hidden;
+}
+.stripItem.speaking { border-color: var(--nx-speaking); box-shadow: 0 0 0 1px var(--nx-speaking); }
+.stripCam { width: 142px; background: #000; justify-content: flex-end; }
+.stripName { max-width: calc(100% - 8px); font-size: 11px; font-weight: 600; color: var(--nx-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stripCam .stripName { position: relative; z-index: 1; margin-bottom: 4px; padding: 1px 6px; border-radius: 6px; background: rgba(0, 0, 0, .6); color: #fff; }
+.stripIcons { position: absolute; top: 4px; right: 4px; z-index: 1; display: flex; gap: 2px; color: var(--nx-live); }
+.stripLive { position: absolute; top: 4px; left: 4px; z-index: 1; transform: scale(.85); transform-origin: top left; }
+.ownBar { flex: none; display: flex; align-items: center; gap: 10px; margin: 10px 12px 0; padding: 6px 10px; border-radius: 10px; background: var(--nx-bg-2); border: 1px solid var(--nx-line); flex-wrap: wrap; }
+.ownBarText { font-size: 13px; font-weight: 600; color: var(--nx-text-2); }
+.ownBar .viewerList { padding: 0; border: 0; }

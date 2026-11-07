@@ -120,6 +120,19 @@ export async function voiceSelfTest(): Promise<void> {
     const videoSize = await c.webContents.executeJavaScript(`Promise.resolve([...document.querySelectorAll("video")].map(v => v.videoWidth + "x" + v.videoHeight))`);
     log("C <video> sizes", JSON.stringify(videoSize));
 
+    // Streamer's tunnel quality choice: C (tunnel) gets A's small layer by default, the full one on "high".
+    const cWidthOfA = () => c.webContents.executeJavaScript(`(async () => {
+      const w = window.__nx.useVoice.getState().watching[${JSON.stringify(ida)}]; if (!w) return -1;
+      const v = document.createElement("video"); v.muted = true; v.srcObject = w.stream; await v.play().catch(() => {});
+      await new Promise((r) => setTimeout(r, 400)); const n = v.videoWidth; v.srcObject = null; return n;
+    })()`);
+    const lowW = await cWidthOfA();
+    await a.webContents.executeJavaScript(`window.__nx.voice.setTunnelQuality(true)`);
+    await sleep(2500);
+    const highW = await cWidthOfA();
+    check("streamer picks tunnel quality (low -> high layer)", lowW > 0 && highW > lowW, `${lowW} -> ${highW}`);
+    await a.webContents.executeJavaScript(`window.__nx.voice.setTunnelQuality(false)`);
+
     // Speaking detection: fake mics beep, the server's AudioLevelObserver should flag someone.
     let spoke = false;
     for (let i = 0; i < 20 && !spoke; i++) {

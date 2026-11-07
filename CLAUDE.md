@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.6.exe` (144 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.7.exe` (144 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -152,7 +152,7 @@ Masaüstü kendi kendine testleri (pencere göstermeden, geçici userData ile):
 NX_SELFTEST=1 electron apps/desktop        # host utilityProcess, safeStorage, port çakışması
 NX_SELFTEST=ui NX_UITEST_HOST=http://127.0.0.1:47820 NX_SHOT=shot.png electron apps/desktop   # arayüz + file:// → host HTTP/WS
 # Faz 2-3: 3 kullanıcı, 2 yayın, herkes izliyor; C tünel modunda (NXM-WS). Uygulamanın kendi host'u (47850) ile
-pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (23 kontrol, kamera + tünelden ekran yayını dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
+pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (24 kontrol, kamera + tünelden ekran yayını + tünel kalitesi dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
 # UI testi giriş yapıp bir betik çalıştırabilir: NX_UITEST_TOKEN=<token> NX_UITEST_JS="<js>" (ör. ayarlar sayfasını açmak)
 # Güncelleme köşe kartı: NX_UITEST_UPDATE=downloading|ready (sahte durum, sürüm 9.9.9)
 ```
@@ -243,6 +243,7 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 - Yayın başladığında yayıncı **tek bir kare** yakalar (JPEG, 480px genişlik) ve host'a gönderir → kanal görünümünde **tek seferlik thumbnail** kartı (canlı güncellenmez; trafik tasarrufu). Kartta: yayıncı adı, kalite rozeti, izleyici sayısı, **"Yayını İzle"** butonu.
 - "Yayını İzle"ye basılmadan video consumer **oluşturulmaz** (bant genişliği).
 - Birden fazla yayın aynı anda izlenebilir: ızgara görünümü, odak (büyük) görünümü, her yayın için ayrı ses seviyesi, tam ekran, ayrı pencereye çıkar (pop-out, masaüstü).
+- **Tiyatro görünümü:** sesteyken bir yayın izlenmeye başlanınca üye listesi gizlenir ve yayın sahnenin tamamını kaplar. Altta izlenmeyen herkesin şeridi durur (avatar veya küçük kamera, konuşan yeşil çerçeve; izlenmeyen yayıncıya tıklayınca izlenir); şerit küçük tutamaçla gizlenir/geri gelir (`stripHidden` ayarı). Kendisi de yayındaysa şeridin üstünde "Senin yayının" çubuğu (izleyiciler + sağ tık kontrol ver, tünel kalitesi, durdur).
 - İzlenmeyen yayınlar için mediasoup consumer'ları `pause` edilir; görünmeyen (scroll dışı) ızgara hücrelerinde düşük simulcast katmanına geçilir.
 
 ---
@@ -498,7 +499,7 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 11. `%APPDATA%/NooXCord/host/` altında bu projeden önce oluşmuş bir `db.sqlite` + `logs/` + `uploads/` var (6 Kasım, kaynağı bilinmiyor). Host kendi dosyasını (`nooxcord.db`) kullanır; o dosyalara dokunulmadı.
 12. Medya portu (ana port + 1) LAN'da açık olmalı; WebRTC ICE başarısız olursa istemci "medya portu erişilebilir olmalı" uyarısı verir. Host yeni bir ağ arayüzü (ör. Hamachi sonradan bağlandı) için ses sunucusunu yeniden başlatmalı — şimdilik adresler ilk sese katılmada alınır.
 13. Global bas-konuş ve **mikrofon aç/kapat kısayolu** (Ayarlar → Ses, `nx.voice.muteKey`, ör. `Ctrl+Shift+KeyM`, `F9`, `Mouse4`) `GetAsyncKeyState` ile 15 ms'de bir yoklanır (yalnızca sesteyken) → oyun öndeyken de çalışır (`media:setHotkeys`). Değiştiricisiz harf kısayolu, NooXCord'da yazı alanı odaktayken tetiklenmez. Fare orta/yan tuşu kısayolda seçilebilir; bas-konuş ayarında henüz değil. Yönetici olarak çalışan oyunlarda tuş okunamayabilir.
-14. Tünel modu (NXM-WS) sınırları: tünelden giren ekran yayını ≤720p / 15 fps ve **sessiz** açar (§6.6), kamera açabilir (§6.5) — ikisi de WebCodecs `VideoEncoder` ister; video her zaman düşük simulcast katmanı; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
+14. Tünel modu (NXM-WS) sınırları: tünelden giren ekran yayını ≤720p / 15 fps ve **sessiz** açar (§6.6), kamera açabilir (§6.5) — ikisi de WebCodecs `VideoEncoder` ister; yayının hangi simulcast katmanıyla tünelden izleyenlere gideceğini **yayıncı seçer** (Paylaş penceresi + kendi yayın kartı, `stream.tunnelQuality`, `StreamInfo.tunnelHigh`; varsayılan Düşük). Yüksek seçiliyken soketi yetişmeyen izleyici 20 sn düşük katmana iner, sonra tekrar dener; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
 15. ~~Ana süreç metinleri~~ → Faz 4'te `main.*` anahtarlarına taşındı (ana süreç `tr.json`/`en.json`'u derleme anında paketler, dil renderer ayarını izler). **Kalan:** host'un döndürdüğü hata mesajları (`fail(...)`) Türkçe; İngilizce arayüzde de Türkçe görünür → hata kodu + anahtar ile çevrilmeli.
 16. Tünel açılışta otomatik başlamaz (bilinçli: herkese açık bağlantı kullanıcı istemeden açılmasın); her seferinde Ayarlar → Bağlantı'dan açılır.
 17. Uzaktan kontrol: panik kısayolu sabit (`Ctrl+Alt+Shift+Esc`), ek engellenecek kombinasyon ayarı yok (yalnızca Win tuşları engelli) — ayar ekranı sonraya. Yönetici yetkili pencereler girdi almaz (UIPI), istek kartında yazıyor.

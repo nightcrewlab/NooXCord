@@ -31,6 +31,8 @@ export function VoiceStage({ guildId, channel, onShare }: { guildId: string; cha
   const streams = states.filter((x) => x.stream);
   const watchedIds = Object.keys(v.watching).filter((id) => streams.some((x) => x.userId === id));
   const unwatched = streams.filter((x) => !(x.userId in v.watching));
+  // Theater: a watched stream fills the stage, everyone else sits in a strip under it (CLAUDE.md §6.4).
+  const theater = here && watchedIds.length > 0;
 
   return (
     <main className={layout.card}>
@@ -38,7 +40,7 @@ export function VoiceStage({ guildId, channel, onShare }: { guildId: string; cha
         <Icon name="speaker" size={22} />
         <span className={chat.headName}>{channel.name}</span>
         <span style={{ flex: 1 }} />
-        <IconButton icon="users" label={t("members.toggle")} aria-pressed={showMembers} onClick={toggleMembers} />
+        {!theater && <IconButton icon="users" label={t("members.toggle")} aria-pressed={showMembers} onClick={toggleMembers} />}
       </header>
 
       {!here ? (
@@ -57,10 +59,19 @@ export function VoiceStage({ guildId, channel, onShare }: { guildId: string; cha
             </Button>
           </div>
         </div>
+      ) : theater ? (
+        <div className={cx(s.stage, s.theater)}>
+          <div className={s.theaterMain}>
+            <WatchArea ids={watchedIds} focus={v.focus} states={states} />
+          </div>
+          {v.sharing && meId && <OwnStreamBar state={states.find((x) => x.userId === meId)} />}
+          <ParticipantStrip states={states.filter((x) => !watchedIds.includes(x.userId))} meId={meId} onVolume={pop.open} />
+          <CallControls guildId={guildId} onShare={onShare} />
+          {pop.node}
+        </div>
       ) : (
         <div className={s.stage}>
           <div className={s.stageScroll}>
-            {watchedIds.length > 0 && <WatchArea ids={watchedIds} focus={v.focus} states={states} />}
 
             {(unwatched.length > 0 || v.sharing) && (
               <section>
@@ -84,6 +95,71 @@ export function VoiceStage({ guildId, channel, onShare }: { guildId: string; cha
         </div>
       )}
     </main>
+  );
+}
+
+/** Theater view while I stream too: my viewers (right-click: remote control) and the tunnel quality. */
+function OwnStreamBar({ state }: { state: VoiceState | undefined }) {
+  const st = state?.stream;
+  if (!st) return null;
+  return (
+    <div className={s.ownBar}>
+      <LiveBadge />
+      <span className={s.ownBarText}>{t("stream.yours")} · {t("stream.viewers", { n: st.viewers.length })}</span>
+      {st.viewers.length > 0 && <ViewerList viewers={st.viewers} controllerId={st.controllerId} />}
+      <span style={{ flex: 1 }} />
+      <button className={s.tunnelQ} style={{ margin: 0 }} title={t("stream.tunnelQualityDesc")} onClick={() => void voice.setTunnelQuality(!st.tunnelHigh).catch((e: Error) => useStore.getState().toast(e.message, "error"))}>
+        <Icon name="tunnel" size={14} />
+        {t("stream.tunnelQuality")}: <b>{st.tunnelHigh ? t("stream.tunnelHigh") : t("stream.tunnelLow")}</b>
+      </button>
+      <Button variant="danger" size="small" icon="screen-stop" onClick={() => void voice.stopScreen()}>{t("stream.stop")}</Button>
+    </div>
+  );
+}
+
+/** Theater view: people in the channel (cameras small, speaking ring), collapsible with a small handle. */
+function ParticipantStrip({ states, meId, onVolume }: { states: VoiceState[]; meId: string | undefined; onVolume: (e: React.MouseEvent, id: string, name: string) => void }) {
+  const hidden = useVoiceSettings((x) => x.stripHidden);
+  const toggle = () => useVoiceSettings.getState().set({ stripHidden: !hidden });
+  return (
+    <div className={cx(s.strip, hidden && s.stripHidden)}>
+      <button className={s.stripHandle} onClick={toggle} aria-expanded={!hidden} title={hidden ? t("voice.stripShow") : t("voice.stripHide")} aria-label={hidden ? t("voice.stripShow") : t("voice.stripHide")}>
+        <Icon name={hidden ? "chevron-up" : "chevron-down"} size={16} />
+        {hidden && <span>{t("voice.participants", { n: states.length })}</span>}
+      </button>
+      {!hidden && states.length > 0 && (
+        <div className={s.stripRow}>
+          {states.map((x) => <StripPerson key={x.userId} state={x} isMe={x.userId === meId} onVolume={onVolume} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StripPerson({ state, isMe, onVolume }: { state: VoiceState; isMe: boolean; onVolume: (e: React.MouseEvent, id: string, name: string) => void }) {
+  const user = useStore((st) => st.users[state.userId]);
+  const speaking = useIsSpeaking(state.channelId, state.userId);
+  const remoteCam = useVoice((x) => (isMe ? undefined : x.cams[state.userId]));
+  const myCam = useVoice((x) => (isMe ? x.camera : null));
+  if (!user) return null;
+  const cam = isMe ? (myCam ? voice.localCamera() : null) : remoteCam ?? null;
+  const live = !!state.stream && !isMe;
+  const name = `${user.nickname}${isMe ? ` (${t("voice.you")})` : ""}`;
+  return (
+    <div
+      className={cx(s.stripItem, cam && s.stripCam, speaking && s.speaking, live && s.tileClickable)}
+      title={live ? `${name} · ${t("stream.watch")}` : name}
+      onClick={() => live && void voice.watch(state.userId)}
+      onContextMenu={(e) => !isMe && onVolume(e, user.id, user.nickname)}
+    >
+      {cam ? <CamVideo stream={cam} mirror={isMe && myCam?.facing === "user"} /> : <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={48} /></span>}
+      <span className={s.stripIcons}>
+        {(state.muted || state.suppressed) && <Icon name="mic-off" size={14} label={t("voice.mute")} />}
+        {state.deafened && <Icon name="headphones-off" size={14} label={t("voice.deafen")} />}
+      </span>
+      {state.stream && <span className={s.stripLive}><LiveBadge /></span>}
+      <span className={s.stripName}>{name}</span>
+    </div>
   );
 }
 
@@ -191,6 +267,12 @@ function OwnStreamCard({ state }: { state: VoiceState | undefined }) {
         </div>
         <Button variant="danger" size="small" icon="screen-stop" onClick={() => void voice.stopScreen()}>{t("stream.stop")}</Button>
       </div>
+      {state?.stream && (
+        <button className={s.tunnelQ} title={t("stream.tunnelQualityDesc")} onClick={() => void voice.setTunnelQuality(!state.stream!.tunnelHigh).catch((e: Error) => useStore.getState().toast(e.message, "error"))}>
+          <Icon name="tunnel" size={14} />
+          {t("stream.tunnelQuality")}: <b>{state.stream.tunnelHigh ? t("stream.tunnelHigh") : t("stream.tunnelLow")}</b>
+        </button>
+      )}
       {!!state?.stream?.viewers.length && <ViewerList viewers={state.stream.viewers} controllerId={state.stream.controllerId} />}
     </div>
   );
