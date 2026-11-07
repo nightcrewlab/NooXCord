@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.1.exe` (140 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.2.exe` (144 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
