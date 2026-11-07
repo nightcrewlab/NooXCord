@@ -17,7 +17,10 @@ if (process.env.NX_SELFTEST) app.setPath("userData", path.join(os.tmpdir(), "noo
 
 if (process.env.NX_SELFTEST === "voice") prepareVoiceTest();
 if (!app.requestSingleInstanceLock()) app.quit();
-app.setAppUserModelId("com.nooxrii.nooxcord");
+// Dev runs (electron.exe) get their own ID: Windows caches the taskbar icon per ID, and an Electron-icon
+// entry under the real ID made the installed app show the Electron logo.
+const AUMID = app.isPackaged ? "com.nooxrii.nooxcord" : "com.nooxrii.nooxcord.dev";
+app.setAppUserModelId(AUMID);
 initLogs();
 
 let mainWindow: BrowserWindow | null = null;
@@ -62,7 +65,8 @@ function createMainWindow(): void {
     minHeight: 560,
     backgroundColor: "#0B0D11",
     title: "NooXCord",
-    icon: path.join(__dirname, "../resources/icon.ico"),
+    // Windows cannot load an .ico from inside app.asar (the taskbar fell back to the Electron icon): packaged copy sits next to app.asar.
+    icon: app.isPackaged ? path.join(process.resourcesPath, "icon.ico") : path.join(__dirname, "../resources/icon.ico"),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -72,6 +76,10 @@ function createMainWindow(): void {
       spellcheck: false,
     },
   });
+  // Taskbar button icon from the exe itself (overrides a stale per-ID icon in the shell's cache).
+  if (process.platform === "win32" && app.isPackaged) {
+    mainWindow.setAppDetails({ appId: AUMID, appIconPath: process.execPath, appIconIndex: 0, relaunchCommand: `"${process.execPath}"`, relaunchDisplayName: "NooXCord" });
+  }
   if (!process.env.NX_SELFTEST && !startHidden()) mainWindow.once("ready-to-show", () => mainWindow?.show());
   // Close to tray (setting, default on): the app keeps running for voice, hosting and notifications.
   mainWindow.on("close", (e) => {

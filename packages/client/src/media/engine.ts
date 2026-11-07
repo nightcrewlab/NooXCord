@@ -815,7 +815,7 @@ class VoiceEngine {
   async flipCamera(): Promise<void> {
     const old = this.camStream;
     if (!old) return;
-    const facing = this.camFacing === "user" ? "environment" : "user";
+    const facing: "user" | "environment" = this.camFacing === "user" ? "environment" : "user";
     old.getTracks().forEach((x) => x.stop()); // many phones cannot open both cameras at once
     let stream: MediaStream;
     let got = facing;

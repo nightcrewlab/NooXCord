@@ -113,7 +113,10 @@ const canUpdate = () => app.isPackaged && fs.existsSync(path.join(process.resour
 async function getUpdater(): Promise<Updater | null> {
   if (!canUpdate()) return null;
   if (updater) return updater;
-  const { autoUpdater } = await import("electron-updater");
+  // electron-updater is CommonJS with a getter export: Node's ESM import() only sees it on .default.
+  const mod = (await import("electron-updater")) as unknown as { autoUpdater?: Updater; default?: { autoUpdater?: Updater } };
+  const autoUpdater = mod.autoUpdater ?? mod.default?.autoUpdater;
+  if (!autoUpdater) throw new Error("electron-updater: autoUpdater missing");
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("checking-for-update", () => broadcast({ status: "checking", current: app.getVersion() }));
@@ -127,9 +130,9 @@ async function getUpdater(): Promise<Updater | null> {
 }
 
 async function check(): Promise<UpdateState> {
-  const u = await getUpdater();
-  if (!u) return (update = { status: "dev", current: app.getVersion() });
   try {
+    const u = await getUpdater(); // a failure here must reach the UI too, not only the log
+    if (!u) return (update = { status: "dev", current: app.getVersion() });
     await u.checkForUpdates();
   } catch (e) {
     broadcast({ status: "error", current: app.getVersion(), error: (e as Error).message });

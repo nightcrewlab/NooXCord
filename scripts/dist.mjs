@@ -76,6 +76,7 @@ fs.cpSync(path.join(root, "packages/client/dist"), path.join(res, "web"), { recu
 fs.mkdirSync(path.join(res, "bin"), { recursive: true });
 fs.copyFileSync(cloudflared, path.join(res, "bin/cloudflared.exe"));
 fs.cpSync(path.join(root, "apps/desktop/build/licenses"), path.join(res, "licenses"), { recursive: true });
+fs.copyFileSync(path.join(desktop, "resources/icon.ico"), path.join(res, "icon.ico")); // window icon (not readable from app.asar)
 
 // Visual C++ runtime (mediasoup-worker.exe and the native module need it). Deployed app-local, so the
 // per-user installer needs no admin rights: next to NooXCord.exe and next to mediasoup-worker.exe.
