@@ -56,6 +56,10 @@ interface VoiceUi {
   watching: Record<string, WatchedStream | null>; // userId -> stream (null while connecting)
   focus: string | null;
   transport: VoiceTransport | null;
+  /** My camera, while it is on. */
+  camera: { facing: "user" | "environment"; canFlip: boolean } | null;
+  /** Other people's cameras (userId -> video). */
+  cams: Record<string, MediaStream>;
 }
 
 export const useVoice = create<VoiceUi>()(() => ({
@@ -71,6 +75,8 @@ export const useVoice = create<VoiceUi>()(() => ({
   watching: {},
   focus: null,
   transport: null,
+  camera: null,
+  cams: {},
 }));
 
 const setV = (p: Partial<VoiceUi> | ((s: VoiceUi) => Partial<VoiceUi>)) => useVoice.setState(p);
@@ -106,12 +112,18 @@ class VoiceEngine {
   private gate = new VadGate();
   private pttDown = false;
   private offPtt: (() => void) | null = null;
+  private offHotkeys: (() => void) | null = null;
 
   private screenStream: MediaStream | null = null;
   private screenProducer: msc.Producer | null = null;
   private screenAudioProducer: msc.Producer | null = null;
   private sysAudio: PcmTrack | null = null;
   private shareOpts: ShareOptions | null = null;
+
+  private camStream: MediaStream | null = null;
+  private camProducer: msc.Producer | null = null;
+  private camWsId: string | null = null;
+  private camFacing: "user" | "environment" = "user";
 
   private consumers = new Map<string, ConsumerEntry>();
   private producers = new Map<string, RemoteProducer>();
@@ -176,7 +188,7 @@ class VoiceEngine {
       this.wsm = wsm;
       setV({ status: "connected", transport: "ws" });
       platform.media?.setInCall(true).catch(() => {});
-      await Promise.all(res.producers.filter((p) => p.source === "mic").map((p) => this.consume(p).catch(() => {})));
+      await Promise.all(res.producers.filter((p) => autoConsumed(p.source)).map((p) => this.consume(p).catch(() => {})));
       return;
     }
     // mediasoup-client is loaded on the first join (keeps the chat bundle small).
@@ -212,7 +224,7 @@ class VoiceEngine {
     });
     setV({ status: "connected", transport: "rtc" });
     platform.media?.setInCall(true).catch(() => {});
-    await Promise.all(res.producers.filter((p) => p.source === "mic").map((p) => this.consume(p).catch(() => {})));
+    await Promise.all(res.producers.filter((p) => autoConsumed(p.source)).map((p) => this.consume(p).catch(() => {})));
   }
 
   private transportOptions(p: TransportParams): msc.TransportOptions {
@@ -232,8 +244,9 @@ class VoiceEngine {
     if (notifyServer && wasIn) await this.conn?.call("voice.leave", {}).catch(() => {});
     this.closeTransports();
     this.stopScreenLocal();
+    this.stopCameraLocal();
     this.closeMic();
-    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null });
+    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null, camera: null, cams: {} });
     platform.media?.setInCall(false).catch(() => {});
   }
 
@@ -244,6 +257,8 @@ class VoiceEngine {
     this.micProducer = null;
     this.screenProducer = null;
     this.screenAudioProducer = null;
+    this.camProducer = null;
+    this.camWsId = null;
     this.send?.close();
     this.recv?.close();
     this.send = this.recv = null;
@@ -275,7 +290,7 @@ class VoiceEngine {
         const p = raw as Events["media.producer"];
         if (p.channelId !== v.channelId) break;
         this.producers.set(p.id, p);
-        if (p.source === "mic" || p.userId in v.watching) void this.consume(p).catch(() => {});
+        if (autoConsumed(p.source) || p.userId in v.watching) void this.consume(p).catch(() => {});
         break;
       }
       case "media.producerClosed": {
@@ -315,6 +330,7 @@ class VoiceEngine {
     if (!conn) return;
     const watching = Object.keys(useVoice.getState().watching);
     const share = this.shareOpts && this.screenStream ? this.shareOpts : null;
+    const cam = !!this.camStream;
     const seq = ++this.seq;
     setV({ status: "reconnecting" });
     this.closeTransports();
@@ -323,6 +339,7 @@ class VoiceEngine {
       if (seq !== this.seq) return;
       await this.produceMic();
       if (share) await this.publishScreen(share).catch(() => this.stopScreenLocal());
+      if (cam) await this.publishCamera().catch(() => this.stopCameraLocal());
       for (const uid of watching) await this.watch(uid).catch(() => this.forgetWatch(uid));
     } catch {
       if (seq === this.seq) {
@@ -362,6 +379,7 @@ class VoiceEngine {
     this.micSendTrack.enabled = false;
     this.micMeter = await meter(track, (db) => this.onMicLevel(db)).catch(() => null);
     this.watchPtt();
+    this.watchHotkeys();
   }
 
   private closeMic() {
@@ -377,6 +395,8 @@ class VoiceEngine {
     this.offPtt?.();
     this.offPtt = null;
     this.pttDown = false;
+    this.offHotkeys?.();
+    this.offHotkeys = null;
   }
 
   private async produceMic(): Promise<void> {
@@ -424,6 +444,42 @@ class VoiceEngine {
   /** Effective VAD threshold (for the settings meter). */
   vadThreshold(): number {
     return voiceSettings().vadThreshold ?? this.gate.autoThreshold;
+  }
+
+  /** Mute toggle shortcut: global on desktop (main-process key polling), window keys on the web. */
+  private watchHotkeys() {
+    this.offHotkeys?.();
+    const typing = () => {
+      const a = document.activeElement;
+      return document.hasFocus() && (a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement || (a instanceof HTMLElement && a.isContentEditable));
+    };
+    const fire = (id: string) => {
+      const combo = voiceSettings().muteKey;
+      if (id !== "mute" || !combo) return;
+      // A plain key typed into the chat box is text, not a shortcut.
+      if (typing() && !/^(Ctrl|Alt)\+/.test(combo) && !/^(F\d+|Mouse\d)$/.test(combo)) return;
+      void this.setMuted(!useVoice.getState().muted);
+    };
+    const sync = () => {
+      const k = voiceSettings().muteKey;
+      void platform.media?.setHotkeys(k ? [{ id: "mute", combo: k }] : []);
+    };
+    let offGlobal: (() => void) | undefined;
+    let keydown: ((e: KeyboardEvent) => void) | undefined;
+    if (platform.media) {
+      sync();
+      offGlobal = platform.media.onHotkey(fire);
+    } else {
+      keydown = (e: KeyboardEvent) => { if (!e.repeat && comboOf(e) === voiceSettings().muteKey) fire("mute"); };
+      window.addEventListener("keydown", keydown);
+    }
+    const offSettings = useVoiceSettings.subscribe((st, prev) => { if (st.muteKey !== prev.muteKey) sync(); });
+    this.offHotkeys = () => {
+      offSettings();
+      offGlobal?.();
+      if (keydown) window.removeEventListener("keydown", keydown);
+      void platform.media?.setHotkeys([]);
+    };
   }
 
   private watchPtt() {
@@ -552,6 +608,8 @@ class VoiceEngine {
       if (sink && withSink.setSinkId) await withSink.setSinkId(sink).catch(() => {});
       void el.play().catch(() => {});
       entry.audioEl = el;
+    } else if (params.source === "camera") {
+      this.setCam(params.userId, consumer.track);
     } else {
       this.attachToWatch(params.userId, consumer.track);
     }
@@ -577,7 +635,8 @@ class VoiceEngine {
       const track = wsm.addVideo(tag);
       entry.track = track;
       entry.close = () => { wsm.remove(tag); track.stop(); };
-      this.attachToWatch(params.userId, track);
+      if (params.source === "camera") this.setCam(params.userId, track);
+      else this.attachToWatch(params.userId, track);
     }
     await conn.call("media.resume", { consumerId: params.id });
   }
@@ -587,7 +646,13 @@ class VoiceEngine {
       c.audioEl.pause();
       c.audioEl.srcObject = null;
     }
-    if (c.source !== "mic" && c.track) {
+    if (c.source === "camera") {
+      setV((s) => {
+        const cams = { ...s.cams };
+        delete cams[c.userId];
+        return { cams };
+      });
+    } else if (c.source !== "mic" && c.track) {
       const w = useVoice.getState().watching[c.userId];
       if (w) {
         w.stream.removeTrack(c.track);
@@ -636,7 +701,7 @@ class VoiceEngine {
 
   private forgetWatch(userId: string) {
     for (const c of [...this.consumers.values()]) {
-      if (c.userId === userId && c.source !== "mic") {
+      if (c.userId === userId && (c.source === "screen" || c.source === "screen-audio")) {
         this.consumers.delete(c.id);
         c.close();
         this.conn?.call("media.closeConsumer", { consumerId: c.id }).catch(() => {});
@@ -660,6 +725,120 @@ class VoiceEngine {
       const spatial = !many || c.userId === userId ? 1 : 0;
       this.conn?.call("media.layers", { consumerId: c.id, spatial }).catch(() => {});
     }
+  }
+
+  // ---------- camera ----------
+
+  private setCam(userId: string, track: MediaStreamTrack) {
+    setV((s) => ({ cams: { ...s.cams, [userId]: new MediaStream([track]) } }));
+  }
+
+  /** Opens the camera. Call straight from a click (iOS wants getUserMedia inside the gesture). */
+  async startCamera(): Promise<void> {
+    const v = useVoice.getState();
+    if (!v.channelId || v.camera || this.camStream || !this.conn) return;
+    const stream = await this.openCamera(this.camFacing, true);
+    if (!useVoice.getState().channelId) { stream.getTracks().forEach((x) => x.stop()); return; }
+    this.camStream = stream;
+    const track = stream.getVideoTracks()[0]!;
+    track.addEventListener("ended", () => { if (this.camStream === stream) void this.stopCamera(); });
+    try {
+      await this.publishCamera();
+    } catch (e) {
+      this.stopCameraLocal();
+      throw e;
+    }
+    const cams = await navigator.mediaDevices.enumerateDevices().then((d) => d.filter((x) => x.kind === "videoinput").length).catch(() => 1);
+    if (this.camStream === stream) setV({ camera: { facing: this.camFacing, canFlip: cams > 1 } });
+  }
+
+  private openCamera(facing: "user" | "environment", useDevice: boolean): Promise<MediaStream> {
+    const id = useDevice ? voiceSettings().cameraDeviceId : "";
+    return navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        ...(id ? { deviceId: { exact: id } } : { facingMode: { ideal: facing } }),
+        width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24, max: 30 },
+      },
+    }).catch((e: DOMException) => {
+      const msg = e.name === "NotAllowedError" ? t("err.camDenied") : e.name === "NotFoundError" || e.name === "OverconstrainedError" ? t("err.camMissing")
+        : e.name === "NotReadableError" ? t("err.camBusy") : t("err.camFailed");
+      throw new Error(msg);
+    });
+  }
+
+  private async publishCamera(): Promise<void> {
+    const track = this.camStream?.getVideoTracks()[0];
+    const conn = this.conn;
+    if (!track || !conn) return;
+    if (this.mode === "ws") {
+      const wsm = this.wsm;
+      if (!wsm) return;
+      await wsm.startCamera(track);
+      const { id } = await conn.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "camera" });
+      this.camWsId = id;
+      return;
+    }
+    const send = this.send, device = this.device;
+    if (!send || !device) return;
+    const caps = device.rtpCapabilities.codecs ?? [];
+    // H.264 first: tunnel viewers and iPhones decode it in hardware.
+    const codec = caps.find((c) => c.mimeType.toLowerCase() === "video/h264") ?? caps.find((c) => c.mimeType.toLowerCase() === "video/vp8");
+    track.contentHint = "motion";
+    this.camProducer = await send.produce({
+      track,
+      stopTracks: false,
+      codec,
+      encodings: [{ maxBitrate: 600_000, maxFramerate: 24 }],
+      codecOptions: { videoGoogleStartBitrate: 400 },
+      appData: { source: "camera" },
+    });
+  }
+
+  async stopCamera(): Promise<void> {
+    const id = this.camProducer?.id ?? this.camWsId;
+    this.stopCameraLocal();
+    if (id) await this.conn?.call("media.closeProducer", { producerId: id }).catch(() => {});
+  }
+
+  private stopCameraLocal() {
+    this.camProducer?.close();
+    this.camProducer = null;
+    this.camWsId = null;
+    this.wsm?.stopCamera();
+    this.camStream?.getTracks().forEach((x) => x.stop());
+    this.camStream = null;
+    if (useVoice.getState().camera) setV({ camera: null });
+  }
+
+  /** Front <-> back camera (phones). The producer stays; only its track changes. */
+  async flipCamera(): Promise<void> {
+    const old = this.camStream;
+    if (!old) return;
+    const facing = this.camFacing === "user" ? "environment" : "user";
+    old.getTracks().forEach((x) => x.stop()); // many phones cannot open both cameras at once
+    let stream: MediaStream;
+    let got = facing;
+    try {
+      stream = await this.openCamera(facing, false);
+    } catch (e) {
+      got = this.camFacing;
+      stream = await this.openCamera(got, false).catch(() => { throw e; });
+      useStore.getState().toast((e as Error).message, "error");
+    }
+    if (this.camStream !== old) { stream.getTracks().forEach((x) => x.stop()); return; }
+    const track = stream.getVideoTracks()[0]!;
+    track.addEventListener("ended", () => { if (this.camStream === stream) void this.stopCamera(); });
+    if (this.camProducer) await this.camProducer.replaceTrack({ track });
+    this.wsm?.setCameraTrack(track);
+    this.camStream = stream;
+    this.camFacing = (track.getSettings().facingMode as "user" | "environment" | undefined) ?? got;
+    setV((s) => ({ camera: s.camera ? { ...s.camera, facing: this.camFacing } : null }));
+  }
+
+  /** My own camera (for the self view). */
+  localCamera(): MediaStream | null {
+    return this.camStream;
   }
 
   // ---------- screen share ----------
@@ -856,3 +1035,15 @@ useStore.subscribe((s, prev) => {
 
 // Dev/test hook (used by the Electron voice self-test).
 (window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useStore, remote, useRemote };
+
+/** Voices and cameras go to everyone in the channel; screen streams only to people watching them. */
+function autoConsumed(source: MediaSource): boolean {
+  return source === "mic" || source === "camera";
+}
+
+const MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"]);
+/** Shortcut string of a key press ("Ctrl+Shift+KeyM"); null while only modifiers are held. */
+export function comboOf(e: { code: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): string | null {
+  if (MODIFIER_CODES.has(e.code)) return null;
+  return [e.ctrlKey && "Ctrl", e.shiftKey && "Shift", e.altKey && "Alt", e.code].filter(Boolean).join("+");
+}

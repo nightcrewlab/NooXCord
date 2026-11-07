@@ -95,7 +95,27 @@ function JoinFace({ userId }: { userId: string }) {
 function Person({ state, onVolume, isMe }: { state: VoiceState; onVolume: (e: React.MouseEvent, id: string, name: string) => void; isMe: boolean }) {
   const user = useStore((st) => st.users[state.userId]);
   const speaking = useIsSpeaking(state.channelId, state.userId);
+  const remoteCam = useVoice((x) => (isMe ? undefined : x.cams[state.userId]));
+  const myCam = useVoice((x) => (isMe ? x.camera : null));
+  const [big, setBig] = useState(false);
   if (!user) return null;
+  const cam = isMe ? (myCam ? voice.localCamera() : null) : remoteCam ?? null;
+  if (cam) {
+    return (
+      <div className={cx(s.person, s.personCam, big && s.personCamBig, speaking && s.speaking)} title={t("voice.cameraBig")}
+        onClick={() => setBig(!big)} onContextMenu={(e) => !isMe && onVolume(e, user.id, user.nickname)}>
+        <CamVideo stream={cam} mirror={isMe && myCam?.facing === "user"} />
+        <span className={s.personIcons}>
+          {(state.muted || state.suppressed) && <Icon name="mic-off" size={16} label={state.suppressed ? t("voice.suppressed") : t("voice.mute")} />}
+          {state.deafened && <Icon name="headphones-off" size={16} label={t("voice.deafen")} />}
+        </span>
+        <div className={s.personName}>
+          <span>{user.nickname}{isMe ? ` (${t("voice.you")})` : ""}</span>
+          {state.stream && <LiveBadge />}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={cx(s.person, speaking && s.speaking)} onContextMenu={(e) => !isMe && onVolume(e, user.id, user.nickname)}>
       <span className={s.personIcons}>
@@ -109,6 +129,18 @@ function Person({ state, onVolume, isMe }: { state: VoiceState; onVolume: (e: Re
       </div>
     </div>
   );
+}
+
+/** Camera video: no audio, fills its tile; the self view is mirrored like a mirror. */
+function CamVideo({ stream, mirror }: { stream: MediaStream; mirror: boolean }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return;
+    if (v.srcObject !== stream) v.srcObject = stream;
+    void v.play().catch(() => {});
+  }, [stream]);
+  return <video ref={ref} className={cx(s.camVideo, mirror && s.mirror)} autoPlay playsInline muted />;
 }
 
 function qualityLabel(st: { width: number; height: number; fps: number }) {
@@ -282,10 +314,19 @@ function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream
   );
 }
 
+/** Camera on/off from a click (getUserMedia must start inside the gesture on iPhone). */
+export function toggleCamera(on: boolean) {
+  if (on) void voice.stopCamera();
+  else voice.startCamera().catch((e: Error) => useStore.getState().toast(e.message, "error"));
+}
+
+export const cameraSupported = (): boolean => typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+
 function CallControls({ guildId, onShare }: { guildId: string; onShare: () => void }) {
-  const v = useVoice(useShallow((x) => ({ muted: x.muted, deafened: x.deafened, sharing: !!x.sharing, status: x.status })));
+  const v = useVoice(useShallow((x) => ({ muted: x.muted, deafened: x.deafened, sharing: !!x.sharing, status: x.status, transport: x.transport, camera: x.camera })));
   const myPerms = useStore((st) => st.guilds[guildId]?.myPerms ?? 0);
-  const canStream = has(myPerms, P.STREAM) && platform.canShareScreen;
+  const canStream = has(myPerms, P.STREAM) && platform.canShareScreen && v.transport !== "ws";
+  const canCam = has(myPerms, P.VIDEO) && cameraSupported();
   return (
     <div className={s.controls}>
       <button className={cx(s.ctrl, v.muted && s.off)} aria-pressed={v.muted} title={v.muted ? t("voice.unmute") : t("voice.mute")} onClick={() => void voice.setMuted(!v.muted)}>
@@ -294,6 +335,16 @@ function CallControls({ guildId, onShare }: { guildId: string; onShare: () => vo
       <button className={cx(s.ctrl, v.deafened && s.off)} aria-pressed={v.deafened} title={v.deafened ? t("voice.undeafen") : t("voice.deafen")} onClick={() => void voice.setDeafened(!v.deafened)}>
         <Icon name={v.deafened ? "headphones-off" : "headphones"} size={22} label={v.deafened ? t("voice.undeafen") : t("voice.deafen")} />
       </button>
+      {canCam && (
+        <button className={cx(s.ctrl, v.camera && s.accent)} aria-pressed={!!v.camera} title={v.camera ? t("voice.cameraOff") : t("voice.cameraOn")} disabled={v.status !== "connected"} onClick={() => toggleCamera(!!v.camera)}>
+          <Icon name={v.camera ? "video" : "video-off"} size={22} label={v.camera ? t("voice.cameraOff") : t("voice.cameraOn")} />
+        </button>
+      )}
+      {v.camera?.canFlip && (
+        <button className={s.ctrl} title={t("voice.cameraFlip")} onClick={() => void voice.flipCamera().catch((e: Error) => useStore.getState().toast(e.message, "error"))}>
+          <Icon name="camera-flip" size={22} label={t("voice.cameraFlip")} />
+        </button>
+      )}
       {canStream && (
         <button className={cx(s.ctrl, v.sharing && s.accent)} title={v.sharing ? t("stream.stop") : t("stream.share")} disabled={v.status !== "connected"} onClick={() => (v.sharing ? void voice.stopScreen() : onShare())}>
           <Icon name={v.sharing ? "screen-stop" : "screen-share"} size={22} label={v.sharing ? t("stream.stop") : t("stream.share")} />

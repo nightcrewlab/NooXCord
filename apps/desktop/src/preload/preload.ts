@@ -60,6 +60,12 @@ contextBridge.exposeInMainWorld("nx", {
       ipcRenderer.on("media:ptt", fn);
       return () => ipcRenderer.removeListener("media:ptt", fn);
     },
+    setHotkeys: (list: { id: string; combo: string }[]) => call("media:setHotkeys", list),
+    onHotkey: (cb: (id: string) => void) => {
+      const fn = (_e: unknown, id: string) => cb(String(id));
+      ipcRenderer.on("media:hotkey", fn);
+      return () => ipcRenderer.removeListener("media:hotkey", fn);
+    },
     setInCall: (active: boolean) => call("media:setInCall", active),
   },
   app: {

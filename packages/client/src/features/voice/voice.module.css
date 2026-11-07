@@ -39,6 +39,7 @@
 /* ---------- stage ---------- */
 .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .stageScroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.stageScroll > * { flex-shrink: 0; } /* sections keep their height and the stage scrolls */
 .sectionTitle { font: 700 11px/1 var(--nx-font); letter-spacing: .06em; text-transform: uppercase; color: var(--nx-text-3); margin-bottom: 8px; }
 
 .watchArea { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
@@ -95,6 +96,16 @@
 .personName { max-width: 100%; display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; }
 .personName span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .personIcons { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; color: var(--nx-live); }
+
+/* participant with the camera on: the video fills the card, the name sits on it */
+.personCam { padding: 0; overflow: hidden; aspect-ratio: 4 / 3; justify-content: flex-end; align-items: flex-start; background: #000; cursor: zoom-in; }
+.personCam .personName { position: relative; z-index: 1; margin: 8px; padding: 3px 8px; border-radius: 8px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 13px; max-width: calc(100% - 16px); }
+.personCam .personIcons { z-index: 1; padding: 2px; border-radius: 8px; background: rgba(0, 0, 0, .55); }
+.personCamBig { grid-column: 1 / -1; aspect-ratio: 16 / 9; cursor: zoom-out; }
+.camVideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.personCamBig .camVideo { object-fit: contain; }
+.mirror { transform: scaleX(-1); }
+@media (min-width: 560px) { .personCam:not(.personCamBig) { grid-column: span 2; } }
 
 .join { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; max-width: 420px; padding: 24px; }
 .joinIcon { width: 72px; height: 72px; border-radius: 22px; display: grid; place-items: center; background: var(--nx-bg-2); color: var(--nx-speaking); }

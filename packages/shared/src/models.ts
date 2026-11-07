@@ -103,7 +103,7 @@ export interface GuildState {
 }
 
 // ---------- voice & streaming ----------
-export type MediaSource = "mic" | "screen" | "screen-audio";
+export type MediaSource = "mic" | "screen" | "screen-audio" | "camera";
 
 export interface StreamInfo {
   startedAt: number;
@@ -139,6 +139,8 @@ export interface VoiceState {
   suppressed: boolean;
   joinedAt: number;
   stream: StreamInfo | null;
+  /** Camera on (sent automatically to everyone in the channel, unlike screen streams). */
+  camera: boolean;
 }
 
 /** A producer another participant is sending. */

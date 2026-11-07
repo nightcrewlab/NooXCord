@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../../i18n";
 import { VadGate, meter, type LevelMeter } from "../../media/level";
-import { useVoice, voice } from "../../media/engine";
+import { useVoice, voice, comboOf } from "../../media/engine";
 import { useVoiceSettings, type VoiceSettings } from "../../media/settings";
 import { platform } from "../../platform";
 import { Button, cx } from "../../ui";
@@ -12,6 +12,14 @@ const MIN_DB = -80;
 const pct = (db: number) => Math.max(0, Math.min(100, ((db - MIN_DB) / -MIN_DB) * 100));
 
 /** Pretty name for a KeyboardEvent.code. */
+/** "Ctrl+Shift+KeyM" -> "Ctrl + Shift + M". */
+function comboName(combo: string): string {
+  return combo.split("+").map((p) => (/^Mouse\d$/.test(p) ? t("settings.mouseButton", { n: p.slice(5) }) : keyName(p))).join(" + ");
+}
+
+/** DOM MouseEvent.button -> our mouse code (left/right stay normal clicks). */
+const MOUSE_CODE: Record<number, string> = { 1: "Mouse3", 3: "Mouse4", 4: "Mouse5" };
+
 function keyName(code: string): string {
   if (code.startsWith("Key")) return code.slice(3);
   if (code.startsWith("Digit")) return code.slice(5);
@@ -25,6 +33,7 @@ export function VoiceTab() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [testLevel, setTestLevel] = useState<number | null>(null);
   const [capturing, setCapturing] = useState(false);
+  const [capMute, setCapMute] = useState(false);
   const test = useRef<{ stream: MediaStream; meter: LevelMeter | null } | null>(null);
   const gate = useRef(new VadGate());
   const [autoTh, setAutoTh] = useState(-50);
@@ -96,6 +105,15 @@ export function VoiceTab() {
           </select>
         </label>
       </div>
+      {devices.some((d) => d.kind === "videoinput") && (
+        <label className={s.selectField}>
+          <span className={s.label}>{t("settings.camera")}</span>
+          <select className={s.select} value={st.cameraDeviceId} onChange={(e) => st.set({ cameraDeviceId: e.target.value })}>
+            <option value="">{t("settings.default")}</option>
+            {devices.filter((d) => d.kind === "videoinput" && d.deviceId).map((d, i) => <option key={d.deviceId} value={d.deviceId}>{d.label || t("settings.cameraN", { n: i + 1 })}</option>)}
+          </select>
+        </label>
+      )}
       {unnamed && <div className={s.hintText}>{t("settings.devicesHint")}</div>}
 
       <div>
@@ -104,6 +122,34 @@ export function VoiceTab() {
           <button className={cx(vs.preset, st.mode === "vad" && vs.on)} onClick={() => st.set({ mode: "vad" })}>{t("settings.vad")}</button>
           <button className={cx(vs.preset, st.mode === "ptt" && vs.on)} onClick={() => st.set({ mode: "ptt" })}>{t("settings.ptt")}</button>
         </div>
+      </div>
+
+      <div>
+        <div className={s.label} style={{ marginBottom: 8 }}>{t("settings.muteKey")}</div>
+        <div className={s.row} style={{ gap: 12, flexWrap: "wrap" }}>
+          <Button variant="secondary" onClick={() => setCapMute(true)}
+            onKeyDown={(e) => {
+              if (!capMute) return;
+              e.preventDefault();
+              if (e.code === "Escape") return setCapMute(false);
+              const c = comboOf(e);
+              if (!c) return; // only modifiers so far
+              st.set({ muteKey: c });
+              setCapMute(false);
+            }}
+            onMouseDown={(e) => {
+              const c = MOUSE_CODE[e.button];
+              if (!capMute || !c) return;
+              e.preventDefault();
+              st.set({ muteKey: c });
+              setCapMute(false);
+            }}
+            onBlur={() => setCapMute(false)}>
+            {capMute ? t("settings.pttPress") : st.muteKey ? comboName(st.muteKey) : t("settings.muteKeyNone")}
+          </Button>
+          {st.muteKey && !capMute && <Button variant="ghost" onClick={() => st.set({ muteKey: null })}>{t("settings.muteKeyClear")}</Button>}
+        </div>
+        <div className={s.hintText} style={{ marginTop: 6 }}>{platform.media ? t("settings.muteKeyHint") : t("settings.muteKeyHintWeb")}</div>
       </div>
 
       {st.mode === "ptt" ? (

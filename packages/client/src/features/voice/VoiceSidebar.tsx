@@ -7,6 +7,7 @@ import { platform } from "../../platform";
 import { useStore } from "../../state/store";
 import { Avatar, cx } from "../../ui";
 import { LiveBadge, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
+import { cameraSupported, toggleCamera } from "./VoiceStage";
 import s from "./voice.module.css";
 
 /** People in a voice channel, listed under the channel in the sidebar. */
@@ -16,13 +17,13 @@ export function VoiceChannelUsers({ guildId, channelId }: { guildId: string; cha
   if (states.length === 0) return null;
   return (
     <div className={s.users}>
-      {states.map((v) => <VoiceUserRow key={v.userId} channelId={channelId} userId={v.userId} muted={v.muted || v.suppressed} deafened={v.deafened} live={!!v.stream} onVolume={pop.open} />)}
+      {states.map((v) => <VoiceUserRow key={v.userId} channelId={channelId} userId={v.userId} muted={v.muted || v.suppressed} deafened={v.deafened} live={!!v.stream} camera={v.camera} onVolume={pop.open} />)}
       {pop.node}
     </div>
   );
 }
 
-function VoiceUserRow({ channelId, userId, muted, deafened, live, onVolume }: { channelId: string; userId: string; muted: boolean; deafened: boolean; live: boolean; onVolume: (e: React.MouseEvent, id: string, name: string) => void }) {
+function VoiceUserRow({ channelId, userId, muted, deafened, live, camera, onVolume }: { channelId: string; userId: string; muted: boolean; deafened: boolean; live: boolean; camera: boolean; onVolume: (e: React.MouseEvent, id: string, name: string) => void }) {
   const user = useStore((st) => st.users[userId]);
   const meId = useStore((st) => st.me?.id);
   const speaking = useIsSpeaking(channelId, userId);
@@ -33,6 +34,7 @@ function VoiceUserRow({ channelId, userId, muted, deafened, live, onVolume }: { 
       <span className={s.name}>{user.nickname}</span>
       {live && <LiveBadge />}
       <span className={s.stateIcons}>
+        {camera && <span style={{ color: "var(--nx-text-2)", display: "inline-flex" }}><Icon name="video" size={14} label={t("voice.camera")} /></span>}
         {muted && <Icon name="mic-off" size={14} label={t("voice.unmute")} />}
         {deafened && <Icon name="headphones-off" size={14} label={t("voice.undeafen")} />}
       </span>
@@ -42,11 +44,12 @@ function VoiceUserRow({ channelId, userId, muted, deafened, live, onVolume }: { 
 
 /** Connection panel shown above the user row while in voice. */
 export function VoiceBar({ onShare }: { onShare: () => void }) {
-  const v = useVoice(useShallow((x) => ({ guildId: x.guildId, channelId: x.channelId, status: x.status, sharing: !!x.sharing, transport: x.transport })));
+  const v = useVoice(useShallow((x) => ({ guildId: x.guildId, channelId: x.channelId, status: x.status, sharing: !!x.sharing, transport: x.transport, camera: !!x.camera })));
   const channel = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.channels.find((c) => c.id === v.channelId) : undefined));
   const guildName = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.guild.name : ""));
   const selectChannel = useStore((st) => st.selectChannel);
-  const canStream = useStore((st) => !!v.guildId && has(st.guilds[v.guildId]?.myPerms ?? 0, P.STREAM));
+  const canStream = useStore((st) => !!v.guildId && has(st.guilds[v.guildId]?.myPerms ?? 0, P.STREAM)) && platform.canShareScreen && v.transport !== "ws";
+  const canCam = useStore((st) => !!v.guildId && has(st.guilds[v.guildId]?.myPerms ?? 0, P.VIDEO)) && cameraSupported();
   if (!v.channelId || !v.guildId) return null;
   const ok = v.status === "connected";
   return (
@@ -64,13 +67,19 @@ export function VoiceBar({ onShare }: { onShare: () => void }) {
           <Icon name="phone-hangup" size={18} />
         </button>
       </div>
-      {platform.canShareScreen && v.transport !== "ws" && canStream && (
-        <div className={s.barBtns} style={{ gridTemplateColumns: "1fr" }}>
-          {v.sharing ? (
+      {(canStream || canCam) && (
+        <div className={s.barBtns} style={{ gridTemplateColumns: canStream && canCam ? "auto 1fr" : "1fr" }}>
+          {canCam && (
+            <button className={cx(s.barBtn, v.camera && s.on)} onClick={() => toggleCamera(v.camera)} disabled={!ok} aria-pressed={v.camera}
+              title={v.camera ? t("voice.cameraOff") : t("voice.cameraOn")} aria-label={v.camera ? t("voice.cameraOff") : t("voice.cameraOn")}>
+              <Icon name={v.camera ? "video" : "video-off"} size={16} />{!canStream && (v.camera ? t("voice.cameraOff") : t("voice.cameraOn"))}
+            </button>
+          )}
+          {canStream && (v.sharing ? (
             <button className={cx(s.barBtn, s.on)} onClick={() => void voice.stopScreen()}><Icon name="screen-stop" size={16} />{t("stream.stop")}</button>
           ) : (
             <button className={s.barBtn} onClick={onShare} disabled={!ok}><Icon name="screen-share" size={16} />{t("stream.share")}</button>
-          )}
+          ))}
         </div>
       )}
     </div>

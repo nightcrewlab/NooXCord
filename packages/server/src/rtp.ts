@@ -7,13 +7,17 @@
  * Frames on the /media socket (server -> client), big endian:
  *   [0]=1 audio | [1..2] tag | [3..6] rtp timestamp | opus
  *   [0]=2 video | [1..2] tag | [3] flags (1 key, 2 vp8) | [4..7] rtp timestamp | data
+ *   [0]=5 key   | (send a camera key frame now)
  * Client -> server:
  *   [0]=3 mic   | opus (20 ms, 48 kHz)
+ *   [0]=4 cam   | [1] flags (1 key) | [2..5] timestamp (90 kHz) | H.264 access unit, Annex-B
  */
 
 export const FRAME_AUDIO = 1;
 export const FRAME_VIDEO = 2;
 export const FRAME_MIC = 3;
+export const FRAME_CAM = 4;
+export const FRAME_KEYREQ = 5;
 
 export interface RtpPacket {
   marker: boolean;
@@ -38,10 +42,10 @@ export function parseRtp(b: Buffer): RtpPacket | null {
 }
 
 /** Minimal RTP packet for an Opus frame coming from a tunnel-mode microphone. */
-export function buildRtp(payloadType: number, seq: number, timestamp: number, ssrc: number, payload: Buffer): Buffer {
+export function buildRtp(payloadType: number, seq: number, timestamp: number, ssrc: number, payload: Buffer, marker = false): Buffer {
   const h = Buffer.alloc(12);
   h[0] = 0x80;
-  h[1] = payloadType & 0x7f;
+  h[1] = (payloadType & 0x7f) | (marker ? 0x80 : 0);
   h.writeUInt16BE(seq & 0xffff, 2);
   h.writeUInt32BE(timestamp >>> 0, 4);
   h.writeUInt32BE(ssrc >>> 0, 8);
@@ -49,6 +53,57 @@ export function buildRtp(payloadType: number, seq: number, timestamp: number, ss
 }
 
 const START = Buffer.from([0, 0, 0, 1]);
+
+/** NAL units of an Annex-B buffer (3- or 4-byte start codes). */
+export function splitAnnexB(b: Buffer): Buffer[] {
+  const out: Buffer[] = [];
+  let start = -1;
+  let i = 0;
+  while (i + 2 < b.length) {
+    if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1) {
+      if (start >= 0) {
+        let end = i;
+        while (end > start && b[end - 1] === 0) end--; // trailing zero of a 4-byte start code
+        if (end > start) out.push(b.subarray(start, end));
+      }
+      i += 3;
+      start = i;
+    } else i++;
+  }
+  if (start >= 0 && start < b.length) out.push(b.subarray(start));
+  return out;
+}
+
+/** RFC 6184 payloads for one access unit: single NAL packets, FU-A for big NALs. */
+export function packetizeH264(annexB: Buffer, maxPayload = 1150): Buffer[] {
+  const out: Buffer[] = [];
+  for (const nal of splitAnnexB(annexB)) {
+    if (nal.length === 0) continue;
+    const type = nal[0]! & 0x1f;
+    if (type === 9) continue; // access unit delimiter
+    if (nal.length <= maxPayload) { out.push(nal); continue; }
+    const ind = (nal[0]! & 0xe0) | 28;
+    let off = 1;
+    while (off < nal.length) {
+      const n = Math.min(maxPayload - 2, nal.length - off);
+      const first = off === 1, last = off + n >= nal.length;
+      out.push(Buffer.concat([Buffer.from([ind, (first ? 0x80 : 0) | (last ? 0x40 : 0) | type]), nal.subarray(off, off + n)]));
+      off += n;
+    }
+  }
+  return out;
+}
+
+/** Does a compound RTCP packet ask for a key frame (PLI or FIR)? */
+export function wantsKeyFrame(b: Buffer): boolean {
+  let i = 0;
+  while (i + 4 <= b.length) {
+    const fmt = b[i]! & 0x1f, pt = b[i + 1]!;
+    if (pt === 206 && (fmt === 1 || fmt === 4)) return true;
+    i += (b.readUInt16BE(i + 2) + 1) * 4;
+  }
+  return false;
+}
 
 export interface VideoFrame {
   key: boolean;

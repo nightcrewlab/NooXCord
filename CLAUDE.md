@@ -27,7 +27,7 @@ NooXCord; bir kullanıcının kendi PC'sinde **Host** (sunucu) çalıştırdığ
 |---|---|
 | Sunucu (Guild) | Sunucu oluşturma, ikon/isim, davet bağlantısı, rol ve yetkiler |
 | Metin kanalları | Mesaj, link (önizlemeli), resim/video/dosya paylaşımı, düzenleme/silme, yanıtlama, yazıyor göstergesi, okunmamış sayacı, bahsetme (@) |
-| Sesli kanallar | Bas-konuş veya ses aktivasyonu, sustur/sağırlaştır, kişi başı ses seviyesi, gürültü bastırma, konuşan göstergesi |
+| Sesli kanallar | Bas-konuş veya ses aktivasyonu, sustur/sağırlaştır, kişi başı ses seviyesi, gürültü bastırma, konuşan göstergesi, **kamera** (masaüstü + telefon dahil, tünel modunda da) |
 | Ekran yayını | Çözünürlük + FPS seçimi, birden fazla monitör / tek pencere seçimi, sistem sesi (**NooXCord'un kendi sesi hariç**), aynı anda birden fazla yayıncı, aynı anda birden fazla yayın izleme, tek seferlik thumbnail önizleme |
 | Uzaktan kontrol | İzleyici yayıncının klavye/faresini kontrol edebilir — yalnızca yayıncı izin verirse |
 | Overlay | Oyun üstü overlay: sesli kanaldaki kişiler (kendin dahil), konuşan yeşil çerçeve, "YAYINDA" rozeti |
@@ -152,7 +152,7 @@ Masaüstü kendi kendine testleri (pencere göstermeden, geçici userData ile):
 NX_SELFTEST=1 electron apps/desktop        # host utilityProcess, safeStorage, port çakışması
 NX_SELFTEST=ui NX_UITEST_HOST=http://127.0.0.1:47820 NX_SHOT=shot.png electron apps/desktop   # arayüz + file:// → host HTTP/WS
 # Faz 2-3: 3 kullanıcı, 2 yayın, herkes izliyor; C tünel modunda (NXM-WS). Uygulamanın kendi host'u (47850) ile
-pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
+pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (21 kontrol, kamera dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
 # UI testi giriş yapıp bir betik çalıştırabilir: NX_UITEST_TOKEN=<token> NX_UITEST_JS="<js>" (ör. ayarlar sayfasını açmak)
 ```
 Native modül (Rust, `packages/native`): `pnpm build:native` → `nooxcord-native.win32-x64.node` (loopback ses, bas-konuş tuş durumu, özel tam ekran tespiti).
@@ -192,11 +192,11 @@ Sonradan eklenecekler: `pnpm lint`, `pnpm test:e2e` (playwright).
 - Giriş ekranı yok; yalnızca **nickname** girilir.
 - Nickname daha önce **bir misafir** tarafından kullanıldıysa → aynı misafir kimliği sayılır (geçmiş mesajlar, ayarlar ona bağlanır). Tarayıcıda bir cihaz token'ı (`localStorage`) da tutulur.
 - Nickname **kayıtlı bir hesaba** aitse → reddedilir ("Bu isim kayıtlı bir kullanıcıya ait"). Misafir hiçbir zaman kayıtlı kullanıcının yerine geçemez.
-- Misafir kısıtları: uzaktan kontrol **yok** (ne alabilir ne verebilir), yayın açamaz (mobilde zaten yok; masaüstü tarayıcı misafiri için de Faz 1'de kapalı), sunucu yönetemez. Host bu kısıtları rol ayarlarından genişletebilir (uzaktan kontrol hariç — o sabit kapalı).
+- Misafir kısıtları: uzaktan kontrol **yok** (ne alabilir ne verebilir), ekran yayını açamaz (mobilde zaten yok; masaüstü tarayıcı misafiri için de Faz 1'de kapalı), sunucu yönetemez. **Kamera açabilir** (`VIDEO` izni misafir varsayılanında). Host bu kısıtları rol ayarlarından genişletebilir (uzaktan kontrol hariç — o sabit kapalı).
 - Misafir oturumları için host ayarı: "Misafir girişine izin ver" (varsayılan açık) ve opsiyonel **sunucu davet şifresi** (tünel herkese açık olduğu için önerilir).
 
 ### 5.3 Roller ve izinler
-`Owner`, `Admin`, `Member`, `Guest` + özel roller. İzinler bit maskesi (`packages/shared/permissions.ts`): kanal görme, mesaj gönderme, dosya yükleme, sese katılma, konuşma, yayın açma, uzaktan kontrol isteme, kanal yönetme, üye atma/yasaklama.
+`Owner`, `Admin`, `Member`, `Guest` + özel roller. İzinler bit maskesi (`packages/shared/permissions.ts`): kanal görme, mesaj gönderme, dosya yükleme, sese katılma, konuşma, yayın açma, kamera açma (`VIDEO`, migration 3 ile mevcut varsayılan rollere eklendi), uzaktan kontrol isteme, kanal yönetme, üye atma/yasaklama.
 
 ---
 
@@ -224,6 +224,13 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 2. **Alternatif (dene):** Chromium `getDisplayMedia` `restrictOwnAudio` / `systemAudio: 'include'` kısıtı; Electron sürümünde çalışıyorsa native yola gerek kalmaz. Hangisinin kullanıldığı loglanır.
 3. Pencere paylaşımında: yalnızca o pencerenin süreç ağacının sesi (`PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`).
 4. Hiçbiri yoksa: yayın sessiz başlar ve kullanıcı uyarılır. **Asla** NooXCord sesini içeren düz loopback kullanılmaz.
+
+### 6.5 Kamera
+- Sesli kanalda **kamera** düğmesi (masaüstü, tarayıcı, telefon). Kaynak `camera` (video), izin `P.VIDEO`; misafirler dahil herkes açabilir. Durum `VoiceState.camera` ile yayılır, kenar çubuğunda kamera simgesi.
+- Ekran yayınının aksine kameralar kanaldaki **herkese otomatik** gönderilir (ses gibi; "İzle" gerekmez). Katılımcı kartı videoya dönüşür, tıklayınca büyür; kendi görüntün aynalanır.
+- WebRTC: 640×480 hedef, 24 fps, tek katman, maks. 600 kbps, H.264 öncelikli.
+- **Tünel modu (telefon + Cloudflare):** tarayıcı WebCodecs `VideoEncoder` ile H.264 constrained baseline (`avc1.42e01f`, Annex-B; yoksa avcC → Annex-B dönüşümü) kodlar, kareler `<video>` → canvas üzerinden alınır (iPhone Safari'de de çalışır), 20 fps, ≤640 px, 450 kbps. WS çerçevesi `[4][key][ts90k][AU]` → host RTP'ye paketler (tek NAL / FU-A, `rtp.ts` `packetizeH264`) → DirectTransport producer. İzleyicilerden gelen PLI/FIR → `[5]` çerçevesi → tarayıcı anahtar kare üretir; ayrıca 3 sn'de bir anahtar kare.
+- Telefonda birden fazla kamera varsa **ön/arka çevir** düğmesi (producer kalır, `replaceTrack`). Masaüstünde kamera seçimi Ayarlar → Ses.
 
 ### 6.4 Çoklu yayın ve izleme
 - Aynı sesli kanalda birden fazla kişi aynı anda yayın açabilir.
@@ -484,8 +491,8 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 10. Port kontrolü 0.0.0.0, :: ve 127.0.0.1'i ayrı ayrı dener (Windows'ta `[::]:port` tutulurken `0.0.0.0` boş görünebiliyor) ✅.
 11. `%APPDATA%/NooXCord/host/` altında bu projeden önce oluşmuş bir `db.sqlite` + `logs/` + `uploads/` var (6 Kasım, kaynağı bilinmiyor). Host kendi dosyasını (`nooxcord.db`) kullanır; o dosyalara dokunulmadı.
 12. Medya portu (ana port + 1) LAN'da açık olmalı; WebRTC ICE başarısız olursa istemci "medya portu erişilebilir olmalı" uyarısı verir. Host yeni bir ağ arayüzü (ör. Hamachi sonradan bağlandı) için ses sunucusunu yeniden başlatmalı — şimdilik adresler ilk sese katılmada alınır.
-13. Global bas-konuş `GetAsyncKeyState` ile 15 ms'de bir yoklanır (yalnızca bas-konuş modunda ve sesteyken). Fare yan tuşları kod tarafında destekli ama ayar ekranından henüz seçilemiyor.
-14. Tünel modu (NXM-WS) sınırları: tünelden giren yayın **açamaz**, yalnızca izler; video her zaman düşük simulcast katmanı; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
+13. Global bas-konuş ve **mikrofon aç/kapat kısayolu** (Ayarlar → Ses, `nx.voice.muteKey`, ör. `Ctrl+Shift+KeyM`, `F9`, `Mouse4`) `GetAsyncKeyState` ile 15 ms'de bir yoklanır (yalnızca sesteyken) → oyun öndeyken de çalışır (`media:setHotkeys`). Değiştiricisiz harf kısayolu, NooXCord'da yazı alanı odaktayken tetiklenmez. Fare orta/yan tuşu kısayolda seçilebilir; bas-konuş ayarında henüz değil. Yönetici olarak çalışan oyunlarda tuş okunamayabilir.
+14. Tünel modu (NXM-WS) sınırları: tünelden giren **ekran** yayını açamaz, yalnızca izler (kamera açabilir — §6.5, WebCodecs `VideoEncoder` gerekir); video her zaman düşük simulcast katmanı; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
 15. ~~Ana süreç metinleri~~ → Faz 4'te `main.*` anahtarlarına taşındı (ana süreç `tr.json`/`en.json`'u derleme anında paketler, dil renderer ayarını izler). **Kalan:** host'un döndürdüğü hata mesajları (`fail(...)`) Türkçe; İngilizce arayüzde de Türkçe görünür → hata kodu + anahtar ile çevrilmeli.
 16. Tünel açılışta otomatik başlamaz (bilinçli: herkese açık bağlantı kullanıcı istemeden açılmasın); her seferinde Ayarlar → Bağlantı'dan açılır.
 17. Uzaktan kontrol: panik kısayolu sabit (`Ctrl+Alt+Shift+Esc`), ek engellenecek kombinasyon ayarı yok (yalnızca Win tuşları engelli) — ayar ekranı sonraya. Yönetici yetkili pencereler girdi almaz (UIPI), istek kartında yazıyor.

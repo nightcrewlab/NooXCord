@@ -139,6 +139,9 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX dm_members_user ON dm_members(user_id);
   `,
+  /* 3 — camera permission (VIDEO = 1 << 14) for everyone's default role */ `
+  UPDATE roles SET perms = perms | 16384 WHERE is_default = 1;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -14,6 +14,8 @@ export const P = {
   KICK_MEMBERS: 1 << 11,
   BAN_MEMBERS: 1 << 12,
   MANAGE_GUILD: 1 << 13,
+  /** Camera in voice channels (allowed for guests by default, unlike screen sharing). */
+  VIDEO: 1 << 14,
   ADMINISTRATOR: 1 << 30,
 } as const;
 
@@ -25,10 +27,10 @@ export const DEFAULT_ROLE_PERMS = {
   /** Applied to every member (the "@everyone" role). */
   member:
     P.VIEW_CHANNELS | P.SEND_MESSAGES | P.ATTACH_FILES | P.CONNECT_VOICE | P.SPEAK | P.STREAM |
-    P.REQUEST_REMOTE_CONTROL | P.CREATE_INVITES,
+    P.REQUEST_REMOTE_CONTROL | P.CREATE_INVITES | P.VIDEO,
   admin: P.ADMINISTRATOR,
-  /** Browser guests (Faz 3): no remote control, no streaming, no management — enforced server side. */
-  guest: P.VIEW_CHANNELS | P.SEND_MESSAGES | P.CONNECT_VOICE | P.SPEAK,
+  /** Browser guests (Faz 3): no remote control, no screen sharing, no management — enforced server side. Camera is allowed. */
+  guest: P.VIEW_CHANNELS | P.SEND_MESSAGES | P.CONNECT_VOICE | P.SPEAK | P.VIDEO,
 } as const;
 
 /** Bits a guest can never hold, whatever their roles say. */

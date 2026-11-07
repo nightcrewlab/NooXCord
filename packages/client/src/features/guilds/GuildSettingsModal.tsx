@@ -11,7 +11,7 @@ import s from "../settings/settings.module.css";
 const ROLE_COLORS = ["#FF7A45", "#FFB347", "#F5C451", "#3DDC84", "#5CE1E6", "#4CC9F0", "#B388FF", "#FF5C8A", "#9AA3B2"];
 const PERM_ORDER: PermissionName[] = [
   "ADMINISTRATOR", "MANAGE_GUILD", "MANAGE_ROLES", "MANAGE_CHANNELS", "MANAGE_MESSAGES", "KICK_MEMBERS", "BAN_MEMBERS", "CREATE_INVITES",
-  "VIEW_CHANNELS", "SEND_MESSAGES", "ATTACH_FILES", "CONNECT_VOICE", "SPEAK", "STREAM", "REQUEST_REMOTE_CONTROL",
+  "VIEW_CHANNELS", "SEND_MESSAGES", "ATTACH_FILES", "CONNECT_VOICE", "SPEAK", "STREAM", "VIDEO", "REQUEST_REMOTE_CONTROL",
 ];
 
 export function GuildSettingsModal({ guildId, onClose }: { guildId: string; onClose: () => void }) {

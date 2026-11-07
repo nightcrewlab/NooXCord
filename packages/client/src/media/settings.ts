@@ -5,9 +5,12 @@ import type { StreamPreset } from "@nooxcord/shared";
 export interface VoiceSettings {
   inputDeviceId: string; // "" = system default
   outputDeviceId: string;
+  cameraDeviceId: string; // "" = default / front camera
   mode: "vad" | "ptt";
   /** KeyboardEvent.code for push-to-talk. */
   pttKey: string;
+  /** Shortcut that toggles the microphone while in voice ("Ctrl+Shift+KeyM", "F9", "Mouse4"); null = none. */
+  muteKey: string | null;
   /** Voice activity threshold in dBFS; null = automatic (follows the noise floor). */
   vadThreshold: number | null;
   echoCancellation: boolean;
@@ -25,8 +28,10 @@ const KEY = "nx.voice";
 const defaults: VoiceSettings = {
   inputDeviceId: "",
   outputDeviceId: "",
+  cameraDeviceId: "",
   mode: "vad",
   pttKey: "KeyV",
+  muteKey: null,
   vadThreshold: null,
   echoCancellation: true,
   noiseSuppression: true,

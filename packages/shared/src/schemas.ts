@@ -71,7 +71,7 @@ export const Methods = {
   "voice.speaking": z.object({ speaking: z.boolean() }),
   "voice.update": z.object({ muted: z.boolean().optional(), deafened: z.boolean().optional() }),
   "media.connect": z.object({ transportId: id, dtlsParameters: json }),
-  "media.produce": z.object({ transportId: id, kind: z.enum(["audio", "video"]), rtpParameters: json, source: z.enum(["mic", "screen", "screen-audio"]) }),
+  "media.produce": z.object({ transportId: id, kind: z.enum(["audio", "video"]), rtpParameters: json, source: z.enum(["mic", "screen", "screen-audio", "camera"]) }),
   "media.pauseProducer": z.object({ producerId: id, paused: z.boolean() }),
   "media.closeProducer": z.object({ producerId: id }),
   "media.consume": z.object({ producerId: id, rtpCapabilities: json }),

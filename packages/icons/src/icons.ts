@@ -8,6 +8,7 @@ const micBody = `<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a
 const phones = `<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="6.5" rx="1.8"/><rect x="16.5" y="14" width="4.5" height="6.5" rx="1.8"/>`;
 const screen = `<rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/>`;
 const bell = `<path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/>`;
+const camBody = `<rect x="2.5" y="6.5" width="13" height="11" rx="2.5"/><path d="M15.5 10.5l5-3v9l-5-3"/>`;
 const speakerBody = `<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/>`;
 
 export const icons = {
@@ -78,6 +79,9 @@ export const icons = {
   grid: `<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>`,
   "eye-off": `<path d="M10.6 5.1A9.7 9.7 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.6 3.7M6.6 6.7C4.4 8 3 10.2 2.5 12c1 2.5 4.5 7 9.5 7a9.6 9.6 0 0 0 4.9-1.3"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M4 4l16 16"/>`,
   waveform: `<path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/>`,
+  video: camBody,
+  "video-off": `${camBody}${slash}`,
+  "camera-flip": `<path d="M5 10a7 7 0 0 1 12.6-3.2M19 14a7 7 0 0 1-12.6 3.2"/><path d="M18 3.5v3.6h-3.6M6 20.5v-3.6h3.6"/><circle cx="12" cy="12" r="2.2"/>`,
 } as const;
 
 export type IconName = keyof typeof icons;

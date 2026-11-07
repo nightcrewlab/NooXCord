@@ -128,6 +128,29 @@ export async function voiceSelfTest(): Promise<void> {
     }
     check("server speaking detection fires", spoke);
 
+    // Cameras: A over WebRTC, C over the tunnel path (WebCodecs H.264 -> WS -> host RTP). Fake devices give a test pattern.
+    for (const w of [a, c]) await w.webContents.executeJavaScript(`window.__nx.voice.startCamera()`);
+    await sleep(2500);
+    const camStates = await b.webContents.executeJavaScript(`window.__nx.useStore.getState().guilds[${JSON.stringify(guildId)}].voice.filter(v => v.camera).length`);
+    check("camera state broadcast (A + C)", camStates === 2, `${camStates}`);
+    const camFrames = (w: BrowserWindow, uid: string) => w.webContents.executeJavaScript(`(async () => {
+      const s = window.__nx.useVoice.getState().cams[${JSON.stringify(uid)}]; if (!s) return { n: -1, w: 0, h: 0 };
+      const v = document.createElement("video"); v.muted = true; v.srcObject = s; await v.play().catch(() => {});
+      document.body.appendChild(v); v.style.cssText = "position:fixed;left:0;top:0;width:160px;height:120px";
+      await new Promise((r) => setTimeout(r, 500));
+      const q0 = v.getVideoPlaybackQuality().totalVideoFrames, t0 = v.currentTime;
+      await new Promise((r) => setTimeout(r, 2500));
+      const n = v.getVideoPlaybackQuality().totalVideoFrames - q0, dt = v.currentTime - t0;
+      v.remove(); return { n, dt: Math.round(dt * 10) / 10, w: v.videoWidth, h: v.videoHeight };
+    })()`);
+    const idc = ids[2]!;
+    const bSeesC = await camFrames(b, idc);
+    check("WebRTC user sees the tunnel user's camera", bSeesC.n > 20 && bSeesC.w > 0, JSON.stringify(bSeesC));
+    const cSeesA = await camFrames(c, ida);
+    check("tunnel user sees a WebRTC camera", cSeesA.n > 20 && cSeesA.w > 0, JSON.stringify(cSeesA));
+    const bSeesA = await camFrames(b, ida);
+    check("WebRTC user sees a WebRTC camera", bSeesA.n > 20 && bSeesA.w > 0, JSON.stringify(bSeesA));
+
     if (process.env.NX_SHOT) {
       const img = await c.webContents.capturePage();
       fs.writeFileSync(process.env.NX_SHOT, img.toPNG());
@@ -139,6 +162,10 @@ export async function voiceSelfTest(): Promise<void> {
     await sleep(600);
     const cWatch = await c.webContents.executeJavaScript(`Object.keys(window.__nx.useVoice.getState().watching).length`);
     check("stream stop removes it for viewers", cWatch === 1, `${cWatch}`);
+    await c.webContents.executeJavaScript(`window.__nx.voice.stopCamera()`);
+    await sleep(600);
+    const camGone = await b.webContents.executeJavaScript(`[!(${JSON.stringify(idc)} in window.__nx.useVoice.getState().cams), window.__nx.useStore.getState().guilds[${JSON.stringify(guildId)}].voice.filter(v => v.camera).length]`);
+    check("camera off removes it for everyone", camGone[0] === true && camGone[1] === 1, JSON.stringify(camGone));
     await b.webContents.executeJavaScript(`window.__nx.voice.leave()`);
     await sleep(600);
     const left = await c.webContents.executeJavaScript(`window.__nx.useStore.getState().guilds[${JSON.stringify(guildId)}].voice.length`);

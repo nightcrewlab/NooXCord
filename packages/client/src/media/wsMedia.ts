@@ -11,6 +11,8 @@ import { t } from "../i18n";
 const FRAME_AUDIO = 1;
 const FRAME_VIDEO = 2;
 const FRAME_MIC = 3;
+const FRAME_CAM = 4;
+const FRAME_KEYREQ = 5;
 
 const CAPTURE = `
 class NxCapture extends AudioWorkletProcessor {
@@ -70,6 +72,7 @@ export class WsMedia {
   private video = new Map<number, VideoSink>();
   private mic: { enc: AudioEncoder; node: AudioWorkletNode; src: MediaStreamAudioSourceNode; sink: GainNode } | null = null;
   private micOpen = false;
+  private cam: CamSender | null = null;
   readonly stats = { framesDecoded: 0, audioBytes: 0, bytes: 0, sentBytes: 0 };
 
   constructor(private url: string, private ticket: string, private onClosed: () => void) {}
@@ -103,6 +106,7 @@ export class WsMedia {
     ws?.close();
     for (const tag of [...this.audio.keys(), ...this.video.keys()]) this.remove(tag);
     this.stopMic();
+    this.stopCamera();
   }
 
   // ---------- receiving ----------
@@ -177,6 +181,10 @@ export class WsMedia {
     this.stats.bytes += buf.byteLength;
     const dv = new DataView(buf);
     const kind = dv.getUint8(0);
+    if (kind === FRAME_KEYREQ) {
+      if (this.cam) this.cam.forceKey = true;
+      return;
+    }
     const tag = dv.getUint16(1);
     if (kind === FRAME_AUDIO) {
       const a = this.audio.get(tag);
@@ -294,4 +302,168 @@ export class WsMedia {
     try { m.src.disconnect(); m.node.disconnect(); m.sink.disconnect(); } catch { /* closed */ }
     try { m.enc.close(); } catch { /* closed */ }
   }
+
+  // ---------- camera ----------
+
+  /**
+   * Encodes the camera to H.264 (constrained baseline, Annex-B) with WebCodecs and sends one access
+   * unit per frame. Frames come from a <video> element via a canvas, which works on iPhone Safari too.
+   */
+  async startCamera(track: MediaStreamTrack): Promise<void> {
+    if (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") throw new Error(t("err.camNoEncoder"));
+    const probe = await pickCamConfig(640, 480);
+    if (!probe) throw new Error(t("err.camNoEncoder"));
+    this.stopCamera();
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = new MediaStream([track]);
+    await video.play().catch(() => {});
+    const canvas = document.createElement("canvas");
+    const g = canvas.getContext("2d")!;
+    const cam: CamSender = { video, canvas, g, enc: null, w: 0, h: 0, timer: 0, forceKey: true, lastKey: 0, sps: null, annexb: probe.annexb, frames: 0 };
+    const t0 = performance.now();
+    const tick = () => {
+      if (this.cam !== cam || video.readyState < 2 || !video.videoWidth) return;
+      const ws = this.ws;
+      if (!ws || ws.readyState !== 1) return;
+      // Fit inside 640 px (long side), even sizes for the encoder.
+      const k = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+      const w = Math.max(2, Math.round(video.videoWidth * k) & ~1), h = Math.max(2, Math.round(video.videoHeight * k) & ~1);
+      if (!cam.enc || cam.w !== w || cam.h !== h) this.configureCam(cam, w, h);
+      const enc = cam.enc;
+      if (!enc || enc.state !== "configured") return;
+      if (enc.encodeQueueSize > 2 || ws.bufferedAmount > 200_000) { cam.forceKey = true; return; } // behind: drop, restart on a key frame
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+      g.drawImage(video, 0, 0, w, h);
+      const now = performance.now();
+      const frame = new VideoFrame(canvas, { timestamp: Math.round((now - t0) * 1000) });
+      const key = cam.forceKey || now - cam.lastKey > 3000; // periodic key frame: late joiners and lost packets recover
+      if (key) { cam.forceKey = false; cam.lastKey = now; }
+      try { enc.encode(frame, { keyFrame: key }); } catch { cam.forceKey = true; }
+      frame.close();
+    };
+    cam.timer = window.setInterval(tick, 1000 / 20);
+    this.cam = cam;
+  }
+
+  private configureCam(cam: CamSender, w: number, h: number) {
+    try { cam.enc?.close(); } catch { /* closed */ }
+    cam.w = w;
+    cam.h = h;
+    cam.forceKey = true;
+    cam.sps = null;
+    const enc = new VideoEncoder({
+      output: (chunk, meta) => {
+        const ws = this.ws;
+        if (this.cam !== cam || !ws || ws.readyState !== 1) return;
+        const raw = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(raw);
+        const desc = meta?.decoderConfig?.description;
+        if (desc) cam.sps = avccParamSets(desc);
+        const key = chunk.type === "key";
+        const au = cam.annexb ? raw : avccToAnnexB(raw, key ? cam.sps : null);
+        const out = new Uint8Array(6 + au.length);
+        out[0] = FRAME_CAM;
+        out[1] = key ? 1 : 0;
+        new DataView(out.buffer).setUint32(2, Math.round(chunk.timestamp * 0.09) >>> 0); // µs -> 90 kHz
+        out.set(au, 6);
+        ws.send(out);
+        cam.frames++;
+        this.stats.sentBytes += out.byteLength;
+      },
+      error: () => { cam.enc = null; }, // reconfigured on the next tick
+    });
+    enc.configure(camConfig(w, h, cam.annexb));
+    cam.enc = enc;
+  }
+
+  /** Swap the camera (front/back) without re-creating the producer. */
+  setCameraTrack(track: MediaStreamTrack): void {
+    const cam = this.cam;
+    if (!cam) return;
+    cam.video.srcObject = new MediaStream([track]);
+    void cam.video.play().catch(() => {});
+    cam.forceKey = true;
+  }
+
+  stopCamera(): void {
+    const cam = this.cam;
+    if (!cam) return;
+    this.cam = null;
+    clearInterval(cam.timer);
+    try { cam.enc?.close(); } catch { /* closed */ }
+    cam.video.pause();
+    cam.video.srcObject = null;
+  }
+
+  get cameraFrames(): number {
+    return this.cam?.frames ?? 0;
+  }
+}
+
+interface CamSender {
+  video: HTMLVideoElement;
+  canvas: HTMLCanvasElement;
+  g: CanvasRenderingContext2D;
+  enc: VideoEncoder | null;
+  w: number;
+  h: number;
+  timer: number;
+  forceKey: boolean;
+  lastKey: number;
+  /** SPS/PPS from the avcC description, when the encoder only does length-prefixed output. */
+  sps: Uint8Array[] | null;
+  annexb: boolean;
+  frames: number;
+}
+
+/** Constrained baseline 3.1 (what the host's tunnel camera producer declares). */
+function camConfig(w: number, h: number, annexb: boolean): VideoEncoderConfig {
+  return {
+    codec: "avc1.42e01f", width: w, height: h, bitrate: 450_000, framerate: 20, latencyMode: "realtime",
+    ...(annexb ? { avc: { format: "annexb" } } : {}),
+  } as VideoEncoderConfig;
+}
+
+async function pickCamConfig(w: number, h: number): Promise<{ annexb: boolean } | null> {
+  for (const annexb of [true, false]) {
+    try { if ((await VideoEncoder.isConfigSupported(camConfig(w, h, annexb))).supported) return { annexb }; } catch { /* next */ }
+  }
+  return null;
+}
+
+/** SPS and PPS NAL units from an avcC record. */
+function avccParamSets(desc: AllowSharedBufferSource): Uint8Array[] {
+  const b = desc instanceof ArrayBuffer ? new Uint8Array(desc) : new Uint8Array((desc as ArrayBufferView).buffer, (desc as ArrayBufferView).byteOffset, (desc as ArrayBufferView).byteLength);
+  const out: Uint8Array[] = [];
+  let i = 5;
+  for (const first of [true, false]) {
+    const n = first ? b[i++]! & 0x1f : b[i++]!;
+    for (let k = 0; k < n && i + 2 <= b.length; k++) {
+      const len = (b[i]! << 8) | b[i + 1]!;
+      i += 2;
+      out.push(b.subarray(i, i + len));
+      i += len;
+    }
+  }
+  return out;
+}
+
+/** 4-byte length-prefixed NALs -> Annex-B; key frames get SPS/PPS in front. */
+function avccToAnnexB(b: Uint8Array, params: Uint8Array[] | null): Uint8Array {
+  const parts: Uint8Array[] = [];
+  const sc = new Uint8Array([0, 0, 0, 1]);
+  for (const p of params ?? []) parts.push(sc, p);
+  for (let i = 0; i + 4 <= b.length;) {
+    const len = ((b[i]! << 24) | (b[i + 1]! << 16) | (b[i + 2]! << 8) | b[i + 3]!) >>> 0;
+    i += 4;
+    parts.push(sc, b.subarray(i, i + len));
+    i += len;
+  }
+  const out = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
 }

@@ -143,6 +143,9 @@ export interface NxBridge {
     /** Global push-to-talk: the main process watches this key even when the app is not focused. */
     setPttKey(code: string | null): Promise<void>;
     onPtt(cb: (down: boolean) => void): () => void;
+    /** Global shortcuts ("Ctrl+Shift+KeyM", "F9", "Mouse4"); the main process fires onHotkey(id) on press. */
+    setHotkeys(list: { id: string; combo: string }[]): Promise<void>;
+    onHotkey(cb: (id: string) => void): () => void;
     /** Keep timers/rendering alive while in voice. */
     setInCall(active: boolean): Promise<void>;
   };

@@ -49,6 +49,18 @@ let shareTarget: ShareTarget | null = null;
 export const currentShareTarget = (): ShareTarget | null => shareTarget;
 let audio: { port: MessagePortMain; timer: NodeJS.Timeout; owner: WebContents } | null = null;
 let ptt: { vk: number; down: boolean; timer: NodeJS.Timeout; owner: WebContents } | null = null;
+let hotkeys: { keys: { id: string; vks: number[]; down: boolean }[]; timer: NodeJS.Timeout; owner: WebContents } | null = null;
+
+const MOD_VK: Record<string, number> = { Ctrl: 0x11, Shift: 0x10, Alt: 0x12 };
+/** "Ctrl+Shift+KeyM" / "F9" / "Mouse4" -> virtual-key codes that must all be held. */
+export function vksFromCombo(combo: string): number[] | null {
+  const parts = combo.split("+");
+  const key = vkFromCode(parts.pop() ?? "");
+  if (key === null) return null;
+  const mods = parts.map((p) => MOD_VK[p]);
+  if (mods.some((m) => m === undefined)) return null;
+  return [...(mods as number[]), key];
+}
 
 /** Windows 10 2004 (build 19041) added process loopback. */
 const loopbackOs = (): boolean => {
@@ -76,8 +88,8 @@ export function vkFromCode(code: string): number | null {
     NumpadAdd: 0x6b, NumpadSubtract: 0x6d, NumpadMultiply: 0x6a, NumpadDivide: 0x6f, NumpadDecimal: 0x6e,
     Escape: 0x1b, Enter: 0x0d, NumpadEnter: 0x0d, Backspace: 0x08, ContextMenu: 0x5d, NumLock: 0x90, PrintScreen: 0x2c,
     MetaLeft: 0x5b, MetaRight: 0x5c,
-    // mouse side buttons are common PTT choices
-    Mouse4: 0x05, Mouse5: 0x06,
+    // mouse middle / side buttons are common PTT and mute choices
+    Mouse3: 0x04, Mouse4: 0x05, Mouse5: 0x06,
   };
   return table[code] ?? null;
 }
@@ -88,6 +100,12 @@ function stopAudio() {
   audio.port.close();
   audio = null;
   try { native?.loopbackStop(); } catch { /* ignore */ }
+}
+
+function stopHotkeys() {
+  if (!hotkeys) return;
+  clearInterval(hotkeys.timer);
+  hotkeys = null;
 }
 
 function stopPtt() {
@@ -183,6 +201,29 @@ export function registerMediaIpc(getMain: () => BrowserWindow | null): void {
     ptt = state;
   });
 
+  // Global shortcuts (mute toggle) polled like push-to-talk, so they also fire while a game has focus.
+  ipcMain.handle("media:setHotkeys", (e, raw: unknown) => {
+    stopHotkeys();
+    if (!native || !Array.isArray(raw)) return;
+    const keys = raw.flatMap((x: unknown) => {
+      const h = x as { id?: unknown; combo?: unknown };
+      const vks = typeof h.id === "string" && typeof h.combo === "string" ? vksFromCombo(h.combo) : null;
+      return vks ? [{ id: h.id as string, vks, down: true }] : []; // down: true = wait for a release first
+    });
+    if (!keys.length) return;
+    const owner = e.sender;
+    const state = { keys, owner, timer: setInterval(() => {
+      if (owner.isDestroyed()) return stopHotkeys();
+      for (const k of state.keys) {
+        let down = false;
+        try { down = k.vks.every((vk) => native!.keyDown(vk)); } catch { /* ignore */ }
+        if (down && !k.down) owner.send("media:hotkey", k.id);
+        k.down = down;
+      }
+    }, 15) };
+    hotkeys = state;
+  });
+
   ipcMain.handle("media:setInCall", (_e, active: unknown) => {
     // Keep timers and audio processing at full speed while in a call, even when minimised.
     getMain()?.webContents.setBackgroundThrottling(!active);
@@ -192,4 +233,5 @@ export function registerMediaIpc(getMain: () => BrowserWindow | null): void {
 export function shutdownMedia(): void {
   stopAudio();
   stopPtt();
+  stopHotkeys();
 }
