@@ -29,12 +29,15 @@ export const DEFAULT_ROLE_PERMS = {
     P.VIEW_CHANNELS | P.SEND_MESSAGES | P.ATTACH_FILES | P.CONNECT_VOICE | P.SPEAK | P.STREAM |
     P.REQUEST_REMOTE_CONTROL | P.CREATE_INVITES | P.VIDEO,
   admin: P.ADMINISTRATOR,
-  /** Browser guests (Faz 3): no remote control, no screen sharing, no management — enforced server side. Camera is allowed. */
+  /**
+   * Browser guests: camera yes; screen sharing, remote control and management only through an explicit
+   * role the host gives them (the @everyone role is masked by this set for guests).
+   */
   guest: P.VIEW_CHANNELS | P.SEND_MESSAGES | P.CONNECT_VOICE | P.SPEAK | P.VIDEO,
 } as const;
 
 /** Bits a guest can never hold, whatever their roles say. */
-export const GUEST_FORBIDDEN = P.REQUEST_REMOTE_CONTROL | P.ADMINISTRATOR;
+export const GUEST_FORBIDDEN = P.ADMINISTRATOR;
 
 export function has(perms: number, bit: number): boolean {
   if ((perms & P.ADMINISTRATOR) !== 0) return true;

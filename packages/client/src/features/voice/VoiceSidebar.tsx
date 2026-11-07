@@ -48,7 +48,7 @@ export function VoiceBar({ onShare }: { onShare: () => void }) {
   const channel = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.channels.find((c) => c.id === v.channelId) : undefined));
   const guildName = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.guild.name : ""));
   const selectChannel = useStore((st) => st.selectChannel);
-  const canStream = useStore((st) => !!v.guildId && has(st.guilds[v.guildId]?.myPerms ?? 0, P.STREAM)) && platform.canShareScreen && v.transport !== "ws";
+  const canStream = useStore((st) => !!v.guildId && has(st.guilds[v.guildId]?.myPerms ?? 0, P.STREAM)) && platform.canShareScreen;
   const canCam = useStore((st) => !!v.guildId && has(st.guilds[v.guildId]?.myPerms ?? 0, P.VIDEO)) && cameraSupported();
   if (!v.channelId || !v.guildId) return null;
   const ok = v.status === "connected";

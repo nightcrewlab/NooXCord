@@ -4,6 +4,7 @@
   z-index: 2;
   cursor: crosshair;
   outline: none;
+  touch-action: none; /* phones: a tap is a click, not a scroll */
   box-shadow: inset 0 0 0 2px var(--nx-live);
 }
 .surface:focus-visible { box-shadow: inset 0 0 0 3px var(--nx-live); }

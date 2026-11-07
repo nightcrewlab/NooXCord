@@ -18,6 +18,8 @@ export const FRAME_VIDEO = 2;
 export const FRAME_MIC = 3;
 export const FRAME_CAM = 4;
 export const FRAME_KEYREQ = 5;
+/** Tunnel-mode screen share: same layout as FRAME_CAM. */
+export const FRAME_SCREEN = 6;
 
 export interface RtpPacket {
   marker: boolean;
@@ -95,14 +97,18 @@ export function packetizeH264(annexB: Buffer, maxPayload = 1150): Buffer[] {
 }
 
 /** Does a compound RTCP packet ask for a key frame (PLI or FIR)? */
-export function wantsKeyFrame(b: Buffer): boolean {
+/** Media SSRCs that a compound RTCP packet asks key frames for (PLI / FIR). */
+export function keyFrameSsrcs(b: Buffer): number[] {
+  const out: number[] = [];
   let i = 0;
   while (i + 4 <= b.length) {
     const fmt = b[i]! & 0x1f, pt = b[i + 1]!;
-    if (pt === 206 && (fmt === 1 || fmt === 4)) return true;
-    i += (b.readUInt16BE(i + 2) + 1) * 4;
+    const next = i + (b.readUInt16BE(i + 2) + 1) * 4;
+    if (pt === 206 && fmt === 1 && i + 12 <= b.length) out.push(b.readUInt32BE(i + 8));
+    if (pt === 206 && fmt === 4) for (let j = i + 12; j + 8 <= Math.min(next, b.length); j += 8) out.push(b.readUInt32BE(j));
+    i = next;
   }
-  return false;
+  return out;
 }
 
 export interface VideoFrame {

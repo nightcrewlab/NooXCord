@@ -314,7 +314,7 @@
   "mobile.pickText": "Sunucular sekmesinden bir metin kanalı seç.",
   "mobile.pickVoice": "Sunucular sekmesinden bir sesli kanala dokun.",
   "voice.tunnelMode": "Tünel modu",
-  "voice.tunnelModeDesc": "Ses ve görüntü tünel üzerinden WebSocket ile geliyor; gecikme biraz daha yüksek. Bu modda ekran yayını açılamaz, kamera açılabilir.",
+  "voice.tunnelModeDesc": "Ses ve görüntü tünel üzerinden WebSocket ile geliyor; gecikme biraz daha yüksek. Bu modda ekran yayını en fazla 720p ve sessiz gider.",
   "remote.request": "Kontrol iste",
   "remote.requested": "İstek gönderildi",
   "remote.release": "Kontrolü bırak",
@@ -423,7 +423,6 @@
   "err.micDenied": "Mikrofon izni verilmedi; yalnızca dinleyebilirsin.",
   "err.micMissing": "Mikrofon bulunamadı; yalnızca dinleyebilirsin.",
   "err.micFailed": "Mikrofon açılamadı; yalnızca dinleyebilirsin.",
-  "err.streamTunnel": "Tünel modunda yayın açılamaz. Yayın için LAN, Hamachi veya açık port gerekir.",
   "err.joinVoiceFirst": "Önce bir sesli kanala katıl.",
   "err.noVideo": "Görüntü alınamadı.",
   "err.sysAudioUnsupported": "Sistem sesi bu bilgisayarda yakalanamıyor; yayın sessiz başladı.",
@@ -469,5 +468,7 @@
   "err.camFailed": "Kamera açılamadı.",
   "err.camNoEncoder": "Bu tarayıcı tünel modunda kamera gönderemiyor (WebCodecs H.264 kodlayıcı yok).",
   "settings.camera": "Kamera",
-  "settings.cameraN": "Kamera {n}"
+  "settings.cameraN": "Kamera {n}",
+  "stream.tunnelNote": "Tünel modundasın: yayın en fazla 720p / 15 fps gider ve ses gönderilmez.",
+  "err.screenNoEncoder": "Bu tarayıcı tünel modunda yayın açamıyor (WebCodecs H.264 kodlayıcı yok)."
 }

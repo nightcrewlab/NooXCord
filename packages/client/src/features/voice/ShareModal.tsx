@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "@nooxcord/icons";
 import { STREAM_PRESETS, type StreamPreset } from "@nooxcord/shared";
 import { t } from "../../i18n";
-import { voice } from "../../media/engine";
+import { useVoice, voice } from "../../media/engine";
 import { useVoiceSettings } from "../../media/settings";
 import { platform, type ScreenSource } from "../../platform";
 import { useStore } from "../../state/store";
@@ -16,6 +16,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
   const settings = useVoiceSettings();
   const toast = useStore((st) => st.toast);
   const desktop = !!platform.media;
+  const tunnel = useVoice((v) => v.transport === "ws");
   const [sources, setSources] = useState<ScreenSource[] | null>(desktop ? null : []);
   const [tab, setTab] = useState<"screen" | "window">("screen");
   const [picked, setPicked] = useState<string | null>(null);
@@ -64,7 +65,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       footer={
         <>
-          <span style={{ flex: 1, alignSelf: "center", fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.bandwidth", { mbps: (bitrate / 1e6).toFixed(1) })}</span>
+          <span style={{ flex: 1, alignSelf: "center", fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.bandwidth", { mbps: (tunnel ? 1.2 : bitrate / 1e6).toFixed(1) })}</span>
           <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
           <Button variant="primary" icon="screen-share" loading={busy} disabled={desktop && !source} onClick={() => void start()}>{t("stream.start")}</Button>
         </>
@@ -101,6 +102,9 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
         <p style={{ color: "var(--nx-text-2)", margin: 0 }}>{t("stream.webPicker")}</p>
       )}
 
+      {tunnel && <p style={{ color: "var(--nx-warn)", margin: 0, fontSize: 13 }}>{t("stream.tunnelNote")}</p>}
+
+      {!tunnel && <>
       <div>
         <div className={s.sectionTitle}>{t("stream.quality")}</div>
         <div className={s.presets}>
@@ -128,6 +132,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
           {desktop && <div className={s.checkSub}>{t("stream.audioDesc")}</div>}
         </span>
       </label>
+      </>}
     </Modal>
   );
 }

@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.4.exe` (144 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 5 (paketleme) — `pnpm dist` ile `NooXCord-Setup-0.5.5.exe` (144 MB) üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-07). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -141,7 +141,7 @@ pnpm dev            # Electron + Vite HMR (uygulama içinden "Bu bilgisayarda ba
 pnpm dev:host       # yalnızca host sunucusu (tsx watch) → http://localhost:47820 (web istemcisini de sunar; önce client build)
 pnpm dev:web        # yalnızca web istemcisi (Vite :5173, VITE_NX_HOST ile host seçilir; varsayılan localhost:47820)
 pnpm typecheck      # tüm paketler
-pnpm test           # host uçtan uca (22) + uzaktan kontrol & DM kuralları (12) + yedekleme (4) + link önizleme SSRF / resim proxy
+pnpm test           # host uçtan uca (22) + uzaktan kontrol & DM kuralları (14) + yedekleme (4) + link önizleme SSRF / resim proxy
 pnpm build          # client (vite) + desktop main/preload/host (esbuild)
 pnpm brand          # assets/brand/*.svg → icon.ico, favicon, PWA ikonları
 pnpm icons          # ikon tablosu → packages/icons/svg/*.svg + sheet.svg
@@ -152,7 +152,7 @@ Masaüstü kendi kendine testleri (pencere göstermeden, geçici userData ile):
 NX_SELFTEST=1 electron apps/desktop        # host utilityProcess, safeStorage, port çakışması
 NX_SELFTEST=ui NX_UITEST_HOST=http://127.0.0.1:47820 NX_SHOT=shot.png electron apps/desktop   # arayüz + file:// → host HTTP/WS
 # Faz 2-3: 3 kullanıcı, 2 yayın, herkes izliyor; C tünel modunda (NXM-WS). Uygulamanın kendi host'u (47850) ile
-pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (21 kontrol, kamera dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
+pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (23 kontrol, kamera + tünelden ekran yayını dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
 # UI testi giriş yapıp bir betik çalıştırabilir: NX_UITEST_TOKEN=<token> NX_UITEST_JS="<js>" (ör. ayarlar sayfasını açmak)
 ```
 Native modül (Rust, `packages/native`): `pnpm build:native` → `nooxcord-native.win32-x64.node` (loopback ses, bas-konuş tuş durumu, özel tam ekran tespiti).
@@ -192,7 +192,7 @@ Sonradan eklenecekler: `pnpm lint`, `pnpm test:e2e` (playwright).
 - Giriş ekranı yok; yalnızca **nickname** girilir.
 - Nickname daha önce **bir misafir** tarafından kullanıldıysa → aynı misafir kimliği sayılır (geçmiş mesajlar, ayarlar ona bağlanır). Tarayıcıda bir cihaz token'ı (`localStorage`) da tutulur.
 - Nickname **kayıtlı bir hesaba** aitse → reddedilir ("Bu isim kayıtlı bir kullanıcıya ait"). Misafir hiçbir zaman kayıtlı kullanıcının yerine geçemez.
-- Misafir kısıtları: uzaktan kontrol **yok** (ne alabilir ne verebilir), ekran yayını açamaz (mobilde zaten yok; masaüstü tarayıcı misafiri için de Faz 1'de kapalı), sunucu yönetemez. **Kamera açabilir** (`VIDEO` izni misafir varsayılanında). Host bu kısıtları rol ayarlarından genişletebilir (uzaktan kontrol hariç — o sabit kapalı).
+- Misafir kısıtları: varsayılan olarak ekran yayını açamaz, uzaktan kontrol isteyemez, sunucu yönetemez (misafirde @everyone rolü `DEFAULT_ROLE_PERMS.guest` ile maskelenir). **Kamera açabilir** (`VIDEO` misafir varsayılanında). Host misafire **açık bir rol** verirse `STREAM` (tarayıcıdan ekran yayını, §6.6) ve `REQUEST_REMOTE_CONTROL` (kontrol isteme, §7.3) açılır; `ADMINISTRATOR` hiçbir zaman. Misafir kontrol **edilemez** (yayıncı tarafı her zaman masaüstü uygulaması).
 - Misafir oturumları için host ayarı: "Misafir girişine izin ver" (varsayılan açık) ve opsiyonel **sunucu davet şifresi** (tünel herkese açık olduğu için önerilir).
 
 ### 5.3 Roller ve izinler
@@ -232,6 +232,11 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 - **Tünel modu (telefon + Cloudflare):** tarayıcı WebCodecs `VideoEncoder` ile H.264 constrained baseline (`avc1.42e01f`, Annex-B; yoksa avcC → Annex-B dönüşümü) kodlar, kareler `<video>` → canvas üzerinden alınır (iPhone Safari'de de çalışır), 20 fps, ≤640 px, 450 kbps. WS çerçevesi `[4][key][ts90k][AU]` → host RTP'ye paketler (tek NAL / FU-A, `rtp.ts` `packetizeH264`) → DirectTransport producer. İzleyicilerden gelen PLI/FIR → `[5]` çerçevesi → tarayıcı anahtar kare üretir; ayrıca 3 sn'de bir anahtar kare.
 - Telefonda birden fazla kamera varsa **ön/arka çevir** düğmesi (producer kalır, `replaceTrack`). Masaüstünde kamera seçimi Ayarlar → Ses.
 
+### 6.6 Tarayıcıdan ekran yayını
+- Tarayıcı `getDisplayMedia` sunuyorsa (masaüstü Chrome/Edge/Firefox; Android'de tarayıcıya bağlı, iPhone Safari'de **yok**) "Yayın aç" düğmesi görünür; izin `STREAM` (misafire açık rol ile, §5.2).
+- WebRTC yolunda masaüstüyle aynı (simulcast, preset, sekme sesi tarayıcı verirse).
+- **Tünel modunda:** kameradaki gibi WebCodecs H.264 (`avc1.42e01f`), ≤1280×720, 15 fps, 1.2 Mbps, **ses yok**; WS çerçevesi `[6][key][ts90k][AU]` → host `rtp.ts` ile paketler → DirectTransport producer (`vid[1]` SSRC). PLI/FIR, SSRC'ye göre `[5][0|1]` (kamera/ekran) anahtar kare isteğine çevrilir. Medya WS'i mesaj başına 1 MB'a kadar kabul eder (önceden 16 KB; ekran anahtar kareleri sığmıyordu).
+
 ### 6.4 Çoklu yayın ve izleme
 - Aynı sesli kanalda birden fazla kişi aynı anda yayın açabilir.
 - Yayın başladığında yayıncı **tek bir kare** yakalar (JPEG, 480px genişlik) ve host'a gönderir → kanal görünümünde **tek seferlik thumbnail** kartı (canlı güncellenmez; trafik tasarrufu). Kartta: yayıncı adı, kalite rozeti, izleyici sayısı, **"Yayını İzle"** butonu.
@@ -254,7 +259,7 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 - Pencere paylaşımında girdi yalnızca o pencerenin sınırları içinde kabul edilir.
 
 ### 7.3 Güvenlik kuralları (pazarlık konusu değil)
-- Misafirler (web/mobil) kontrol **isteyemez**; mobil istemcide buton hiç gösterilmez. Sunucu tarafında da reddedilir.
+- Kontrol **isteyen** taraf her istemci olabilir (masaüstü, tarayıcı, telefon — dokunma = sol tık), yeter ki rolünde `REQUEST_REMOTE_CONTROL` olsun; misafirler bunu yalnızca açık bir rolden alır (2026-11-07 kararı, NooXRii). Kontrol **edilen** taraf yalnızca masaüstü uygulamasındaki kayıtlı kullanıcıdır (`StreamInfo.controllable`, SendInput); tarayıcı yayınında düğme çıkmaz, sunucu da reddeder. Her istek yayıncının onayını ister.
 - Kontrol aktifken yayıncının ekranında sürekli görünür bir çerçeve/rozet: "X şu an kontrol ediyor".
 - **Panik kısayolu:** `Ctrl+Alt+Shift+Esc` (değiştirilebilir) → kontrolü anında keser. Ayrıca yayıncı herhangi bir fiziksel girdi yaptığında 2 sn öncelik yayıncıdadır.
 - Engellenen kombinasyonlar: `Ctrl+Alt+Del` (zaten mümkün değil), `Win+L`, ayar ile ek kombinasyonlar.
@@ -492,7 +497,7 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 11. `%APPDATA%/NooXCord/host/` altında bu projeden önce oluşmuş bir `db.sqlite` + `logs/` + `uploads/` var (6 Kasım, kaynağı bilinmiyor). Host kendi dosyasını (`nooxcord.db`) kullanır; o dosyalara dokunulmadı.
 12. Medya portu (ana port + 1) LAN'da açık olmalı; WebRTC ICE başarısız olursa istemci "medya portu erişilebilir olmalı" uyarısı verir. Host yeni bir ağ arayüzü (ör. Hamachi sonradan bağlandı) için ses sunucusunu yeniden başlatmalı — şimdilik adresler ilk sese katılmada alınır.
 13. Global bas-konuş ve **mikrofon aç/kapat kısayolu** (Ayarlar → Ses, `nx.voice.muteKey`, ör. `Ctrl+Shift+KeyM`, `F9`, `Mouse4`) `GetAsyncKeyState` ile 15 ms'de bir yoklanır (yalnızca sesteyken) → oyun öndeyken de çalışır (`media:setHotkeys`). Değiştiricisiz harf kısayolu, NooXCord'da yazı alanı odaktayken tetiklenmez. Fare orta/yan tuşu kısayolda seçilebilir; bas-konuş ayarında henüz değil. Yönetici olarak çalışan oyunlarda tuş okunamayabilir.
-14. Tünel modu (NXM-WS) sınırları: tünelden giren **ekran** yayını açamaz, yalnızca izler (kamera açabilir — §6.5, WebCodecs `VideoEncoder` gerekir); video her zaman düşük simulcast katmanı; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
+14. Tünel modu (NXM-WS) sınırları: tünelden giren ekran yayını ≤720p / 15 fps ve **sessiz** açar (§6.6), kamera açabilir (§6.5) — ikisi de WebCodecs `VideoEncoder` ister; video her zaman düşük simulcast katmanı; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
 15. ~~Ana süreç metinleri~~ → Faz 4'te `main.*` anahtarlarına taşındı (ana süreç `tr.json`/`en.json`'u derleme anında paketler, dil renderer ayarını izler). **Kalan:** host'un döndürdüğü hata mesajları (`fail(...)`) Türkçe; İngilizce arayüzde de Türkçe görünür → hata kodu + anahtar ile çevrilmeli.
 16. Tünel açılışta otomatik başlamaz (bilinçli: herkese açık bağlantı kullanıcı istemeden açılmasın); her seferinde Ayarlar → Bağlantı'dan açılır.
 17. Uzaktan kontrol: panik kısayolu sabit (`Ctrl+Alt+Shift+Esc`), ek engellenecek kombinasyon ayarı yok (yalnızca Win tuşları engelli) — ayar ekranı sonraya. Yönetici yetkili pencereler girdi almaz (UIPI), istek kartında yazıyor.

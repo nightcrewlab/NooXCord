@@ -10,7 +10,7 @@ import {
 import { Methods, RemoteInput } from "@nooxcord/shared/schemas";
 import type { Conn, Hub } from "./hub";
 import type { Store } from "./store";
-import { FRAME_CAM, FRAME_KEYREQ, FRAME_MIC, FrameAssembler, audioFrame, buildRtp, packetizeH264, parseRtp, videoFrame, wantsKeyFrame } from "./rtp";
+import { FRAME_CAM, FRAME_KEYREQ, FRAME_MIC, FRAME_SCREEN, FrameAssembler, audioFrame, buildRtp, keyFrameSsrcs, packetizeH264, parseRtp, videoFrame } from "./rtp";
 import { fail, randomToken } from "./util";
 
 /*
@@ -39,15 +39,17 @@ interface WsLink {
   micSsrc: number;
   micSeq: number;
   micTs: number;
-  camSsrc: number;
-  camSeq: number;
-  lastKeyReq: number;
+  /** Browser-encoded H.264: [0] camera, [1] screen. */
+  vid: [WsVideoIn, WsVideoIn];
   sent: number;
 }
 
+interface WsVideoIn { ssrc: number; seq: number; lastKeyReq: number }
+const WS_VIDEO_SOURCES = ["camera", "screen"] as const;
+
 const MIC_PT = 100;
 const CAM_PT = 101;
-/** Tunnel-mode cameras are encoded by WebCodecs in the browser: H.264 constrained baseline. */
+/** Tunnel-mode cameras and screens are encoded by WebCodecs in the browser: H.264 constrained baseline. */
 const CAM_H264 = { "packetization-mode": 1, "profile-level-id": "42e01f", "level-asymmetry-allowed": 1 };
 const VIDEO_BACKLOG = 1_500_000; // bytes queued on the socket before we skip to the next key frame
 const AUDIO_BACKLOG = 4_000_000;
@@ -204,7 +206,8 @@ export class Media {
       }
       if (!isBinary || data.length < 2) return;
       if (data[0] === FRAME_MIC) this.micFrame(peer, data.subarray(1));
-      else if (data[0] === FRAME_CAM && data.length > 6) this.camFrame(peer, data);
+      else if (data[0] === FRAME_CAM && data.length > 6) this.videoIn(peer, data, 0);
+      else if (data[0] === FRAME_SCREEN && data.length > 6) this.videoIn(peer, data, 1);
     });
     ws.on("close", () => {
       clearTimeout(timer);
@@ -224,17 +227,17 @@ export class Media {
     } catch { /* producer closing */ }
   }
 
-  /** Tunnel-mode camera: one Annex-B access unit -> RTP packets into the peer's camera producer. */
-  private camFrame(p: Peer, data: Buffer): void {
-    const link = p.ws!;
-    const e = [...p.producers.values()].find((x) => x.source === "camera");
+  /** Tunnel-mode camera / screen: one Annex-B access unit -> RTP packets into the matching producer. */
+  private videoIn(p: Peer, data: Buffer, which: 0 | 1): void {
+    const v = p.ws!.vid[which];
+    const e = [...p.producers.values()].find((x) => x.source === WS_VIDEO_SOURCES[which]);
     if (!e || e.producer.paused) return;
     const ts = data.readUInt32BE(2);
     const payloads = packetizeH264(data.subarray(6));
     try {
       payloads.forEach((pl, i) => {
-        link.camSeq = (link.camSeq + 1) & 0xffff;
-        e.producer.send(buildRtp(CAM_PT, link.camSeq, ts, link.camSsrc, pl, i === payloads.length - 1));
+        v.seq = (v.seq + 1) & 0xffff;
+        e.producer.send(buildRtp(CAM_PT, v.seq, ts, v.ssrc, pl, i === payloads.length - 1));
       });
     } catch { /* producer closing */ }
   }
@@ -393,9 +396,14 @@ export class Media {
     }
   }
 
-  /** May this peer control or be controlled? Never guests, never browser clients (CLAUDE.md 7.3). */
-  private rcEligible(p: Peer): boolean {
+  /** Can this streamer be controlled? Only the desktop app injects input, and never for a guest (CLAUDE.md 7.3). */
+  private rcStreamer(p: Peer): boolean {
     return p.conn.desktop && this.store.userRow(p.userId)?.guest !== 1;
+  }
+
+  /** May this viewer control a stream? Any client, browser guests included, when a role grants it. */
+  private rcViewer(p: Peer): boolean {
+    return has(this.store.perms(p.room.guildId, p.userId), P.REQUEST_REMOTE_CONTROL);
   }
 
   private name(userId: string): string {
@@ -537,17 +545,21 @@ export class Media {
       const ws: WsLink | null = tunnel
         ? {
           ticket: randomToken(24), sock: null, nextTag: 1, micSsrc: (Math.random() * 0xffffffff) >>> 0, micSeq: 0, micTs: 0,
-          camSsrc: (Math.random() * 0xffffffff) >>> 0, camSeq: 0, lastKeyReq: 0, sent: 0,
+          vid: [0, 1].map(() => ({ ssrc: (Math.random() * 0xffffffff) >>> 0, seq: 0, lastKeyReq: 0 })) as [WsVideoIn, WsVideoIn], sent: 0,
         }
         : null;
       if (ws) {
-        // Viewers lost a camera frame (PLI/FIR from the router): ask the browser's encoder for a key frame.
+        // Viewers lost a frame (PLI/FIR from the router): ask the browser's encoder for a key frame.
         (send as ms.DirectTransport).on("rtcp", (b: Buffer) => {
           const now = Date.now();
-          if (now - ws.lastKeyReq < 300 || !wantsKeyFrame(b)) return;
-          ws.lastKeyReq = now;
-          const sock = ws.sock;
-          if (sock && sock.readyState === 1) sock.send(Buffer.from([FRAME_KEYREQ]));
+          for (const ssrc of new Set(keyFrameSsrcs(b))) {
+            const which = ws.vid.findIndex((v) => v.ssrc === ssrc);
+            const v = ws.vid[which];
+            if (!v || now - v.lastKeyReq < 300) continue;
+            v.lastKeyReq = now;
+            const sock = ws.sock;
+            if (sock && sock.readyState === 1) sock.send(Buffer.from([FRAME_KEYREQ, which]));
+          }
         });
       }
       const peer: Peer = { userId: conn.userId, conn, room, state, send, recv, ws, producers: new Map(), consumers: new Map(), watching: new Set() };
@@ -601,7 +613,7 @@ export class Media {
     "media.produce": async (conn, p) => {
       const peer = this.peerOf(conn);
       if (!peer.ws && p.transportId !== peer.send.id) fail("bad_request", "Yanlış transport.");
-      if (peer.ws && p.source !== "mic" && p.source !== "camera") fail("forbidden", "Tünel modunda yayın açılamaz.");
+      if (peer.ws && p.source === "screen-audio") fail("forbidden", "Tünel modunda yayın sesi gönderilemez.");
       const perms = this.store.perms(peer.room.guildId, peer.userId);
       const wantKind = p.source === "screen" || p.source === "camera" ? "video" : "audio";
       if (p.kind !== wantKind) fail("bad_request", "Kaynak türü uyuşmuyor.");
@@ -613,10 +625,10 @@ export class Media {
         kind: p.kind,
         // Tunnel mode: the server packetizes the client's Opus / H.264 frames itself.
         rtpParameters: peer.ws
-          ? p.source === "camera"
+          ? p.source === "camera" || p.source === "screen"
             ? {
               codecs: [{ mimeType: "video/H264", payloadType: CAM_PT, clockRate: 90000, parameters: CAM_H264, rtcpFeedback: [{ type: "nack", parameter: "pli" }, { type: "ccm", parameter: "fir" }] }],
-              encodings: [{ ssrc: peer.ws.camSsrc }],
+              encodings: [{ ssrc: peer.ws.vid[p.source === "camera" ? 0 : 1].ssrc }],
             }
             : { codecs: [{ mimeType: "audio/opus", payloadType: MIC_PT, clockRate: 48000, channels: 2, parameters: { useinbandfec: 1 } }], encodings: [{ ssrc: peer.ws.micSsrc }] }
           : (p.rtpParameters as unknown as ms.RtpParameters),
@@ -722,6 +734,7 @@ export class Media {
           thumbnail: peer.state.stream?.thumbnail ?? (thumb ? `/thumbs/${thumb.id}.jpg` : null),
           viewers: peer.state.stream?.viewers ?? [],
           controllerId: peer.state.stream?.controllerId ?? null,
+          controllable: this.rcStreamer(peer),
         },
       };
       this.broadcastState(peer);
@@ -738,8 +751,8 @@ export class Media {
       const target = peer.room.peers.get(p.userId);
       if (!target?.state.stream) fail("not_found", "Bu yayın artık yok.");
       if (target === peer || !peer.watching.has(target!.userId)) fail("bad_request", "Önce yayını izlemelisin.");
-      if (!this.rcEligible(peer) || !has(this.store.perms(peer.room.guildId, peer.userId), P.REQUEST_REMOTE_CONTROL)) fail("forbidden", "Uzaktan kontrol isteyemezsin.");
-      if (!this.rcEligible(target!)) fail("forbidden", "Bu yayın uzaktan kontrolü desteklemiyor.");
+      if (!this.rcViewer(peer)) fail("forbidden", "Uzaktan kontrol isteyemezsin.");
+      if (!this.rcStreamer(target!)) fail("forbidden", "Bu yayın uzaktan kontrolü desteklemiyor.");
       if (target!.state.stream!.controllerId === peer.userId) return null;
       const key = `${peer.userId}>${target!.userId}`;
       if (Date.now() - (this.rcLastRequest.get(key) ?? 0) < 5000) fail("rate_limited", "Biraz bekle.");
@@ -755,7 +768,7 @@ export class Media {
       if (!viewer || viewer === peer) fail("not_found", "Bu kişi kanalda değil.");
       if (p.allow) {
         if (!viewer!.watching.has(peer.userId)) fail("bad_request", "Bu kişi yayını izlemiyor.");
-        if (!this.rcEligible(peer) || !this.rcEligible(viewer!) || !has(this.store.perms(peer.room.guildId, viewer!.userId), P.REQUEST_REMOTE_CONTROL)) {
+        if (!this.rcStreamer(peer) || !this.rcViewer(viewer!)) {
           fail("forbidden", "Bu kişiye kontrol verilemez.");
         }
         this.setController(peer, viewer!.userId, "granted");

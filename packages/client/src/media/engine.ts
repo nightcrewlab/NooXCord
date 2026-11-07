@@ -119,6 +119,8 @@ class VoiceEngine {
   private screenAudioProducer: msc.Producer | null = null;
   private sysAudio: PcmTrack | null = null;
   private shareOpts: ShareOptions | null = null;
+  /** Tunnel mode: id of the screen producer the host made for our WebCodecs frames. */
+  private screenWsId: string | null = null;
 
   private camStream: MediaStream | null = null;
   private camProducer: msc.Producer | null = null;
@@ -259,6 +261,7 @@ class VoiceEngine {
     this.screenAudioProducer = null;
     this.camProducer = null;
     this.camWsId = null;
+    this.screenWsId = null;
     this.send?.close();
     this.recv?.close();
     this.send = this.recv = null;
@@ -774,7 +777,7 @@ class VoiceEngine {
     if (this.mode === "ws") {
       const wsm = this.wsm;
       if (!wsm) return;
-      await wsm.startCamera(track);
+      await wsm.startVideo("camera", track);
       const { id } = await conn.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "camera" });
       this.camWsId = id;
       return;
@@ -805,7 +808,7 @@ class VoiceEngine {
     this.camProducer?.close();
     this.camProducer = null;
     this.camWsId = null;
-    this.wsm?.stopCamera();
+    this.wsm?.stopVideo("camera");
     this.camStream?.getTracks().forEach((x) => x.stop());
     this.camStream = null;
     if (useVoice.getState().camera) setV({ camera: null });
@@ -830,7 +833,7 @@ class VoiceEngine {
     const track = stream.getVideoTracks()[0]!;
     track.addEventListener("ended", () => { if (this.camStream === stream) void this.stopCamera(); });
     if (this.camProducer) await this.camProducer.replaceTrack({ track });
-    this.wsm?.setCameraTrack(track);
+    this.wsm?.setVideoTrack("camera", track);
     this.camStream = stream;
     this.camFacing = (track.getSettings().facingMode as "user" | "environment" | undefined) ?? got;
     setV((s) => ({ camera: s.camera ? { ...s.camera, facing: this.camFacing } : null }));
@@ -844,8 +847,9 @@ class VoiceEngine {
   // ---------- screen share ----------
 
   async startScreen(opts: ShareOptions): Promise<void> {
-    if (this.mode === "ws" && useVoice.getState().channelId) throw new Error(t("err.streamTunnel"));
-    if (!this.send) throw new Error(t("err.joinVoiceFirst"));
+    const tunnel = this.mode === "ws";
+    if (!this.send && !(tunnel && this.wsm)) throw new Error(t("err.joinVoiceFirst"));
+    if (tunnel && (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined")) throw new Error(t("err.screenNoEncoder"));
     const preset = STREAM_PRESETS[opts.preset];
     const width = preset.width || opts.sourceSize?.width || 1920;
     const height = preset.height || opts.sourceSize?.height || 1080;
@@ -855,7 +859,7 @@ class VoiceEngine {
     if (opts.testTrack) stream = new MediaStream([opts.testTrack]);
     else {
       if (platform.media && opts.sourceId) await platform.media.selectSource(opts.sourceId);
-      const webAudio = !platform.media && opts.audio;
+      const webAudio = !platform.media && opts.audio && !tunnel; // tunnel mode carries no stream audio
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: { width: { max: width }, height: { max: height }, frameRate: { ideal: fps, max: fps } },
         audio: webAudio ? { suppressLocalAudioPlayback: false } : false,
@@ -873,7 +877,7 @@ class VoiceEngine {
 
     // Desktop system audio, NooXCord's own sound excluded (CLAUDE.md §6.3).
     let audioTrack = stream.getAudioTracks()[0] ?? null;
-    if (!audioTrack && opts.audio && platform.media) audioTrack = await this.startSystemAudio();
+    if (!audioTrack && opts.audio && platform.media && !tunnel) audioTrack = await this.startSystemAudio();
     if (audioTrack) stream.addTrack(audioTrack);
 
     try {
@@ -913,8 +917,9 @@ class VoiceEngine {
   }
 
   private async publishScreen(opts: ShareOptions): Promise<void> {
-    const send = this.send;
     const stream = this.screenStream;
+    if (this.mode === "ws") return this.publishScreenWs(stream);
+    const send = this.send;
     const device = this.device;
     if (!send || !stream || !device) return;
     const video = stream.getVideoTracks()[0]!;
@@ -949,6 +954,20 @@ class VoiceEngine {
       fps: Math.max(1, Math.round(st.frameRate ?? preset.fps)),
       audio: !!audio,
     });
+  }
+
+  /** Tunnel mode: the browser encodes H.264 itself (≤1280x720, 15 fps), no stream audio. */
+  private async publishScreenWs(stream: MediaStream | null): Promise<void> {
+    const wsm = this.wsm, conn = this.conn;
+    const video = stream?.getVideoTracks()[0];
+    if (!wsm || !conn || !video) return;
+    stream!.getAudioTracks().forEach((a) => { a.stop(); stream!.removeTrack(a); });
+    await wsm.startVideo("screen", video);
+    const { id } = await conn.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen" });
+    this.screenWsId = id;
+    const st = video.getSettings();
+    const w = st.width ?? 1280, h = st.height ?? 720, k = Math.min(1, 1280 / w, 720 / h);
+    await conn.call("stream.start", { width: Math.max(1, Math.round(w * k)), height: Math.max(1, Math.round(h * k)), fps: 15, audio: false });
   }
 
   /** One-off 480px JPEG preview (CLAUDE.md §6.4). */
@@ -986,6 +1005,8 @@ class VoiceEngine {
     this.screenProducer?.close();
     this.screenAudioProducer?.close();
     this.screenProducer = this.screenAudioProducer = null;
+    this.screenWsId = null;
+    this.wsm?.stopVideo("screen");
     this.screenStream?.getTracks().forEach((t) => t.stop());
     this.screenStream = null;
     this.shareOpts = null;

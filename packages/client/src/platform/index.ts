@@ -251,7 +251,8 @@ function webPlatform(): Platform {
     app: null,
     updates: null,
     backup: null,
-    canShareScreen: !mobile && typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia,
+    // Phones too where the browser offers it (Android Chrome may; iPhone Safari does not).
+    canShareScreen: typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function",
     isMobile: mobile,
   };
 }

@@ -151,6 +151,25 @@ export async function voiceSelfTest(): Promise<void> {
     const bSeesA = await camFrames(b, ida);
     check("WebRTC user sees a WebRTC camera", bSeesA.n > 20 && bSeesA.w > 0, JSON.stringify(bSeesA));
 
+    // Screen share from the tunnel user (WebCodecs H.264 next to the camera encoder), watched over WebRTC.
+    const sc = await shareCanvas(c, "#2e7a12");
+    check("tunnel user starts a screen share", !!sc, JSON.stringify(sc));
+    await b.webContents.executeJavaScript(`window.__nx.voice.watch(${JSON.stringify(idc)})`);
+    await sleep(1500);
+    const bSeesCScreen = await b.webContents.executeJavaScript(`(async () => {
+      const w = window.__nx.useVoice.getState().watching[${JSON.stringify(idc)}]; if (!w || !w.stream) return { n: -1, w: 0, h: 0 };
+      const v = document.createElement("video"); v.muted = true; v.srcObject = w.stream; await v.play().catch(() => {});
+      document.body.appendChild(v); v.style.cssText = "position:fixed;left:0;top:0;width:160px;height:90px";
+      await new Promise((r) => setTimeout(r, 500));
+      const q0 = v.getVideoPlaybackQuality().totalVideoFrames;
+      await new Promise((r) => setTimeout(r, 2500));
+      const n = v.getVideoPlaybackQuality().totalVideoFrames - q0;
+      v.remove(); return { n, w: v.videoWidth, h: v.videoHeight };
+    })()`);
+    check("WebRTC user watches the tunnel user's screen", bSeesCScreen.n > 15 && bSeesCScreen.w > 0, JSON.stringify(bSeesCScreen));
+    await c.webContents.executeJavaScript(`window.__nx.voice.stopScreen()`);
+    await sleep(400);
+
     if (process.env.NX_SHOT) {
       const img = await c.webContents.capturePage();
       fs.writeFileSync(process.env.NX_SHOT, img.toPNG());

@@ -314,7 +314,7 @@
   "mobile.pickText": "Pick a text channel in the Servers tab.",
   "mobile.pickVoice": "Tap a voice channel in the Servers tab.",
   "voice.tunnelMode": "Tunnel mode",
-  "voice.tunnelModeDesc": "Voice and video arrive over WebSocket through the tunnel; the delay is a bit higher. Screen sharing is not available in this mode; the camera is.",
+  "voice.tunnelModeDesc": "Voice and video arrive over WebSocket through the tunnel; the delay is a bit higher. Screen sharing in this mode is limited to 720p, without audio.",
   "remote.request": "Request control",
   "remote.requested": "Request sent",
   "remote.release": "Release control",
@@ -423,7 +423,6 @@
   "err.micDenied": "Microphone permission was denied; you can only listen.",
   "err.micMissing": "No microphone found; you can only listen.",
   "err.micFailed": "The microphone could not be opened; you can only listen.",
-  "err.streamTunnel": "You cannot stream in tunnel mode. Streaming needs LAN, Hamachi or an open port.",
   "err.joinVoiceFirst": "Join a voice channel first.",
   "err.noVideo": "No video could be captured.",
   "err.sysAudioUnsupported": "System audio cannot be captured on this computer; the stream started without sound.",
@@ -469,5 +468,7 @@
   "err.camFailed": "Could not open the camera.",
   "err.camNoEncoder": "This browser cannot send a camera in tunnel mode (no WebCodecs H.264 encoder).",
   "settings.camera": "Camera",
-  "settings.cameraN": "Camera {n}"
+  "settings.cameraN": "Camera {n}",
+  "stream.tunnelNote": "You are in tunnel mode: the stream goes out at up to 720p / 15 fps, without audio.",
+  "err.screenNoEncoder": "This browser cannot stream in tunnel mode (no WebCodecs H.264 encoder)."
 }

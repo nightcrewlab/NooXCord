@@ -12,7 +12,8 @@ import { useStore } from "../state/store";
  *  Streamer: incoming requests (accept / deny / always this session), right-click "give control",
  *          input from the host goes to the main process (SendInput). The panic shortcut, the visible
  *          frame and the local-input priority live in the main process (apps/desktop/src/main/remote.ts).
- * Browsers never take part: the host refuses them and the buttons are not shown.
+ * Any client may control (browser, phone: pointer/touch + keys) when a role grants REQUEST_REMOTE_CONTROL;
+ * only desktop-app streamers can be controlled (StreamInfo.controllable).
  */
 
 interface RemoteUi {
@@ -28,7 +29,7 @@ interface RemoteUi {
 
 export const useRemote = create<RemoteUi>()(() => ({ requests: [], asked: null, controlling: null, controlledBy: null }));
 
-/** This client can ask for / grant remote control (desktop app with the native module, not a guest). */
+/** This client can be controlled / grant control (desktop app with the native module, not a guest). */
 export function remoteCapable(): boolean {
   return platform.kind === "desktop" && !!platform.remote && !useStore.getState().me?.guest;
 }

@@ -1,11 +1,12 @@
-// Remote-control rules on the host (CLAUDE.md §7.3): request/grant/input/stop, guests and browsers refused.
+// Remote-control rules on the host (CLAUDE.md §7.3): request/grant/input/stop; viewers by role (browsers too),
+// only desktop streamers controllable; tunnel-mode browser screen share.
 // Run: pnpm --filter @nooxcord/server test
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
-import type { AuthResponse, Events, GuildState, MethodName, VoiceJoinResult, VoiceState } from "@nooxcord/shared";
+import { P, type AuthResponse, type Events, type GuildState, type MethodName, type VoiceJoinResult, type VoiceState } from "@nooxcord/shared";
 import { startHost } from "../src/index";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nx-remote-"));
@@ -83,17 +84,27 @@ try {
     transportId: joined.send!.id, kind: "video", source: "screen",
     rtpParameters: { codecs: [{ mimeType: "video/VP8", payloadType: 101, clockRate: 90000 }], encodings: [{ ssrc: 22222 }] },
   });
-  await A.call("stream.start", { width: 1280, height: 720, fps: 30, audio: false });
+  const live = await A.call<VoiceState>("stream.start", { width: 1280, height: 720, fps: 30, audio: false });
+  assert.equal(live.stream?.controllable, true);
   for (const c of [B, W, G]) await c.call("stream.watch", { userId: A.id, watching: true });
-  ok("streamer live, three viewers");
+  ok("streamer live (controllable), three viewers");
 
   await rejects(B.call("remote.request", { userId: B.id }), "not_found");
   await rejects(A.call("remote.request", { userId: A.id }), "bad_request");
-  await rejects(W.call("remote.request", { userId: A.id }), "forbidden");
   await rejects(G.call("remote.request", { userId: A.id }), "forbidden");
   await rejects(A.call("remote.respond", { userId: G.id, allow: true }), "forbidden");
-  await rejects(A.call("remote.respond", { userId: W.id, allow: true }), "forbidden");
-  ok("guests and browser clients can neither ask for nor be given control");
+  ok("a guest without a role granting it can neither ask for nor be given control");
+
+  // A browser viewer with the permission (registered member) may ask; the streamer sees it.
+  await W.call("remote.request", { userId: A.id });
+  await A.waitFor<Events["remote.request"]>("remote.request", (d) => d.userId === W.id);
+  // The host gives the guest an explicit role with the bit: now they may ask too.
+  const role = await A.call<{ id: string }>("role.create", { guildId: gs.guild.id, name: "Kontrol", perms: P.REQUEST_REMOTE_CONTROL });
+  await A.call("member.setRoles", { guildId: gs.guild.id, userId: G.id, roleIds: [role.id] });
+  await G.waitFor<{ myPerms: number }>("perms.update", (d) => (d.myPerms & P.REQUEST_REMOTE_CONTROL) !== 0);
+  await G.call("remote.request", { userId: A.id });
+  await A.waitFor<Events["remote.request"]>("remote.request", (d) => d.userId === G.id);
+  ok("browser viewers and guests may ask when a role grants it");
 
   await B.call("remote.request", { userId: A.id });
   await A.waitFor<Events["remote.request"]>("remote.request", (d) => d.userId === B.id);
@@ -148,6 +159,19 @@ try {
   await sleep(150);
   assert.equal(A.count("remote.input"), 1);
   ok("stream stop ends control; later input is dropped");
+
+  // --- tunnel-mode browser screen share: works, but cannot be controlled ---
+  const role2 = await A.call<{ id: string }>("role.create", { guildId: gs.guild.id, name: "Yayin", perms: P.STREAM });
+  await A.call("member.setRoles", { guildId: gs.guild.id, userId: G.id, roleIds: [role.id, role2.id] });
+  await G.waitFor<{ myPerms: number }>("perms.update", (d) => (d.myPerms & P.STREAM) !== 0);
+  await rejects(G.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "screen-audio" }), "forbidden");
+  await G.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen" });
+  const gl = await G.call<VoiceState>("stream.start", { width: 1280, height: 720, fps: 15, audio: false });
+  assert.equal(gl.stream?.controllable, false);
+  await B.call("stream.watch", { userId: G.id, watching: true });
+  await rejects(B.call("remote.request", { userId: G.id }), "forbidden");
+  await G.call("stream.stop", {});
+  ok("tunnel-mode browser can screen share; browser streams are not controllable");
 
   // --- direct messages ---
   const dm = await A.call<{ id: string; userIds: string[] }>("dm.open", { userId: B.id });

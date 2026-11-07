@@ -204,7 +204,7 @@ function ViewerList({ viewers, controllerId }: { viewers: string[]; controllerId
   const menu = (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     const u = users[id];
-    if (!capable || !u || u.guest) return;
+    if (!capable || !u) return; // the host checks the viewer's role
     openMenu(e, [
       { label: u.nickname, icon: "user", disabled: true },
       controllerId === id
@@ -290,7 +290,8 @@ function WatchTile({ userId, w, state, big }: { userId: string; w: WatchedStream
   }, [pseudo]);
   const live = w?.hasVideo;
   const rc = useRemote(useShallow((x) => ({ asked: x.asked === userId, controlling: x.controlling === userId })));
-  const canAsk = big && live && remoteCapable() && !user?.guest && !!state?.stream && has(useStore.getState().guilds[state.guildId]?.myPerms ?? 0, P.REQUEST_REMOTE_CONTROL);
+  // Any client may control (browser and phone too) when a role allows it; only desktop streamers can be controlled.
+  const canAsk = big && live && !!state?.stream?.controllable && has(useStore.getState().guilds[state.guildId]?.myPerms ?? 0, P.REQUEST_REMOTE_CONTROL);
   return (
     <div ref={ref} className={cx(s.tile, big && s.big, !big && s.tileClickable, pseudo && s.pseudoFs)} onClick={() => !big && voice.setFocus(userId)}>
       {w && live ? <StreamVideo stream={w.stream} muted={deafened} volume={vol} /> : <div className={s.tileCenter}><Spinner />{t("stream.loading")}</div>}
@@ -325,7 +326,7 @@ export const cameraSupported = (): boolean => typeof navigator !== "undefined" &
 function CallControls({ guildId, onShare }: { guildId: string; onShare: () => void }) {
   const v = useVoice(useShallow((x) => ({ muted: x.muted, deafened: x.deafened, sharing: !!x.sharing, status: x.status, transport: x.transport, camera: x.camera })));
   const myPerms = useStore((st) => st.guilds[guildId]?.myPerms ?? 0);
-  const canStream = has(myPerms, P.STREAM) && platform.canShareScreen && v.transport !== "ws";
+  const canStream = has(myPerms, P.STREAM) && platform.canShareScreen;
   const canCam = has(myPerms, P.VIDEO) && cameraSupported();
   return (
     <div className={s.controls}>

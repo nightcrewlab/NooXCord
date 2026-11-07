@@ -307,7 +307,8 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   let media: Media | null = null;
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
   // Tunnel-mode media (NXM-WS): binary frames, authenticated by a one-time ticket from voice.join.
-  const mediaWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024, perMessageDeflate: false });
+  // Up to one H.264 access unit per message: screen key frames reach a few hundred KB (MAX_VIDEO_FRAME in wsMedia.ts).
+  const mediaWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   app.server.on("upgrade", (req, socket, head) => {
     const pathname = new URL(req.url ?? "/", "http://x").pathname;
     if (pathname === "/media") return mediaWss.handleUpgrade(req, socket, head, (ws) => media?.attachSocket(ws));

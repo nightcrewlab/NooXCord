@@ -116,6 +116,8 @@ export interface StreamInfo {
   viewers: string[];
   /** Viewer currently controlling this stream's keyboard/mouse (CLAUDE.md §7). */
   controllerId: string | null;
+  /** The streamer runs the desktop app (SendInput), so viewers may ask for control. */
+  controllable: boolean;
 }
 
 /**
