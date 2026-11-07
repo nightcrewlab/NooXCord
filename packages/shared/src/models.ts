@@ -149,9 +149,12 @@ export interface TransportParams {
 export interface VoiceJoinResult {
   state: VoiceState;
   rtpCapabilities: unknown;
-  send: TransportParams;
-  recv: TransportParams;
+  /** WebRTC mode only. */
+  send: TransportParams | null;
+  recv: TransportParams | null;
   producers: RemoteProducer[];
+  /** Tunnel mode (NXM-WS): one-time ticket for the /media WebSocket. */
+  wsTicket: string | null;
 }
 
 export interface ConsumerParams {
@@ -161,6 +164,8 @@ export interface ConsumerParams {
   source: MediaSource;
   kind: "audio" | "video";
   rtpParameters: unknown;
+  /** Tunnel mode: tag of this consumer's frames on the /media socket. */
+  tag: number | null;
 }
 
 export interface ReadyPayload {
@@ -176,4 +181,6 @@ export interface HostInfo {
   version: string;
   allowRegistration: boolean;
   allowGuests: boolean;
+  /** Guests must enter the host's guest password. */
+  guestPassword: boolean;
 }

@@ -79,10 +79,14 @@ export async function voiceSelfTest(): Promise<void> {
     const ids: string[] = await Promise.all([a, b, c].map((w) => w.webContents.executeJavaScript(`window.__nx.useStore.getState().me.id`)));
     const [ida, idb] = ids as [string, string, string];
 
+    // C uses tunnel mode (NXM-WS: WebSocket + WebCodecs), A and B use WebRTC.
+    await c.webContents.executeJavaScript(`window.__nx.voice.forceWs = true`);
     for (const w of [a, b, c]) await w.webContents.executeJavaScript(`window.__nx.voice.join(${JSON.stringify(guildId)}, ${JSON.stringify(vc)})`);
     await sleep(1500);
     const statuses = await Promise.all([a, b, c].map((w) => w.webContents.executeJavaScript(`window.__nx.useVoice.getState().status`)));
     check("3 users connected to voice", statuses.every((s) => s === "connected"), statuses.join(","));
+    const modes = await Promise.all([a, b, c].map((w) => w.webContents.executeJavaScript(`window.__nx.useVoice.getState().transport`)));
+    check("C is in tunnel mode, A/B WebRTC", modes.join() === "rtc,rtc,ws", modes.join(","));
     const seen = await c.webContents.executeJavaScript(`window.__nx.useStore.getState().guilds[${JSON.stringify(guildId)}].voice.length`);
     check("voice states broadcast to members", seen === 3, `C sees ${seen}`);
 

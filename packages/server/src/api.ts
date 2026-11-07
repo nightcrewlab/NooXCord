@@ -100,6 +100,7 @@ export class Api {
     },
 
     "guild.create": (uid, p) => {
+      if (this.store.userRow(uid)?.guest === 1) fail("forbidden", "Misafirler sunucu oluşturamaz.");
       const gid = newId();
       const now = Date.now();
       this.db.tx(() => {

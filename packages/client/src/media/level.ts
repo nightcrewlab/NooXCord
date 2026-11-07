@@ -28,7 +28,7 @@ let moduleReady: Promise<void> | null = null;
 /** Shared AudioContext. Create it inside a user gesture the first time (iOS). */
 export function audioContext(): AudioContext {
   if (!ctx || ctx.state === "closed") {
-    ctx = new AudioContext({ latencyHint: "interactive" });
+    ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 }); // 48 kHz: Opus in tunnel mode
     moduleReady = null;
   }
   if (ctx.state === "suspended") void ctx.resume();

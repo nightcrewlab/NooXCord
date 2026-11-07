@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,7 @@ import { Db } from "./db";
 import { Hub, type Conn } from "./hub";
 import { Media } from "./media";
 import { Store, mapAttachment } from "./store";
+import { proxyImage, setProxyKey } from "./unfurl";
 import { AppError, fail, httpStatus, newId } from "./util";
 
 export interface HostOptions {
@@ -28,10 +30,20 @@ export interface HostOptions {
   webDir?: string;
   name?: string;
   logger?: boolean;
+  config?: Partial<HostConfig>;
+}
+
+/** Host-owner settings (set by the desktop app, never over the network). */
+export interface HostConfig {
+  allowRegistration: boolean;
+  allowGuests: boolean;
+  /** Optional shared password for browser guests (recommended when a tunnel is open). */
+  guestPassword: string | null;
 }
 
 export interface RunningHost {
   port: number;
+  setConfig(c: Partial<HostConfig>): void;
   close(): Promise<void>;
 }
 
@@ -66,11 +78,17 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   for (const d of [opts.dataDir, ...Object.values(dirs)]) fs.mkdirSync(d, { recursive: true });
 
   const db = new Db(path.join(opts.dataDir, "nooxcord.db"));
+  const keyFile = path.join(opts.dataDir, "proxy.key");
+  if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, randomBytes(32));
+  setProxyKey(fs.readFileSync(keyFile));
   const hub = new Hub();
   const store = new Store(db, hub.isOnline);
   const auth = new Auth(db, store);
   const api = new Api(db, store, hub, dirs.uploads);
-  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: false };
+  const config: HostConfig = { allowRegistration: true, allowGuests: true, guestPassword: null, ...opts.config };
+  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: true, guestPassword: false };
+  const syncInfo = () => Object.assign(info, { allowRegistration: config.allowRegistration, allowGuests: config.allowGuests, guestPassword: !!config.guestPassword });
+  syncInfo();
 
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 64 * 1024, trustProxy: true });
 
@@ -134,6 +152,10 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   app.post("/api/auth/register", authLimit, async (req) => {
     if (!info.allowRegistration) fail("forbidden", "Bu sunucuda kayıt kapalı.");
     return auth.register(req.body, req.headers["user-agent"]);
+  });
+  app.post("/api/auth/guest", authLimit, async (req) => {
+    if (!config.allowGuests) fail("forbidden", "Bu sunucuda misafir girişi kapalı.");
+    return auth.guest(req.body, req.headers["user-agent"], config.guestPassword);
   });
   app.post("/api/auth/login", authLimit, async (req) => auth.login(req.body, req.headers["user-agent"]));
   app.post("/api/auth/logout", async (req) => {
@@ -231,6 +253,17 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   serveImageDir("/avatars", dirs.avatars);
   serveImageDir("/guild-icons", dirs.icons);
 
+  // Link-preview images through the host (signed links only), so viewers never contact third parties.
+  app.get<{ Params: { sig: string; enc: string } }>("/proxy/img/:sig/:enc", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
+    const img = await proxyImage(req.params.sig, req.params.enc, sniffImage);
+    if (!img) return reply.code(404).send();
+    return reply
+      .header("content-type", img.type)
+      .header("content-security-policy", "default-src 'none'; sandbox")
+      .header("cache-control", "public, max-age=86400")
+      .send(img.body);
+  });
+
   // ---------- stream thumbnails (in memory, one per streamer) ----------
   app.post("/api/stream/thumbnail", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req) => {
     const uid = requireUser(req);
@@ -261,8 +294,12 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   let stopping = false;
   let media: Media | null = null;
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
+  // Tunnel-mode media (NXM-WS): binary frames, authenticated by a one-time ticket from voice.join.
+  const mediaWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024, perMessageDeflate: false });
   app.server.on("upgrade", (req, socket, head) => {
-    if (new URL(req.url ?? "/", "http://x").pathname !== "/ws") return socket.destroy();
+    const pathname = new URL(req.url ?? "/", "http://x").pathname;
+    if (pathname === "/media") return mediaWss.handleUpgrade(req, socket, head, (ws) => media?.attachSocket(ws));
+    if (pathname !== "/ws") return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });
 
@@ -353,11 +390,16 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
 
   return {
     port,
+    setConfig(c) {
+      Object.assign(config, c);
+      syncInfo();
+    },
     async close() {
       stopping = true;
       clearInterval(sweep);
       await media?.close();
-      for (const ws of wss.clients) ws.terminate();
+      for (const ws of [...wss.clients, ...mediaWss.clients]) ws.terminate();
+      mediaWss.close();
       wss.close();
       await app.close();
       db.close();

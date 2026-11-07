@@ -31,6 +31,11 @@ export const LoginBody = z.object({
   password: z.string().min(1).max(256),
 });
 
+export const GuestBody = z.object({
+  nickname,
+  password: z.string().max(256).optional(),
+});
+
 // ---------- RPC methods ----------
 export const Methods = {
   "me.update": z.object({ nickname: nickname.optional(), status: z.enum(["online", "idle", "dnd", "invisible"]).optional() }),
@@ -60,7 +65,7 @@ export const Methods = {
   "role.delete": z.object({ roleId: id }),
   "member.setRoles": z.object({ guildId: id, userId: id, roleIds: z.array(id).max(50) }),
   "member.kick": z.object({ guildId: id, userId: id }),
-  "voice.join": z.object({ channelId: id, muted: z.boolean().optional(), deafened: z.boolean().optional() }),
+  "voice.join": z.object({ channelId: id, muted: z.boolean().optional(), deafened: z.boolean().optional(), transport: z.enum(["rtc", "ws"]).optional() }),
   "voice.leave": z.object({}),
   "voice.speaking": z.object({ speaking: z.boolean() }),
   "voice.update": z.object({ muted: z.boolean().optional(), deafened: z.boolean().optional() }),

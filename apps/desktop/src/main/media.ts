@@ -13,6 +13,7 @@ interface NativeModule {
   loopbackRead(): Float32Array;
   loopbackStop(): void;
   keyDown(vk: number): boolean;
+  exclusiveFullscreen?(): boolean;
 }
 
 let native: NativeModule | null = null;
@@ -25,6 +26,11 @@ try {
 } catch (e) {
   nativeError = String(e);
 }
+
+/** Exclusive-fullscreen check for the overlay hint (false when the native module is missing). */
+export const exclusiveFullscreen = (): boolean => {
+  try { return !!native?.exclusiveFullscreen?.(); } catch { return false; }
+};
 
 let pendingSource: string | null = null;
 let audio: { port: MessagePortMain; timer: NodeJS.Timeout; owner: WebContents } | null = null;

@@ -1,5 +1,6 @@
 import os from "node:os";
 import * as mediasoup from "mediasoup";
+import type { WebSocket } from "ws";
 import type { types as ms } from "mediasoup";
 import {
   P, has,
@@ -9,6 +10,7 @@ import {
 import { Methods } from "@nooxcord/shared/schemas";
 import type { Conn, Hub } from "./hub";
 import type { Store } from "./store";
+import { FRAME_MIC, FrameAssembler, audioFrame, buildRtp, parseRtp, videoFrame } from "./rtp";
 import { fail, randomToken } from "./util";
 
 /*
@@ -27,13 +29,29 @@ const CODECS: ms.RouterRtpCodecCapability[] = [
 
 interface ProducerEntry { producer: ms.Producer; source: MediaSource }
 
+/** Tunnel-mode (NXM-WS) state of a peer: media goes over a WebSocket instead of WebRTC. */
+interface WsLink {
+  ticket: string;
+  sock: WebSocket | null;
+  nextTag: number;
+  micSsrc: number;
+  micSeq: number;
+  micTs: number;
+  sent: number;
+}
+
+const MIC_PT = 100;
+const VIDEO_BACKLOG = 1_500_000; // bytes queued on the socket before we skip to the next key frame
+const AUDIO_BACKLOG = 4_000_000;
+
 interface Peer {
   userId: string;
   conn: Conn;
   room: Room;
   state: VoiceState;
-  send: ms.WebRtcTransport;
-  recv: ms.WebRtcTransport;
+  send: ms.WebRtcTransport | ms.DirectTransport;
+  recv: ms.WebRtcTransport | ms.DirectTransport;
+  ws: WsLink | null;
   producers: Map<string, ProducerEntry>;
   consumers: Map<string, ms.Consumer>;
   /** Streamers this peer is watching. */
@@ -69,6 +87,7 @@ export class Media {
   private rooms = new Map<string, Room>();
   private peers = new Map<string, Peer>();
   private thumbs = new Map<string, Thumb>(); // userId -> latest stream thumbnail
+  private tickets = new Map<string, Peer>();
   private closed = false;
 
   constructor(private store: Store, private hub: Hub, private port: number, private bind?: string, private log: (...a: unknown[]) => void = () => {}) {}
@@ -128,6 +147,56 @@ export class Media {
         if (!has(perms, P.STREAM) && p.state.stream) this.stopStream(p);
       }
     }
+  }
+
+  /** A /media WebSocket connected: the first message must be {"ticket": "..."} from voice.join. */
+  attachSocket(ws: WebSocket): void {
+    const timer = setTimeout(() => ws.close(4001, "ticket timeout"), 8000);
+    let peer: Peer | null = null;
+    const ping = setInterval(() => ws.readyState === 1 && ws.ping(), 15_000); // tunnels drop idle sockets
+    ws.on("message", (data: Buffer, isBinary: boolean) => {
+      if (!peer) {
+        if (isBinary) return ws.close(4001, "no ticket");
+        let ticket = "";
+        try { ticket = String(JSON.parse(String(data)).ticket ?? ""); } catch { /* bad frame */ }
+        const p = this.tickets.get(ticket);
+        this.tickets.delete(ticket);
+        if (!p || !p.ws || this.peers.get(p.userId) !== p) return ws.close(4001, "bad ticket");
+        clearTimeout(timer);
+        p.ws.sock?.close(4002, "replaced");
+        p.ws.sock = ws;
+        peer = p;
+        ws.send(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (isBinary && data.length > 1 && data[0] === FRAME_MIC) this.micFrame(peer, data.subarray(1));
+    });
+    ws.on("close", () => {
+      clearTimeout(timer);
+      clearInterval(ping);
+      if (peer?.ws?.sock === ws) peer.ws.sock = null;
+    });
+  }
+
+  private micFrame(p: Peer, opus: Buffer): void {
+    const link = p.ws!;
+    const e = [...p.producers.values()].find((x) => x.source === "mic");
+    if (!e || e.producer.paused) return;
+    link.micSeq = (link.micSeq + 1) & 0xffff;
+    link.micTs = (link.micTs + 960) >>> 0; // 20 ms at 48 kHz
+    try {
+      e.producer.send(buildRtp(MIC_PT, link.micSeq, link.micTs, link.micSsrc, opus));
+    } catch { /* producer closing */ }
+  }
+
+  /** Sends a frame to a tunnel-mode peer; false when the socket is too far behind. */
+  private wsSend(p: Peer, buf: Buffer, limit: number): boolean {
+    const sock = p.ws?.sock;
+    if (!sock || sock.readyState !== 1) return false;
+    if (sock.bufferedAmount > limit) return false;
+    sock.send(buf);
+    p.ws!.sent += buf.length;
+    return true;
   }
 
   /** Stores the stream preview JPEG; returns its URL. */
@@ -285,6 +354,11 @@ export class Media {
     this.thumbs.delete(p.userId);
     p.send.close(); // closes producers; consumers elsewhere get "producerclose"
     p.recv.close();
+    if (p.ws) {
+      this.tickets.delete(p.ws.ticket);
+      p.ws.sock?.close(1000, "left");
+      p.ws.sock = null;
+    }
     if (reason && !silent) this.toConn(p.conn, "voice.ended", { reason });
     if (room.speaking.includes(p.userId)) {
       room.speaking = room.speaking.filter((id) => id !== p.userId);
@@ -305,6 +379,47 @@ export class Media {
     }
   }
 
+  /** Codecs a WebCodecs client can decode from our frames: Opus, H.264, VP8; no RTX, no extensions. */
+  private directCaps(router: ms.Router): ms.RtpCapabilities {
+    const codecs = (router.rtpCapabilities.codecs ?? []).filter((c) => !/rtx$/i.test(c.mimeType));
+    return { codecs, headerExtensions: [] };
+  }
+
+  /** Forwards a DirectTransport consumer to the peer's /media socket as whole frames. */
+  private pipeToSocket(peer: Peer, consumer: ms.Consumer): number {
+    const link = peer.ws!;
+    const tag = link.nextTag++ & 0xffff;
+    const mime = consumer.rtpParameters.codecs[0]?.mimeType.toLowerCase() ?? "";
+    if (consumer.kind === "audio") {
+      consumer.on("rtp", (b: Buffer) => {
+        const r = parseRtp(b);
+        if (r && r.payload.length > 0) this.wsSend(peer, audioFrame(tag, r.timestamp, r.payload), AUDIO_BACKLOG);
+      });
+      return tag;
+    }
+    const vp8 = mime === "video/vp8";
+    let lastKeyReq = 0;
+    const needKey = () => {
+      const now = Date.now();
+      if (now - lastKeyReq < 1000) return;
+      lastKeyReq = now;
+      consumer.requestKeyFrame().catch(() => {});
+    };
+    const asm = new FrameAssembler(vp8 ? "vp8" : "h264", (f) => {
+      if (!this.wsSend(peer, videoFrame(tag, f, vp8), VIDEO_BACKLOG)) {
+        asm.skipToKey();
+        needKey();
+      }
+    }, needKey);
+    consumer.on("rtp", (b: Buffer) => {
+      const r = parseRtp(b);
+      if (r) asm.push(r);
+    });
+    // Tunnels are slow: start on the small simulcast layer.
+    if (consumer.type === "simulcast") consumer.setPreferredLayers({ spatialLayer: 0 }).catch(() => {});
+    return tag;
+  }
+
   // ---------- RPC handlers ----------
 
   private handlers: { [M in MediaMethodName]: (conn: Conn, p: Params<M>) => unknown } = {
@@ -318,13 +433,19 @@ export class Media {
       if (old) this.leave(old, old.conn === conn ? undefined : "replaced");
 
       const room = await this.room(ch!.id, ch!.guildId);
-      const [send, recv] = await Promise.all([this.transport(room.router, true), this.transport(room.router, false)]);
+      const tunnel = p.transport === "ws";
+      const [send, recv] = tunnel
+        ? await Promise.all([room.router.createDirectTransport(), room.router.createDirectTransport()])
+        : await Promise.all([this.transport(room.router, true), this.transport(room.router, false)]);
       const state: VoiceState = {
         userId: conn.userId, guildId: ch!.guildId, channelId: ch!.id,
         muted: !!p.muted, deafened: !!p.deafened, suppressed: !has(perms, P.SPEAK),
         joinedAt: Date.now(), stream: null,
       };
-      const peer: Peer = { userId: conn.userId, conn, room, state, send, recv, producers: new Map(), consumers: new Map(), watching: new Set() };
+      const ws: WsLink | null = tunnel
+        ? { ticket: randomToken(24), sock: null, nextTag: 1, micSsrc: (Math.random() * 0xffffffff) >>> 0, micSeq: 0, micTs: 0, sent: 0 }
+        : null;
+      const peer: Peer = { userId: conn.userId, conn, room, state, send, recv, ws, producers: new Map(), consumers: new Map(), watching: new Set() };
       if (this.closed || conn.ws.readyState !== 1) {
         send.close();
         recv.close();
@@ -332,11 +453,17 @@ export class Media {
       }
       room.peers.set(conn.userId, peer);
       this.peers.set(conn.userId, peer);
+      if (ws) {
+        this.tickets.set(ws.ticket, peer);
+        setTimeout(() => { if (this.tickets.get(ws.ticket) === peer) this.tickets.delete(ws.ticket); }, 30_000);
+      }
       this.broadcastState(peer);
 
       const producers: RemoteProducer[] = [];
       for (const other of room.peers.values()) if (other !== peer) for (const e of other.producers.values()) producers.push(this.remote(other, e));
-      return { state, rtpCapabilities: room.router.rtpCapabilities, send: this.params(send), recv: this.params(recv), producers };
+      return tunnel
+        ? { state, rtpCapabilities: null, send: null, recv: null, producers, wsTicket: ws!.ticket }
+        : { state, rtpCapabilities: room.router.rtpCapabilities, send: this.params(send as ms.WebRtcTransport), recv: this.params(recv as ms.WebRtcTransport), producers, wsTicket: null };
     },
 
     "voice.leave": (conn) => {
@@ -361,14 +488,15 @@ export class Media {
     "media.connect": async (conn, p) => {
       const peer = this.peerOf(conn);
       const t = peer.send.id === p.transportId ? peer.send : peer.recv.id === p.transportId ? peer.recv : null;
-      if (!t) fail("not_found", "Transport bulunamadı.");
-      await t!.connect({ dtlsParameters: p.dtlsParameters as unknown as ms.DtlsParameters });
+      if (!t || peer.ws) fail("not_found", "Transport bulunamadı.");
+      await (t as ms.WebRtcTransport).connect({ dtlsParameters: p.dtlsParameters as unknown as ms.DtlsParameters });
       return null;
     },
 
     "media.produce": async (conn, p) => {
       const peer = this.peerOf(conn);
-      if (p.transportId !== peer.send.id) fail("bad_request", "Yanlış transport.");
+      if (!peer.ws && p.transportId !== peer.send.id) fail("bad_request", "Yanlış transport.");
+      if (peer.ws && p.source !== "mic") fail("forbidden", "Tünel modunda yayın açılamaz.");
       const perms = this.store.perms(peer.room.guildId, peer.userId);
       const wantKind = p.source === "screen" ? "video" : "audio";
       if (p.kind !== wantKind) fail("bad_request", "Kaynak türü uyuşmuyor.");
@@ -377,7 +505,10 @@ export class Media {
       this.closeSource(peer, p.source); // one producer per source
       const producer = await peer.send.produce({
         kind: p.kind,
-        rtpParameters: p.rtpParameters as unknown as ms.RtpParameters,
+        // Tunnel mode: the server packetizes the client's Opus frames itself.
+        rtpParameters: peer.ws
+          ? { codecs: [{ mimeType: "audio/opus", payloadType: MIC_PT, clockRate: 48000, channels: 2, parameters: { useinbandfec: 1 } }], encodings: [{ ssrc: peer.ws.micSsrc }] }
+          : (p.rtpParameters as unknown as ms.RtpParameters),
         appData: { userId: peer.userId, source: p.source },
       });
       if (this.peers.get(peer.userId) !== peer) {
@@ -425,17 +556,18 @@ export class Media {
       if (!owner || !entry || owner === peer) fail("not_found", "Yayın kaynağı bulunamadı.");
       // Screen media flows only to people who pressed "watch" (bandwidth, CLAUDE.md §6.4).
       if (entry!.source !== "mic" && !peer.watching.has(owner!.userId)) fail("forbidden", "Önce yayını izlemeye başla.");
-      const caps = p.rtpCapabilities as unknown as ms.RtpCapabilities;
+      const caps = peer.ws ? this.directCaps(peer.room.router) : (p.rtpCapabilities as unknown as ms.RtpCapabilities);
       if (!peer.room.router.canConsume({ producerId: p.producerId, rtpCapabilities: caps })) fail("bad_request", "Tarayıcın bu codec'i desteklemiyor.");
       const consumer = await peer.recv.consume({ producerId: p.producerId, rtpCapabilities: caps, paused: true });
       peer.consumers.set(consumer.id, consumer);
+      const tag = peer.ws ? this.pipeToSocket(peer, consumer) : null;
       const gone = () => {
         if (!peer.consumers.delete(consumer.id)) return;
         this.toConn(peer.conn, "media.consumerClosed", { consumerId: consumer.id });
       };
       consumer.on("producerclose", gone);
       consumer.on("transportclose", () => peer.consumers.delete(consumer.id));
-      return { id: consumer.id, producerId: p.producerId, userId: owner!.userId, source: entry!.source, kind: consumer.kind, rtpParameters: consumer.rtpParameters };
+      return { id: consumer.id, producerId: p.producerId, userId: owner!.userId, source: entry!.source, kind: consumer.kind, rtpParameters: consumer.rtpParameters, tag };
     },
 
     "media.resume": async (conn, p) => {

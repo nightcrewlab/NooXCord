@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 2 (ses & yayın) yazıldı; 3 kullanıcılı otomatik test geçti. Gerçek iki PC ile ses/yayın ve yankı testi kullanıcıda. Sıradaki: Faz 3 (ağ & web). Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 3 (ağ & web) tamamlandı; gerçek tünel + telefon testi kullanıcı tarafından geçti (2026-11-07). Sıradaki: Faz 4 (kontrol & cila). Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -141,7 +141,7 @@ pnpm dev            # Electron + Vite HMR (uygulama içinden "Bu bilgisayarda ba
 pnpm dev:host       # yalnızca host sunucusu (tsx watch) → http://localhost:47820 (web istemcisini de sunar; önce client build)
 pnpm dev:web        # yalnızca web istemcisi (Vite :5173, VITE_NX_HOST ile host seçilir; varsayılan localhost:47820)
 pnpm typecheck      # tüm paketler
-pnpm test           # host uçtan uca testi (18 kontrol) + link önizleme SSRF testi
+pnpm test           # host uçtan uca testi (22 kontrol, misafir dahil) + link önizleme SSRF / resim proxy testi
 pnpm build          # client (vite) + desktop main/preload/host (esbuild)
 pnpm brand          # assets/brand/*.svg → icon.ico, favicon, PWA ikonları
 pnpm icons          # ikon tablosu → packages/icons/svg/*.svg + sheet.svg
@@ -151,10 +151,12 @@ Masaüstü kendi kendine testleri (pencere göstermeden, geçici userData ile):
 ```bash
 NX_SELFTEST=1 electron apps/desktop        # host utilityProcess, safeStorage, port çakışması
 NX_SELFTEST=ui NX_UITEST_HOST=http://127.0.0.1:47820 NX_SHOT=shot.png electron apps/desktop   # arayüz + file:// → host HTTP/WS
-# Faz 2: 3 kullanıcı, 2 yayın, herkes izliyor (sahte mikrofon + animasyonlu canvas), uygulamanın kendi host'u (47850) ile
+# Faz 2-3: 3 kullanıcı, 2 yayın, herkes izliyor; C tünel modunda (NXM-WS). Uygulamanın kendi host'u (47850) ile
 pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
+# UI testi giriş yapıp bir betik çalıştırabilir: NX_UITEST_TOKEN=<token> NX_UITEST_JS="<js>" (ör. ayarlar sayfasını açmak)
 ```
-Native modül (Rust, `packages/native`): `pnpm build:native` → `nooxcord-native.win32-x64.node` (loopback ses + bas-konuş tuş durumu).
+Native modül (Rust, `packages/native`): `pnpm build:native` → `nooxcord-native.win32-x64.node` (loopback ses, bas-konuş tuş durumu, özel tam ekran tespiti).
+Geliştirmede `cloudflared.exe` `.tools/` altında (gitignore); paketlenmiş uygulamada `resources/bin/`. `devtunnel.exe` ilk kullanımda `%LOCALAPPDATA%/NooXCord/bin/`'e indirilir ve Microsoft imzası doğrulanır.
 
 Faz 0 prototipleri:
 ```bash
@@ -413,7 +415,7 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 | **0 — Doğrulama** | Monorepo iskeleti ✅, Electron+Vite ✅; **prototipler:** (a) mediasoup Windows ✅, (b) NXM-WS yerel ✅ / Cloudflare tüneli ✅ (~50 ms) / iPhone Safari izleme ✅ / Android ⏳ (Faz 3), (c) WASAPI process-loopback exclude ✅, (d) overlay masaüstü ✅ / oyun ✅ — **Faz 0 TAMAMLANDI** | 4 prototip sonucu `docs/adr/` altına yazıldı, gerekirse §2 güncellendi |
 | **1 — Çekirdek** | Hesaplar (kayıt/giriş/kalıcı oturum/avatar) ✅, guild + davet ✅, metin kanalları ✅, mesaj (Markdown, yanıt, düzenle, sil, yazıyor, okunmadı) ✅, dosya/resim/video ✅, link önizleme ✅, roller + yetkiler + at/yasakla ✅, tasarım sistemi + 62 ikon + logo/ico ✅, masaüstü host süreci + şifreli oturum ✅ | İki istemci tek host'ta sohbet ✅ (tarayıcıda iki farklı kaynakla test edildi) · **iki ayrı PC ile LAN testi ⏳ kullanıcıda** |
 | **2 — Ses & Yayın** | Sesli kanal (katıl/ayrıl, sustur/sağırlaştır, kişi başı ses, aygıt seçimi, ses etkinliği + otomatik hassasiyet, bas-konuş — masaüstünde global) ✅, konuşan göstergesi ✅, ekran yayını (monitör/pencere seçici, 5 kalite ön ayarı, akıcılık/netlik, H.264 + 2 katman simulcast) ✅, sistem sesi kendi sesi hariç (native WASAPI process loopback) ✅, çoklu yayın + tek seferlik thumbnail + çoklu izleme (ızgara/odak, tam ekran) ✅, overlay gerçek veriyle ✅. RNNoise → Faz 4 (şimdilik Chromium gürültü bastırma) | 3 kişi aynı anda 2 yayını izleyebiliyor ✅ (`NX_SELFTEST=voice`, 15 kontrol) · yayında yankı yok: exclude modu P3'te doğrulandı, **gerçek iki PC testi ⏳ kullanıcıda** |
-| **3 — Ağ & Web** | Port ayarı + kontrol, Hamachi, Dev Tunnel (login, sabit URL, yenile, aç/kapat), misafir girişi, responsive/mobil arayüz, NXM-WS, overlay (borderless) | Telefon tünel URL'sinden girip sese katılıp yayın izleyebiliyor |
+| **3 — Ağ & Web** | Ayarlar → Bağlantı: port + canlı kontrol (IPv4/IPv6, kullanan süreç) + boş port öner + yeniden başlat ✅, LAN/Hamachi adresleri + Hamachi servis aç/kapa (UAC) ✅, tünel: Cloudflare Quick Tunnel + Dev Tunnels (indir+imza kontrolü, GitHub girişi, sabit URL, yenile, aç/kapat), kopyala/QR/Ctrl+Shift+L/bildirim ✅, misafir girişi + misafir şifresi + misafir kısıtları ✅, mobil arayüz (alt sekmeler) ✅, NXM-WS tünel modu (ses+mikrofon+yayın izleme, WebRTC başarısızsa otomatik geçiş) ✅, overlay özel tam ekran ipucu ✅, link önizleme DNS sabitleme + resim proxy ✅ | Tünel modunda sese katılma + 2 yayın izleme ✅ (`pnpm test:voice`, C kullanıcısı) · gerçek telefon + tünel testi ✅ (NooXRii, 2026-11-07) — **Faz 3 TAMAMLANDI** |
 | **4 — Kontrol & Cila** | Uzaktan kontrol, DM, bildirimler, tray, auto-update, yedekleme, i18n EN | Tüm §7.3 kuralları test edildi |
 | **5 — Paketleme & Deneysel** | NSIS installer son hali, imzalama, firewall, opsiyonel exclusive fullscreen overlay hook | Temiz Windows 10 VM'de setup → çalıştır başarılı |
 
@@ -467,10 +469,13 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 4. Tünel sağlayıcılarının şartları değişebilir (Quick Tunnel "test amaçlı", Dev Tunnels limitli) — `TunnelProvider` arayüzü sayesinde sağlayıcı değiştirilebilir; UDP taşıyan playit.gg 3. sağlayıcı adayı.
 5. Hamachi'nin programatik kontrolü sınırlı — algılama + servis aç/kapa ile yetinilecek.
 6. Kod imzalama sertifikası olmadan SmartScreen uyarısı kaçınılmaz.
-7. Link önizleme SSRF koruması DNS çözümlemesini kontrol edip sonra `fetch` yapıyor (DNS rebinding penceresi var) → Faz 3'te (tünelle internete açılmadan önce) çözülen IP'ye sabitlenmiş istek yapılacak.
-8. Önizleme görselleri üçüncü taraf sunuculardan doğrudan yükleniyor (izleyicinin IP'si o siteye gider) → Faz 3'te host üzerinden proxy.
+7. ~~Link önizleme DNS rebinding~~ → Faz 3'te çözüldü: adres soketin kendi DNS çözümlemesinde kontrol ediliyor (kontrol edilen IP = bağlanılan IP).
+8. ~~Önizleme görselleri üçüncü taraftan~~ → Faz 3'te çözüldü: `/proxy/img/<imza>/<url>` (HMAC imzalı, yalnızca host'un ürettiği linkler; anahtar `proxy.key`).
 9. Ek dosyalar yetkisiz ama tahmin edilemez URL'lerle sunuluyor (`/files/<zaman+rastgele id>/<ad>`); HTML/SVG vb. her zaman indirme olarak, `sandbox` CSP ile.
-10. Port kontrolü (Faz 3) **hem IPv4 hem IPv6** dinlemeyi denemeli: Windows'ta başka bir uygulama `[::]:port`'u tutarken `0.0.0.0:port` boş görünebiliyor (Faz 1 self-test'inde görüldü).
+10. Port kontrolü 0.0.0.0, :: ve 127.0.0.1'i ayrı ayrı dener (Windows'ta `[::]:port` tutulurken `0.0.0.0` boş görünebiliyor) ✅.
 11. `%APPDATA%/NooXCord/host/` altında bu projeden önce oluşmuş bir `db.sqlite` + `logs/` + `uploads/` var (6 Kasım, kaynağı bilinmiyor). Host kendi dosyasını (`nooxcord.db`) kullanır; o dosyalara dokunulmadı.
 12. Medya portu (ana port + 1) LAN'da açık olmalı; WebRTC ICE başarısız olursa istemci "medya portu erişilebilir olmalı" uyarısı verir. Host yeni bir ağ arayüzü (ör. Hamachi sonradan bağlandı) için ses sunucusunu yeniden başlatmalı — şimdilik adresler ilk sese katılmada alınır.
 13. Global bas-konuş `GetAsyncKeyState` ile 15 ms'de bir yoklanır (yalnızca bas-konuş modunda ve sesteyken). Fare yan tuşları kod tarafında destekli ama ayar ekranından henüz seçilemiyor.
+14. Tünel modu (NXM-WS) sınırları: tünelden giren yayın **açamaz**, yalnızca izler; video her zaman düşük simulcast katmanı; mikrofon için tarayıcıda WebCodecs `AudioEncoder` gerekir (yoksa yalnızca dinleme).
+15. Ana süreçteki birkaç bildirim/hata metni (tünel, overlay ipucu, port hataları) henüz i18n dosyasında değil; Faz 4'te İngilizce ile birlikte taşınacak.
+16. Tünel açılışta otomatik başlamaz (bilinçli: herkese açık bağlantı kullanıcı istemeden açılmasın); her seferinde Ayarlar → Bağlantı'dan açılır.

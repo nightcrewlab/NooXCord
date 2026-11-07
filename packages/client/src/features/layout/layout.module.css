@@ -64,3 +64,18 @@
 .emptyDesc { color: var(--nx-text-2); margin: 0; }
 
 .banner { position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 50; padding: 6px 14px; border-radius: 0 0 10px 10px; background: var(--nx-warn); color: #1a1405; font-weight: 600; font-size: 13px; }
+
+/* ---------- mobile ---------- */
+.mShell { height: 100%; display: flex; flex-direction: column; background: var(--nx-bg-0); padding-top: env(safe-area-inset-top); }
+.mBody { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6px 6px 0; }
+.mBody > * { flex: 1; min-height: 0; }
+.mNav { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 6px; min-height: 0; }
+.mNav .railItem { width: 64px; }
+.mTabs { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-top: 1px solid var(--nx-line); background: var(--nx-bg-1); }
+.mTab { min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: none; color: var(--nx-text-3); font: 600 11px var(--nx-font); cursor: pointer; border-radius: var(--nx-radius-m); }
+.mTabOn { color: var(--nx-accent); }
+.mTabIcon { position: relative; display: grid; }
+.mLive { position: absolute; right: -4px; top: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--nx-speaking); border: 2px solid var(--nx-bg-1); }
+@media (max-width: 767px) {
+  .chan { height: 44px; }
+}

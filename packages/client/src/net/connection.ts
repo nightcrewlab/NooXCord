@@ -42,6 +42,7 @@ export class HostHttp {
 
   info = () => this.req<HostInfo>("GET", "/api/info");
   login = (login: string, password: string) => this.req<AuthResponse>("POST", "/api/auth/login", { login, password });
+  guest = (nickname: string, password?: string) => this.req<AuthResponse>("POST", "/api/auth/guest", { nickname, ...(password ? { password } : {}) });
   register = (nickname: string, email: string, password: string) => this.req<AuthResponse>("POST", "/api/auth/register", { nickname, email, password });
   logout = () => this.req<{ ok: true }>("POST", "/api/auth/logout");
   removeAvatar = () => this.req<SelfUser>("DELETE", "/api/me/avatar");

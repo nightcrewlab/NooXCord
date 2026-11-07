@@ -11,8 +11,24 @@ interface FileShape {
   hosts: SavedHost[];
   tokens: Record<string, string>; // url -> base64 encrypted token
   last: string | null;
-  localHost: { autoStart: boolean; port: number };
+  localHost: LocalHostPrefs;
 }
+
+export interface LocalHostPrefs {
+  autoStart: boolean;
+  port: number;
+  allowGuests: boolean;
+  guestPassword: string | null;
+  tunnelProvider: "cloudflare" | "devtunnel";
+  devTunnelId: string | null;
+  /** Copy a new tunnel URL to the clipboard automatically. */
+  copyTunnelUrl: boolean;
+}
+
+const DEFAULT_LOCAL: LocalHostPrefs = {
+  autoStart: false, port: 47820, allowGuests: true, guestPassword: null,
+  tunnelProvider: "cloudflare", devTunnelId: null, copyTunnelUrl: true,
+};
 
 const file = () => path.join(app.getPath("userData"), "hosts.json");
 let cache: FileShape | null = null;
@@ -20,9 +36,10 @@ let cache: FileShape | null = null;
 function load(): FileShape {
   if (cache) return cache;
   try {
-    cache = { hosts: [], tokens: {}, last: null, localHost: { autoStart: false, port: 47820 }, ...JSON.parse(fs.readFileSync(file(), "utf8")) };
+    const raw = JSON.parse(fs.readFileSync(file(), "utf8")) as Partial<FileShape>;
+    cache = { hosts: [], tokens: {}, last: null, ...raw, localHost: { ...DEFAULT_LOCAL, ...raw.localHost } };
   } catch {
-    cache = { hosts: [], tokens: {}, last: null, localHost: { autoStart: false, port: 47820 } };
+    cache = { hosts: [], tokens: {}, last: null, localHost: { ...DEFAULT_LOCAL } };
   }
   return cache!;
 }
@@ -85,7 +102,7 @@ export const hosts = {
     save();
   },
   localHostPrefs: () => load().localHost,
-  setLocalHostPrefs(p: Partial<FileShape["localHost"]>): void {
+  setLocalHostPrefs(p: Partial<LocalHostPrefs>): void {
     const d = load();
     d.localHost = { ...d.localHost, ...p };
     save();

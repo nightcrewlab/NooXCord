@@ -1,5 +1,5 @@
 import {
-  ALL_PERMISSIONS, GUEST_FORBIDDEN,
+  ALL_PERMISSIONS, DEFAULT_ROLE_PERMS, GUEST_FORBIDDEN,
   type Attachment, type Channel, type Embed, type Guild, type GuildState, type Invite, type Member,
   type Message, type PublicUser, type Role, type SelfUser, type UserStatus, type VoiceState,
 } from "@nooxcord/shared";
@@ -126,13 +126,14 @@ export class Store {
     const g = this.db.get<{ owner_id: string }>("SELECT owner_id FROM guilds WHERE id = ?", guildId);
     if (!g || !this.isMember(guildId, userId)) return 0;
     if (g.owner_id === userId) return ALL_PERMISSIONS;
+    const guest = this.userRow(userId)?.guest === 1;
     let p = 0;
-    for (const r of this.db.all<{ perms: number }>(
-      `SELECT perms FROM roles WHERE guild_id = ?1 AND (is_default = 1 OR id IN (SELECT role_id FROM member_roles WHERE guild_id = ?1 AND user_id = ?2))`,
+    for (const r of this.db.all<{ perms: number; is_default: number }>(
+      `SELECT perms, is_default FROM roles WHERE guild_id = ?1 AND (is_default = 1 OR id IN (SELECT role_id FROM member_roles WHERE guild_id = ?1 AND user_id = ?2))`,
       guildId,
       userId,
-    )) p |= r.perms;
-    if (this.userRow(userId)?.guest === 1) p &= ~GUEST_FORBIDDEN;
+    )) p |= guest && r.is_default ? r.perms & DEFAULT_ROLE_PERMS.guest : r.perms; // the host widens guests only with explicit roles
+    if (guest) p &= ~GUEST_FORBIDDEN;
     return p;
   }
 

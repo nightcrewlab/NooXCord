@@ -92,6 +92,7 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
               className={cx(s.chan, selectedChannel === c.id && s.active, unread && s.unread)}
               onClick={() => {
                 selectChannel(guildId, c.id);
+                window.dispatchEvent(new CustomEvent("nx:channel-open", { detail: kind })); // mobile: show it
                 // Joining happens inside the click so iOS allows audio + microphone.
                 if (kind === "voice" && inVoice !== c.id && has(perms, P.CONNECT_VOICE)) void engine.join(guildId, c.id);
               }}

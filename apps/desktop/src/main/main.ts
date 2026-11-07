@@ -5,6 +5,7 @@ import { hosts } from "./hosts";
 import * as localHost from "./localHost";
 import { destroyOverlay, registerOverlay } from "./overlay";
 import { registerMediaIpc, shutdownMedia } from "./media";
+import { hostStopped, registerNetIpc, registerNetShortcuts, shutdownNet } from "./netIpc";
 import { prepareVoiceTest, voiceSelfTest } from "./voiceTest";
 
 // User data lives in %APPDATA%/NooXCord; self-tests use a throwaway folder.
@@ -37,9 +38,13 @@ function registerIpc(): void {
   ipcMain.handle("hosts:setLast", (_e, url) => hosts.setLast(url));
   ipcMain.handle("localHost:status", () => ({ ...localHost.status(), port: localHost.status().port ?? hosts.localHostPrefs().port }));
   ipcMain.handle("localHost:start", (_e, port) => localHost.start(port));
-  ipcMain.handle("localHost:stop", () => localHost.stop());
+  ipcMain.handle("localHost:stop", async () => {
+    hostStopped();
+    return localHost.stop();
+  });
   ipcMain.handle("shell:openExternal", (_e, url) => (isSafeExternal(url) ? shell.openExternal(url) : undefined));
   registerMediaIpc(() => mainWindow);
+  registerNetIpc();
 }
 
 function createMainWindow(): void {
@@ -105,6 +110,17 @@ async function selfTest(): Promise<void> {
     });
   });
   log("port-in-use error", busy);
+  // Faz 3: port check (all of 0.0.0.0, ::, 127.0.0.1), suggestion, addresses. Opens no tunnel.
+  const { checkPort, suggestPort, addresses } = await import("./network");
+  const net2 = await import("node:net");
+  const held = net2.createServer().listen(port, "::");
+  await new Promise((r) => held.once("listening", r));
+  log("checkPort busy (IPv6 holder)", JSON.stringify(await checkPort(port, null)));
+  held.close();
+  log("checkPort free", JSON.stringify(await checkPort(port + 10, null)));
+  log("checkPort privileged", (await checkPort(80, null)).status);
+  log("suggestPort", await suggestPort());
+  log("addresses", JSON.stringify(await addresses()));
   await localHost.stop();
   log("done");
   app.exit(0);
@@ -125,6 +141,18 @@ async function uiSelfTest(): Promise<void> {
     log("cross-origin fetch", await wc.executeJavaScript(`fetch(${h} + "/api/info").then(r => r.json()).then(j => j.name, e => "FAIL " + e)`));
     log("cross-origin websocket", await wc.executeJavaScript(`new Promise(res => { const ws = new WebSocket(${h}.replace("http", "ws") + "/ws"); ws.onopen = () => { ws.close(); res("open"); }; ws.onerror = () => res("FAIL"); })`));
   }
+  // Optional: sign in with a token and run a script (e.g. open a settings page) before the shot.
+  if (process.env.NX_UITEST_HOST && process.env.NX_UITEST_TOKEN) {
+    const h = JSON.stringify(process.env.NX_UITEST_HOST);
+    await wc.executeJavaScript(`window.nx.hosts.setToken(${h}, ${JSON.stringify(process.env.NX_UITEST_TOKEN)}).then(() => window.nx.hosts.setLast(${h}))`);
+    wc.reload();
+    await new Promise<void>((r) => wc.once("did-finish-load", () => r()));
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  if (process.env.NX_UITEST_JS) {
+    log("script", await wc.executeJavaScript(process.env.NX_UITEST_JS).catch((e: Error) => "FAIL " + e.message));
+    await new Promise((r) => setTimeout(r, 2500));
+  }
   const img = await wc.capturePage();
   if (process.env.NX_SHOT) (await import("node:fs")).writeFileSync(process.env.NX_SHOT, img.toPNG());
   log("captured", img.getSize());
@@ -141,10 +169,12 @@ void app.whenReady().then(async () => {
   if (prefs.autoStart) await localHost.start(prefs.port); // resume hosting before the UI reconnects
   createMainWindow();
   registerOverlay();
+  registerNetShortcuts();
 });
 
 app.on("before-quit", () => {
   shutdownMedia();
+  shutdownNet();
   destroyOverlay();
   localHost.shutdown();
 });

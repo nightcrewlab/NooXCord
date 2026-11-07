@@ -9,10 +9,12 @@ import { Button, Field } from "../../ui";
 import { Welcome, welcomeStyles as s } from "./Welcome";
 
 export function AuthScreen() {
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const hostInfo0 = useStore((st) => st.hostInfo);
+  // Browsers join as guests by default (CLAUDE.md §5.2); accounts are for the desktop app.
+  const [mode, setMode] = useState<"login" | "register" | "guest">(platform.kind === "web" && hostInfo0?.allowGuests !== false ? "guest" : "login");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ login: "", nickname: "", email: "", password: "" });
+  const [form, setForm] = useState({ login: "", nickname: "", email: "", password: "", guestPassword: "" });
   const http = useStore((st) => st.http);
   const hostInfo = useStore((st) => st.hostInfo);
   const authenticated = useStore((st) => st.authenticated);
@@ -25,7 +27,10 @@ export function AuthScreen() {
     setBusy(true);
     setError(null);
     try {
-      const res = mode === "login" ? await http.login(form.login, form.password) : await http.register(form.nickname, form.email, form.password);
+      const res =
+        mode === "guest" ? await http.guest(form.nickname.trim(), form.guestPassword || undefined)
+        : mode === "login" ? await http.login(form.login, form.password)
+        : await http.register(form.nickname, form.email, form.password);
       await authenticated(res.token, res.user);
     } catch (err) {
       setError(err instanceof RpcError ? err.message : t("common.error"));
@@ -35,6 +40,28 @@ export function AuthScreen() {
   }
 
   const isLogin = mode === "login";
+  if (mode === "guest") {
+    return (
+      <Welcome>
+        <h2 className={s.title}>{t("auth.guestTitle")}</h2>
+        <p className={s.sub}>{t("auth.guestSub", { host: hostInfo?.name ?? "" })}</p>
+        <form className={s.form} onSubmit={submit} noValidate>
+          <Field label={t("auth.nickname")} autoComplete="nickname" value={form.nickname} onChange={upd("nickname")} minLength={LIMITS.nicknameMin} maxLength={LIMITS.nicknameMax} required autoFocus hint={t("auth.guestHint")} />
+          {hostInfo?.guestPassword && (
+            <Field label={t("auth.guestPassword")} type="password" autoComplete="current-password" value={form.guestPassword} onChange={upd("guestPassword")} required />
+          )}
+          {error && <div className={s.formError} role="alert">{error}</div>}
+          <Button type="submit" variant="primary" block loading={busy} disabled={form.nickname.trim().length < LIMITS.nicknameMin}>
+            {t("auth.guestJoin")}
+          </Button>
+        </form>
+        <div className={s.switch}>
+          {t("auth.haveAccount")}
+          <button type="button" onClick={() => { setMode("login"); setError(null); }}>{t("auth.login")}</button>
+        </div>
+      </Welcome>
+    );
+  }
   return (
     <Welcome>
       {!platform.fixedHost && (
@@ -75,6 +102,11 @@ export function AuthScreen() {
           {isLogin ? t("auth.register") : t("auth.login")}
         </button>
       </div>
+      {platform.kind === "web" && hostInfo?.allowGuests && (
+        <div className={s.switch}>
+          <button type="button" onClick={() => { setMode("guest"); setError(null); }}>{t("auth.asGuest")}</button>
+        </div>
+      )}
     </Welcome>
   );
 }

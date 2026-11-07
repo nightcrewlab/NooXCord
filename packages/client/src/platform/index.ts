@@ -27,6 +27,35 @@ export interface ScreenSource {
   primary: boolean;
 }
 
+export interface HostPrefs {
+  allowGuests: boolean;
+  guestPassword: string;
+  copyTunnelUrl: boolean;
+}
+
+export type PortStatus = "free" | "in_use" | "own" | "privileged" | "invalid";
+export interface PortCheck {
+  port: number;
+  status: PortStatus;
+  process: string | null;
+  mediaFree: boolean;
+}
+
+export interface NetAddresses {
+  lan: { name: string; ip: string }[];
+  hamachi: { ip: string | null; service: "running" | "stopped" | "missing" | "unknown" };
+}
+
+export type TunnelProviderId = "cloudflare" | "devtunnel";
+export interface TunnelState {
+  provider: TunnelProviderId;
+  status: "off" | "starting" | "on" | "error";
+  url: string | null;
+  error: string | null;
+  log: string[];
+  dev: { installed: boolean; user: string | null; login: { code: string; url: string } | null; busy: boolean };
+}
+
 /** What the in-game overlay shows (desktop). */
 export interface OverlayMember {
   id: string;
@@ -56,6 +85,28 @@ export interface NxBridge {
     status(): Promise<LocalHostStatus>;
     start(port: number): Promise<LocalHostStatus>;
     stop(): Promise<LocalHostStatus>;
+    restart(port: number): Promise<LocalHostStatus>;
+    getPrefs(): Promise<HostPrefs>;
+    setPrefs(p: Partial<HostPrefs>): Promise<void>;
+  };
+  net: {
+    checkPort(port: number): Promise<PortCheck>;
+    suggestPort(): Promise<number>;
+    addresses(): Promise<NetAddresses>;
+    hamachiService(start: boolean): Promise<NetAddresses>;
+  };
+  tunnel: {
+    get(): Promise<TunnelState>;
+    setProvider(p: TunnelProviderId): Promise<void>;
+    start(): Promise<void>;
+    stop(): Promise<void>;
+    copy(): Promise<boolean>;
+    devRefresh(): Promise<TunnelState["dev"]>;
+    devInstall(): Promise<void>;
+    devLogin(): Promise<void>;
+    devLogout(): Promise<void>;
+    devNewUrl(): Promise<void>;
+    onState(cb: (s: TunnelState) => void): () => void;
   };
   openExternal(url: string): Promise<void>;
   media: {
@@ -90,6 +141,9 @@ export interface Platform {
   fixedHost: string | null;
   hosts: NxBridge["hosts"];
   localHost: NxBridge["localHost"] | null;
+  /** Desktop only: ports, Hamachi, tunnels. */
+  net: NxBridge["net"] | null;
+  tunnel: NxBridge["tunnel"] | null;
   openExternal(url: string): void;
   /** Desktop-only media helpers; null in the browser. */
   media: NxBridge["media"] | null;
@@ -121,6 +175,8 @@ function webPlatform(): Platform {
       setLast: async () => {},
     },
     localHost: null,
+    net: null,
+    tunnel: null,
     openExternal: (url) => window.open(url, "_blank", "noopener,noreferrer"),
     media: null,
     overlay: null,
@@ -135,6 +191,8 @@ function desktopPlatform(nx: NxBridge): Platform {
     fixedHost: null,
     hosts: nx.hosts,
     localHost: nx.localHost,
+    net: nx.net,
+    tunnel: nx.tunnel,
     openExternal: (url) => void nx.openExternal(url),
     media: nx.media,
     overlay: nx.overlay,

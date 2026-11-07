@@ -1,5 +1,6 @@
 import { useShallow } from "zustand/react/shallow";
 import { Icon } from "@nooxcord/icons";
+import { P, has } from "@nooxcord/shared";
 import { t } from "../../i18n";
 import { useVoice, voice } from "../../media/engine";
 import { platform } from "../../platform";
@@ -41,10 +42,11 @@ function VoiceUserRow({ channelId, userId, muted, deafened, live, onVolume }: { 
 
 /** Connection panel shown above the user row while in voice. */
 export function VoiceBar({ onShare }: { onShare: () => void }) {
-  const v = useVoice(useShallow((x) => ({ guildId: x.guildId, channelId: x.channelId, status: x.status, sharing: !!x.sharing })));
+  const v = useVoice(useShallow((x) => ({ guildId: x.guildId, channelId: x.channelId, status: x.status, sharing: !!x.sharing, transport: x.transport })));
   const channel = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.channels.find((c) => c.id === v.channelId) : undefined));
   const guildName = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.guild.name : ""));
   const selectChannel = useStore((st) => st.selectChannel);
+  const canStream = useStore((st) => !!v.guildId && has(st.guilds[v.guildId]?.myPerms ?? 0, P.STREAM));
   if (!v.channelId || !v.guildId) return null;
   const ok = v.status === "connected";
   return (
@@ -54,6 +56,7 @@ export function VoiceBar({ onShare }: { onShare: () => void }) {
           <div className={cx(s.barTitle, !ok && s.warn)}>
             <Icon name="signal" size={16} />
             {ok ? t("voice.connected") : v.status === "reconnecting" ? t("voice.reconnecting") : t("voice.connecting")}
+            {ok && v.transport === "ws" && <span className={s.tunnelTag} title={t("voice.tunnelModeDesc")}>{t("voice.tunnelMode")}</span>}
           </div>
           <button className={s.barChan} onClick={() => selectChannel(v.guildId!, v.channelId!)}>{channel?.name ?? ""} / {guildName}</button>
         </div>
@@ -61,7 +64,7 @@ export function VoiceBar({ onShare }: { onShare: () => void }) {
           <Icon name="phone-hangup" size={18} />
         </button>
       </div>
-      {platform.canShareScreen && (
+      {platform.canShareScreen && v.transport !== "ws" && canStream && (
         <div className={s.barBtns} style={{ gridTemplateColumns: "1fr" }}>
           {v.sharing ? (
             <button className={cx(s.barBtn, s.on)} onClick={() => void voice.stopScreen()}><Icon name="screen-stop" size={16} />{t("stream.stop")}</button>

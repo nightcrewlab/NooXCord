@@ -26,6 +26,17 @@ function lanAddresses(port: number): string[] {
 
 const webDir = () => (app.isPackaged ? path.join(process.resourcesPath, "web") : path.join(__dirname, "../../../packages/client/dist"));
 
+/** Host-owner settings handed to the server (never changeable over the network). */
+function hostConfig() {
+  const p = hosts.localHostPrefs();
+  return { allowGuests: p.allowGuests, guestPassword: p.guestPassword || null };
+}
+
+/** Push changed guest settings to the running host. */
+export function pushConfig(): void {
+  child?.postMessage({ type: "config", config: hostConfig() });
+}
+
 export function status(): LocalHostStatus {
   return current;
 }
@@ -61,7 +72,7 @@ export function start(port: unknown): Promise<LocalHostStatus> {
         current = { running: false, port: null, lanAddresses: [] };
       }
     });
-    proc.postMessage({ type: "start", port: p, dataDir: path.join(app.getPath("userData"), "host"), webDir: webDir() });
+    proc.postMessage({ type: "start", port: p, dataDir: path.join(app.getPath("userData"), "host"), webDir: webDir(), config: hostConfig() });
   });
 }
 

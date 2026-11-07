@@ -19,6 +19,32 @@ contextBridge.exposeInMainWorld("nx", {
     status: () => call("localHost:status"),
     start: (port: number) => call("localHost:start", port),
     stop: () => call("localHost:stop"),
+    restart: (port: number) => call("localHost:restart", port),
+    getPrefs: () => call("hostPrefs:get"),
+    setPrefs: (p: unknown) => call("hostPrefs:set", p),
+  },
+  net: {
+    checkPort: (port: number) => call("net:checkPort", port),
+    suggestPort: () => call("net:suggestPort"),
+    addresses: () => call("net:addresses"),
+    hamachiService: (start: boolean) => call("net:hamachiService", start),
+  },
+  tunnel: {
+    get: () => call("tunnel:get"),
+    setProvider: (p: string) => call("tunnel:setProvider", p),
+    start: () => call("tunnel:start"),
+    stop: () => call("tunnel:stop"),
+    copy: () => call("tunnel:copy"),
+    devRefresh: () => call("tunnel:devRefresh"),
+    devInstall: () => call("tunnel:devInstall"),
+    devLogin: () => call("tunnel:devLogin"),
+    devLogout: () => call("tunnel:devLogout"),
+    devNewUrl: () => call("tunnel:devNewUrl"),
+    onState: (cb: (s: unknown) => void) => {
+      const fn = (_e: unknown, s: unknown) => cb(s);
+      ipcRenderer.on("tunnel:state", fn);
+      return () => ipcRenderer.removeListener("tunnel:state", fn);
+    },
   },
   openExternal: (url: string) => call("shell:openExternal", url),
   media: {

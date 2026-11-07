@@ -25,6 +25,7 @@ export function GuildRail() {
   const http = useStore((st) => st.http);
   const openMenu = useMenu();
   const [creating, setCreating] = useState(false);
+  const guest = useStore((st) => !!st.me?.guest);
 
   return (
     <nav className={s.rail} aria-label={t("rail.home")}>
@@ -56,11 +57,11 @@ export function GuildRail() {
           </div>
         );
       })}
-      <div className={s.railItem}>
+      {!guest && <div className={s.railItem}>
         <button className={cx(s.railBtn, s.railAdd)} title={t("rail.addGuild")} aria-label={t("rail.addGuild")} onClick={() => setCreating(true)}>
           <Icon name="plus" size={22} />
         </button>
-      </div>
+      </div>}
       {creating && <CreateGuildModal onClose={() => setCreating(false)} />}
     </nav>
   );

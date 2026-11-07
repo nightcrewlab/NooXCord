@@ -59,3 +59,23 @@
 .meterFill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 7px; transition: width 60ms linear; }
 .meterMark { position: absolute; top: -4px; bottom: -4px; width: 3px; margin-left: -1px; border-radius: 2px; background: var(--nx-accent); pointer-events: none; }
 .meterRange { position: absolute; inset: -6px 0; width: 100%; opacity: 0; cursor: pointer; }
+
+/* connection */
+.section { display: flex; flex-direction: column; gap: 10px; }
+.h3 { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; font: 700 15px var(--nx-font-display); color: var(--nx-text-1); }
+.portRow { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.portStatus { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--nx-text-2); }
+.ok { color: var(--nx-speaking); }
+.bad { color: #ff7088; }
+.mono { font-family: var(--nx-mono); }
+.segment { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.segment button { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px 14px; border-radius: var(--nx-radius-m); border: 1px solid var(--nx-line); background: var(--nx-bg-2); color: var(--nx-text-1); cursor: pointer; }
+.segment button span { font-size: 12px; color: var(--nx-text-3); }
+.segment button[aria-checked="true"] { border-color: var(--nx-accent); background: var(--nx-bg-3); }
+.tunnelBox { display: flex; gap: 16px; align-items: flex-start; padding: 14px; border-radius: var(--nx-radius-m); border: 1px solid var(--nx-accent); background: var(--nx-bg-2); flex-wrap: wrap; }
+.qr { width: 132px; height: 132px; flex: none; background: #fff; border-radius: 8px; padding: 4px; }
+.qr svg { width: 100%; height: 100%; display: block; }
+.tunnelInfo { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 8px; }
+.warnText { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; color: var(--nx-warn); }
+.linkBtn { background: none; border: 0; padding: 0; color: var(--nx-accent); cursor: pointer; font-size: 13px; }
+.log { margin: 8px 0 0; max-height: 180px; overflow: auto; padding: 10px; border-radius: var(--nx-radius-s); background: var(--nx-bg-0); border: 1px solid var(--nx-line); font: 11px/1.5 var(--nx-mono); color: var(--nx-text-2); white-space: pre-wrap; word-break: break-all; }

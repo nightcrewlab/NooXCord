@@ -159,6 +159,37 @@ try {
     // B is no longer in a shared guild after the kick, so no presence event is expected.
   });
 
+  // --- browser guests (CLAUDE.md §5.2) ---
+  const taken = await post<{ code: string }>("/api/auth/guest", { nickname: "nooxrii" });
+  assert.equal(taken.status, 409);
+  ok("guest cannot take a registered nickname");
+  const g1 = await post<AuthResponse>("/api/auth/guest", { nickname: "Misafir Can" });
+  assert.equal(g1.status, 200);
+  assert.equal(g1.body.user.guest, true);
+  const g2 = await post<AuthResponse>("/api/auth/guest", { nickname: "misafir can" });
+  assert.equal(g2.body.user.id, g1.body.user.id);
+  ok("guest login; same nickname = same guest identity");
+  const G = new Client(g1.body.token);
+  await G.connect();
+  await assert.rejects(G.call("guild.create", { name: "x" }));
+  const inv2 = await A.call<{ code: string }>("invite.create", { guildId: gs.guild.id });
+  const gJoined = await G.call<GuildState>("invite.join", { code: inv2.code });
+  assert.ok(gJoined.myPerms & P.SEND_MESSAGES && gJoined.myPerms & P.CONNECT_VOICE);
+  assert.equal(gJoined.myPerms & (P.STREAM | P.REQUEST_REMOTE_CONTROL | P.CREATE_INVITES), 0);
+  ok("guest cannot create a guild; joins by invite without stream/remote-control rights");
+  // Guest password set by the host owner.
+  host.setConfig({ guestPassword: "s3cret" });
+  const noPw = await post<{ code: string }>("/api/auth/guest", { nickname: "Yeni Misafir" });
+  assert.equal(noPw.status, 401);
+  const withPw = await post<AuthResponse>("/api/auth/guest", { nickname: "Yeni Misafir", password: "s3cret" });
+  assert.equal(withPw.status, 200);
+  const infoPw = await fetch(base + "/api/info").then((r) => r.json() as Promise<{ guestPassword: boolean }>);
+  assert.equal(infoPw.guestPassword, true);
+  host.setConfig({ allowGuests: false });
+  assert.equal((await post("/api/auth/guest", { nickname: "Yeni Misafir", password: "s3cret" })).status, 403);
+  ok("guest password and guest switch enforced");
+  G.ws.close();
+
   // --- persistence ---
   A.ws.close();
   await host.close();

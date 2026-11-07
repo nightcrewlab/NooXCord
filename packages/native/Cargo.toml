@@ -14,7 +14,7 @@ napi-derive = "2"
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26.0"
-windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }
 
 [build-dependencies]
 napi-build = "2"

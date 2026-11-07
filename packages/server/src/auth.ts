@@ -1,6 +1,6 @@
 import { createHash, scrypt as scryptCb, timingSafeEqual, randomBytes, type ScryptOptions } from "node:crypto";
 import type { AuthResponse } from "@nooxcord/shared";
-import { LoginBody, RegisterBody } from "@nooxcord/shared/schemas";
+import { GuestBody, LoginBody, RegisterBody } from "@nooxcord/shared/schemas";
 import type { Db } from "./db";
 import type { Store, UserRow } from "./store";
 import { fail, newId, randomToken } from "./util";
@@ -63,6 +63,27 @@ export class Auth {
     failures.delete(key);
     const token = this.createSession(row!.id, userAgent);
     return { token, user: this.store.selfUser(row!) };
+  }
+
+  /**
+   * Browser guest (CLAUDE.md §5.2): nickname only. A nickname used before by a guest is the same
+   * guest; a registered user's nickname is always refused.
+   */
+  guest(body: unknown, userAgent: string | undefined, guestPassword: string | null): AuthResponse {
+    const b = GuestBody.parse(body);
+    if (guestPassword) {
+      const a = Buffer.from(sha256(b.password ?? "")), e = Buffer.from(sha256(guestPassword));
+      if (!timingSafeEqual(a, e)) fail("unauthorized", "Misafir şifresi hatalı.");
+    }
+    let row = this.db.get<UserRow>("SELECT * FROM users WHERE nickname = ?", b.nickname);
+    if (row && row.guest !== 1) fail("conflict", "Bu isim kayıtlı bir kullanıcıya ait.");
+    if (!row) {
+      const id = newId();
+      this.db.run("INSERT INTO users (id, nickname, email, pass_hash, guest, created_at) VALUES (?, ?, NULL, NULL, 1, ?)", id, b.nickname, Date.now());
+      row = this.store.userRow(id)!;
+    }
+    const token = this.createSession(row.id, userAgent);
+    return { token, user: this.store.selfUser(row) };
   }
 
   createSession(userId: string, userAgent: string | undefined): string {

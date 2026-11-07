@@ -11,6 +11,8 @@ export interface NativeModule {
   loopbackStop(): void;
   /** GetAsyncKeyState for a Windows virtual-key code. */
   keyDown(vk: number): boolean;
+  /** A Direct3D exclusive-fullscreen app is running (the overlay cannot show over it). */
+  exclusiveFullscreen(): boolean;
 }
 
 export const native: NativeModule | null;

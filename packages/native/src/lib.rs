@@ -159,3 +159,19 @@ pub fn key_down(vk: u32) -> bool {
         false
     }
 }
+
+/// Exclusive (D3D) fullscreen app in the foreground? Our overlay cannot draw over those
+/// (CLAUDE.md §8): the app then suggests borderless mode. Uses SHQueryUserNotificationState.
+#[napi]
+pub fn exclusive_fullscreen() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        let mut state: i32 = 0;
+        // QUNS_RUNNING_D3D_FULL_SCREEN = 3
+        windows_sys::Win32::UI::Shell::SHQueryUserNotificationState(&mut state) >= 0 && state == 3
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}

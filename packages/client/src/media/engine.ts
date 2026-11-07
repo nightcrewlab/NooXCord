@@ -7,6 +7,7 @@ import { useStore } from "../state/store";
 import { VadGate, audioContext, meter, type LevelMeter } from "./level";
 import { pcmTrack, type PcmTrack } from "./pcm";
 import { voiceSettings, useVoiceSettings } from "./settings";
+import { WsMedia, wsMediaSupported, type WsAudio } from "./wsMedia";
 
 /*
  * Voice & stream engine (mediasoup-client). Owns the WebRTC transports, the microphone, the outgoing
@@ -14,6 +15,13 @@ import { voiceSettings, useVoiceSettings } from "./settings";
  */
 
 export type VoiceStatus = "idle" | "connecting" | "connected" | "reconnecting";
+/** rtc = WebRTC (LAN / Hamachi / open port); ws = tunnel mode over WebSocket (higher latency). */
+export type VoiceTransport = "rtc" | "ws";
+
+/** Hosts reached through a tunnel can only carry WebSocket media. */
+const isTunnelHost = (base: string): boolean => {
+  try { return /\.(trycloudflare\.com|devtunnels\.ms)$/i.test(new URL(base).hostname); } catch { return false; }
+};
 
 export interface WatchedStream {
   stream: MediaStream; // video + optional stream audio
@@ -45,6 +53,7 @@ interface VoiceUi {
   sharing: { width: number; height: number; fps: number; audio: boolean; preset: StreamPreset } | null;
   watching: Record<string, WatchedStream | null>; // userId -> stream (null while connecting)
   focus: string | null;
+  transport: VoiceTransport | null;
 }
 
 export const useVoice = create<VoiceUi>()(() => ({
@@ -59,15 +68,20 @@ export const useVoice = create<VoiceUi>()(() => ({
   sharing: null,
   watching: {},
   focus: null,
+  transport: null,
 }));
 
 const setV = (p: Partial<VoiceUi> | ((s: VoiceUi) => Partial<VoiceUi>)) => useVoice.setState(p);
 
 interface ConsumerEntry {
-  consumer: msc.Consumer;
+  id: string;
+  producerId: string;
   userId: string;
   source: MediaSource;
+  track: MediaStreamTrack | null;
+  close(): void;
   audioEl?: HTMLAudioElement;
+  wsAudio?: WsAudio;
 }
 
 class VoiceEngine {
@@ -77,6 +91,11 @@ class VoiceEngine {
   private send: msc.Transport | null = null;
   private recv: msc.Transport | null = null;
   private seq = 0;
+  private mode: VoiceTransport = "rtc";
+  private wsm: WsMedia | null = null;
+  /** WebRTC failed on this host once: use tunnel mode from now on. */
+  private forceWs = false;
+  private micWsId: string | null = null;
 
   private micStream: MediaStream | null = null;
   private micSendTrack: MediaStreamTrack | null = null;
@@ -134,9 +153,27 @@ class VoiceEngine {
   /** Signalling + transports; producers/consumers are (re)created afterwards. */
   private async connect(conn: HostConnection, channelId: string, seq: number): Promise<void> {
     const { muted, deafened } = useVoice.getState();
-    const res = await conn.call("voice.join", { channelId, muted, deafened });
+    const base = useStore.getState().http?.base ?? location.origin;
+    const mode: VoiceTransport = wsMediaSupported() && (this.forceWs || isTunnelHost(base)) ? "ws" : "rtc";
+    const res = await conn.call("voice.join", { channelId, muted, deafened, transport: mode });
     if (seq !== this.seq) {
       conn.call("voice.leave", {}).catch(() => {});
+      return;
+    }
+    this.mode = mode;
+    this.producers.clear();
+    for (const p of res.producers) this.producers.set(p.id, p);
+    if (mode === "ws") {
+      const wsm = new WsMedia(base.replace(/^http/, "ws") + "/media", res.wsTicket ?? "", () => {
+        const v = useVoice.getState();
+        if (seq === this.seq && v.guildId && v.channelId) void this.rejoin(v.guildId, v.channelId);
+      });
+      await wsm.open();
+      if (seq !== this.seq) return wsm.close();
+      this.wsm = wsm;
+      setV({ status: "connected", transport: "ws" });
+      platform.media?.setInCall(true).catch(() => {});
+      await Promise.all(res.producers.filter((p) => p.source === "mic").map((p) => this.consume(p).catch(() => {})));
       return;
     }
     // mediasoup-client is loaded on the first join (keeps the chat bundle small).
@@ -144,18 +181,25 @@ class VoiceEngine {
     const device = new DeviceCtor();
     await device.load({ routerRtpCapabilities: res.rtpCapabilities as msc.RtpCapabilities });
     this.device = device;
-    this.send = device.createSendTransport(this.transportOptions(res.send));
-    this.recv = device.createRecvTransport(this.transportOptions(res.recv));
+    this.send = device.createSendTransport(this.transportOptions(res.send!));
+    this.recv = device.createRecvTransport(this.transportOptions(res.recv!));
     for (const t of [this.send, this.recv]) {
       const transport = t;
       transport.on("connect", ({ dtlsParameters }, ok, fail) => {
         conn.call("media.connect", { transportId: transport.id, dtlsParameters: dtlsParameters as unknown as Record<string, unknown> }).then(() => ok(), fail);
       });
       transport.on("connectionstatechange", (st) => {
-        if (st === "failed" && seq === this.seq) {
-          useStore.getState().toast("Ses bağlantısı kurulamadı. Medya portu (ana port + 1, UDP/TCP) erişilebilir olmalı.", "error");
-          void this.leave();
+        if (st !== "failed" || seq !== this.seq) return;
+        const v = useVoice.getState();
+        if (wsMediaSupported() && !this.forceWs && v.guildId && v.channelId) {
+          // UDP/TCP media port unreachable: fall back to WebSocket media through the main port.
+          this.forceWs = true;
+          useStore.getState().toast("Doğrudan ses bağlantısı kurulamadı; tünel moduna geçiliyor (gecikme daha yüksek).", "info");
+          void this.rejoin(v.guildId, v.channelId);
+          return;
         }
+        useStore.getState().toast("Ses bağlantısı kurulamadı. Medya portu (ana port + 1, UDP/TCP) erişilebilir olmalı.", "error");
+        void this.leave();
       });
     }
     this.send.on("produce", ({ kind, rtpParameters, appData }, ok, fail) => {
@@ -163,9 +207,7 @@ class VoiceEngine {
         .call("media.produce", { transportId: this.send!.id, kind, rtpParameters: rtpParameters as unknown as Record<string, unknown>, source: (appData as { source: MediaSource }).source })
         .then(({ id }) => ok({ id }), fail);
     });
-    this.producers.clear();
-    for (const p of res.producers) this.producers.set(p.id, p);
-    setV({ status: "connected" });
+    setV({ status: "connected", transport: "rtc" });
     platform.media?.setInCall(true).catch(() => {});
     await Promise.all(res.producers.filter((p) => p.source === "mic").map((p) => this.consume(p).catch(() => {})));
   }
@@ -188,7 +230,7 @@ class VoiceEngine {
     this.closeTransports();
     this.stopScreenLocal();
     this.closeMic();
-    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false });
+    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null });
     platform.media?.setInCall(false).catch(() => {});
   }
 
@@ -203,6 +245,9 @@ class VoiceEngine {
     this.recv?.close();
     this.send = this.recv = null;
     this.device = null;
+    this.wsm?.close();
+    this.wsm = null;
+    this.micWsId = null;
   }
 
   // ---------- server events ----------
@@ -243,7 +288,7 @@ class VoiceEngine {
       case "media.consumerClosed": {
         const c = this.consumers.get((raw as Events["media.consumerClosed"]).consumerId);
         if (c) {
-          this.consumers.delete(c.consumer.id);
+          this.consumers.delete(c.id);
           this.dropConsumer(c);
         }
         break;
@@ -324,14 +369,31 @@ class VoiceEngine {
     this.micStream = null;
     this.micSendTrack = null;
     this.micProducer = null;
+    this.wsm?.stopMic();
+    this.micWsId = null;
     this.offPtt?.();
     this.offPtt = null;
     this.pttDown = false;
   }
 
   private async produceMic(): Promise<void> {
-    if (!this.send || !this.micSendTrack || this.micProducer) return;
     const { muted } = useVoice.getState();
+    if (this.mode === "ws") {
+      const wsm = this.wsm, track = this.micSendTrack;
+      if (!wsm || !track || this.micWsId) return;
+      try {
+        await wsm.startMic(track);
+      } catch (e) {
+        setV({ micError: (e as Error).message });
+        useStore.getState().toast((e as Error).message, "error");
+        return;
+      }
+      const { id } = await this.conn!.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "mic" });
+      this.micWsId = id;
+      if (muted) await this.pauseMic(true);
+      return;
+    }
+    if (!this.send || !this.micSendTrack || this.micProducer) return;
     this.micProducer = await this.send.produce({
       track: this.micSendTrack,
       stopTracks: false,
@@ -345,8 +407,9 @@ class VoiceEngine {
     const s = voiceSettings();
     const v = useVoice.getState();
     const open = s.mode === "ptt" ? this.pttDown : this.gate.update(db, s.vadThreshold);
-    const speaking = open && !v.muted && !v.deafened && !!this.micProducer;
+    const speaking = open && !v.muted && !v.deafened && (!!this.micProducer || !!this.micWsId);
     if (this.micSendTrack) this.micSendTrack.enabled = speaking;
+    this.wsm?.setMicOpen(speaking);
     if (speaking !== v.selfSpeaking) {
       setV({ selfSpeaking: speaking });
       // Everyone else's speaking ring comes from this report (the hang time keeps it to a few per second).
@@ -390,10 +453,13 @@ class VoiceEngine {
 
   private async pauseMic(paused: boolean) {
     const p = this.micProducer;
-    if (!p) return;
-    if (paused) p.pause();
-    else p.resume();
-    await this.conn?.call("media.pauseProducer", { producerId: p.id, paused }).catch(() => {});
+    const id = p?.id ?? this.micWsId;
+    if (!id) return;
+    if (p) {
+      if (paused) p.pause();
+      else p.resume();
+    }
+    await this.conn?.call("media.pauseProducer", { producerId: id, paused }).catch(() => {});
   }
 
   async setMuted(muted: boolean): Promise<void> {
@@ -420,11 +486,10 @@ class VoiceEngine {
   async restartMic(): Promise<void> {
     if (!useVoice.getState().channelId) return;
     const old = this.micProducer;
+    const oldId = old?.id ?? this.micWsId;
     this.closeMic();
-    if (old) {
-      old.close();
-      await this.conn?.call("media.closeProducer", { producerId: old.id }).catch(() => {});
-    }
+    old?.close();
+    if (oldId) await this.conn?.call("media.closeProducer", { producerId: oldId }).catch(() => {});
     await this.openMic();
     await this.produceMic().catch(() => {});
   }
@@ -433,12 +498,19 @@ class VoiceEngine {
 
   private applyDeafen() {
     const { deafened } = useVoice.getState();
-    for (const c of this.consumers.values()) if (c.audioEl) c.audioEl.muted = deafened;
+    for (const c of this.consumers.values()) {
+      if (c.audioEl) c.audioEl.muted = deafened;
+      c.wsAudio?.setMuted(deafened);
+    }
   }
 
   setUserVolume(userId: string, volume: number) {
     useVoiceSettings.getState().set({ volumes: { ...voiceSettings().volumes, [userId]: volume } });
-    for (const c of this.consumers.values()) if (c.userId === userId && c.audioEl) c.audioEl.volume = Math.min(1, volume);
+    for (const c of this.consumers.values()) {
+      if (c.userId !== userId || c.source !== "mic") continue;
+      if (c.audioEl) c.audioEl.volume = Math.min(1, volume);
+      c.wsAudio?.setVolume(volume);
+    }
   }
 
   async setOutputDevice(id: string) {
@@ -449,11 +521,12 @@ class VoiceEngine {
   }
 
   private async consume(p: RemoteProducer): Promise<void> {
+    if (this.mode === "ws") return this.consumeWs(p);
     const conn = this.conn;
     const device = this.device;
     const recv = this.recv;
     if (!conn || !device || !recv) return;
-    for (const c of this.consumers.values()) if (c.consumer.producerId === p.id) return;
+    for (const c of this.consumers.values()) if (c.producerId === p.id) return;
     const params = await conn.call("media.consume", { producerId: p.id, rtpCapabilities: device.recvRtpCapabilities as unknown as Record<string, unknown> });
     if (recv !== this.recv) return;
     const consumer = await recv.consume({
@@ -463,7 +536,7 @@ class VoiceEngine {
       rtpParameters: params.rtpParameters as msc.RtpParameters,
       appData: { userId: params.userId, source: params.source },
     });
-    const entry: ConsumerEntry = { consumer, userId: params.userId, source: params.source };
+    const entry: ConsumerEntry = { id: consumer.id, producerId: p.id, userId: params.userId, source: params.source, track: consumer.track, close: () => consumer.close() };
     this.consumers.set(consumer.id, entry);
     if (params.source === "mic") {
       const el = new Audio();
@@ -482,19 +555,43 @@ class VoiceEngine {
     await conn.call("media.resume", { consumerId: consumer.id });
   }
 
+  /** Tunnel mode: frames arrive on the /media socket and are decoded with WebCodecs. */
+  private async consumeWs(p: RemoteProducer): Promise<void> {
+    const conn = this.conn;
+    const wsm = this.wsm;
+    if (!conn || !wsm) return;
+    for (const c of this.consumers.values()) if (c.producerId === p.id) return;
+    const params = await conn.call("media.consume", { producerId: p.id, rtpCapabilities: {} });
+    if (wsm !== this.wsm || params.tag === null) return;
+    const tag = params.tag;
+    const entry: ConsumerEntry = { id: params.id, producerId: p.id, userId: params.userId, source: params.source, track: null, close: () => wsm.remove(tag) };
+    this.consumers.set(params.id, entry);
+    if (params.kind === "audio") {
+      const vols = voiceSettings().volumes;
+      const vol = params.source === "mic" ? vols[params.userId] ?? 1 : vols[`stream:${params.userId}`] ?? 1;
+      entry.wsAudio = await wsm.addAudio(tag, params.source === "mic" ? 1 : 2, vol, useVoice.getState().deafened);
+    } else {
+      const track = wsm.addVideo(tag);
+      entry.track = track;
+      entry.close = () => { wsm.remove(tag); track.stop(); };
+      this.attachToWatch(params.userId, track);
+    }
+    await conn.call("media.resume", { consumerId: params.id });
+  }
+
   private dropConsumer(c: ConsumerEntry) {
     if (c.audioEl) {
       c.audioEl.pause();
       c.audioEl.srcObject = null;
     }
-    if (c.source !== "mic") {
+    if (c.source !== "mic" && c.track) {
       const w = useVoice.getState().watching[c.userId];
       if (w) {
-        w.stream.removeTrack(c.consumer.track);
+        w.stream.removeTrack(c.track);
         setV((s) => ({ watching: { ...s.watching, [c.userId]: { ...w, hasVideo: w.stream.getVideoTracks().length > 0, hasAudio: w.stream.getAudioTracks().length > 0 } } }));
       }
     }
-    c.consumer.close();
+    c.close();
   }
 
   // ---------- watching streams ----------
@@ -537,9 +634,9 @@ class VoiceEngine {
   private forgetWatch(userId: string) {
     for (const c of [...this.consumers.values()]) {
       if (c.userId === userId && c.source !== "mic") {
-        this.consumers.delete(c.consumer.id);
-        c.consumer.close();
-        this.conn?.call("media.closeConsumer", { consumerId: c.consumer.id }).catch(() => {});
+        this.consumers.delete(c.id);
+        c.close();
+        this.conn?.call("media.closeConsumer", { consumerId: c.id }).catch(() => {});
       }
     }
     setV((s) => {
@@ -551,19 +648,21 @@ class VoiceEngine {
 
   setFocus(userId: string | null) {
     setV({ focus: userId });
+    if (this.mode === "ws") return; // tunnel: always the small layer
     // Big tile gets the high simulcast layer, small tiles the low one (host upload, CLAUDE.md §2.4).
     const v = useVoice.getState();
     const many = Object.keys(v.watching).length > 1;
     for (const c of this.consumers.values()) {
       if (c.source !== "screen") continue;
       const spatial = !many || c.userId === userId ? 1 : 0;
-      this.conn?.call("media.layers", { consumerId: c.consumer.id, spatial }).catch(() => {});
+      this.conn?.call("media.layers", { consumerId: c.id, spatial }).catch(() => {});
     }
   }
 
   // ---------- screen share ----------
 
   async startScreen(opts: ShareOptions): Promise<void> {
+    if (this.mode === "ws" && useVoice.getState().channelId) throw new Error("Tünel modunda yayın açılamaz. Yayın için LAN, Hamachi veya açık port gerekir.");
     if (!this.send) throw new Error("Önce bir sesli kanala katıl.");
     const preset = STREAM_PRESETS[opts.preset];
     const width = preset.width || opts.sourceSize?.width || 1920;
@@ -733,6 +832,13 @@ class VoiceEngine {
       if (r.kind === "video") framesDecoded += r.framesDecoded ?? 0;
       else audioRecvBytes += r.bytesReceived ?? 0;
     });
+    if (this.wsm) {
+      const w = this.wsm.stats;
+      sendBytes += w.sentBytes;
+      recvBytes += w.bytes;
+      framesDecoded += w.framesDecoded;
+      audioRecvBytes += w.audioBytes;
+    }
     return { sendBytes, recvBytes, framesDecoded, audioRecvBytes };
   }
 }

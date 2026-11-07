@@ -6,6 +6,7 @@ import { squareWebp } from "../../lib/image";
 import { useStore } from "../../state/store";
 import { Avatar, Button, Field, IconButton, Modal, cx, useConfirm } from "../../ui";
 import s from "./settings.module.css";
+import { ConnectionTab } from "./ConnectionTab";
 import { VoiceTab } from "./VoiceTab";
 
 type Tab = "profile" | "account" | "voice" | "connection";
@@ -148,23 +149,6 @@ function AccountTab() {
         <dt>{t("auth.nickname")}</dt><dd>{me.nickname}</dd>
         <dt>{t("auth.email")}</dt><dd>{me.email ?? "—"}</dd>
       </dl>
-    </>
-  );
-}
-
-function ConnectionTab() {
-  const info = useStore((st) => st.hostInfo);
-  const url = useStore((st) => st.hostUrl);
-  const status = useStore((st) => st.connStatus);
-  return (
-    <>
-      <h2 className={s.h}>{t("settings.connection")}</h2>
-      <dl className={s.kv}>
-        <dt>{t("settings.host")}</dt><dd>{info?.name} · {url}</dd>
-        <dt>{t("settings.hostVersion")}</dt><dd>{info?.version}</dd>
-        <dt>WebSocket</dt><dd>{status}</dd>
-      </dl>
-      <div className={s.note}><Icon name="tunnel" size={18} />{t("settings.tunnelSoon")}</div>
     </>
   );
 }

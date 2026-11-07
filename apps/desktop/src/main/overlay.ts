@@ -1,5 +1,6 @@
 import path from "node:path";
-import { BrowserWindow, globalShortcut, ipcMain, screen } from "electron";
+import { BrowserWindow, Notification, globalShortcut, ipcMain, screen } from "electron";
+import { exclusiveFullscreen } from "./media";
 
 /*
  * In-game overlay (CLAUDE.md §8): transparent, click-through, always-on-top window listing the
@@ -21,6 +22,33 @@ interface OverlayMember {
 let overlay: BrowserWindow | null = null;
 let members: OverlayMember[] | null = null;
 let userHidden = false;
+let fsTimer: NodeJS.Timeout | null = null;
+let fsHinted = false;
+
+/*
+ * Exclusive fullscreen games draw over every window, so the overlay is invisible there (CLAUDE.md §8).
+ * While in voice we check every 5 s and suggest borderless mode once per session.
+ */
+function watchFullscreen(active: boolean) {
+  if (!active) {
+    if (fsTimer) clearInterval(fsTimer);
+    fsTimer = null;
+    return;
+  }
+  if (fsTimer || fsHinted) return;
+  fsTimer = setInterval(() => {
+    if (fsHinted || !exclusiveFullscreen()) return;
+    fsHinted = true;
+    watchFullscreen(false);
+    if (Notification.isSupported()) {
+      new Notification({
+        title: "NooXCord overlay görünmüyor",
+        body: "Oyun özel (exclusive) tam ekranda. Overlay'i görmek için oyunun görüntü ayarından \"Kenarlıksız pencere\" (borderless) modunu seç.",
+        silent: true,
+      }).show();
+    }
+  }, 5000);
+}
 
 const ROW = 34;
 const WIDTH = 280;
@@ -103,6 +131,7 @@ function sync() {
 export function registerOverlay(): void {
   ipcMain.on("overlay:update", (_e, list: unknown) => {
     members = Array.isArray(list) ? (list as OverlayMember[]).slice(0, 25) : null;
+    watchFullscreen(!!members?.length);
     sync();
   });
   globalShortcut.register("CommandOrControl+Shift+O", () => {
@@ -112,6 +141,7 @@ export function registerOverlay(): void {
 }
 
 export function destroyOverlay(): void {
+  watchFullscreen(false);
   overlay?.destroy();
   overlay = null;
 }

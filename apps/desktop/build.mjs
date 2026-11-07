@@ -1,7 +1,9 @@
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 // mediasoup (worker binary) and the native module are loaded from node_modules at runtime.
-const common = { bundle: true, platform: "node", target: "node22", format: "cjs", external: ["electron", "mediasoup", "@nooxcord/native"], sourcemap: true, logLevel: "warning" };
+const here = fileURLToPath(new URL(".", import.meta.url)); // entry paths are relative to this folder
+const common = { absWorkingDir: here, bundle: true, platform: "node", target: "node22", format: "cjs", external: ["electron", "mediasoup", "@nooxcord/native"], sourcemap: true, logLevel: "warning" };
 await Promise.all([
   build({ ...common, entryPoints: ["src/main/main.ts"], outfile: "out/main.cjs" }),
   build({ ...common, entryPoints: ["src/preload/preload.ts"], outfile: "out/preload.cjs" }),
