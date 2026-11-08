@@ -6,7 +6,7 @@ import { STREAM_PRESETS, type EventName, type Events, type MediaSource, type Rem
 import type { HostConnection } from "../net/connection";
 import { platform } from "../platform";
 import { useStore } from "../state/store";
-import { VadGate, audioContext, meter, type LevelMeter } from "./level";
+import { VadGate, audioContext, idleMicContext, meter, micContext, type LevelMeter } from "./level";
 import { pcmTrack, type PcmTrack } from "./pcm";
 import { voiceSettings, useVoiceSettings } from "./settings";
 import { WsMedia, wsMediaSupported, type WsAudio } from "./wsMedia";
@@ -110,6 +110,9 @@ class VoiceEngine {
   private fallbackWs = false;
   private micWsId: string | null = null;
   private errRejoinAt = 0;
+  /** When the current WebRTC session started, and how many times the socket died soon after one. */
+  private rtcSince = 0;
+  private rtcDrops = 0;
 
   private micStream: MediaStream | null = null;
   private micSendTrack: MediaStreamTrack | null = null;
@@ -144,10 +147,12 @@ class VoiceEngine {
     const conn = useStore.getState().conn;
     if (!conn) return;
     audioContext(); // unlock audio inside the gesture
+    micContext();
     const micPromise = this.openMic(); // getUserMedia before the first await (iOS)
     const seq = ++this.seq;
     // A new join tries WebRTC again: an earlier failure (a dropped connection) must not pin tunnel mode forever.
     this.fallbackWs = false;
+    this.rtcDrops = 0;
     if (useVoice.getState().channelId) await this.teardown(true);
     setV({ status: "connecting", guildId, channelId, watching: {}, focus: null, sharing: null });
     this.bindConn(conn);
@@ -234,6 +239,7 @@ class VoiceEngine {
         .then(({ id }) => ok({ id }), fail);
     });
     setV({ status: "connected", transport: "rtc" });
+    this.rtcSince = Date.now();
     platform.media?.setInCall(true).catch(() => {});
     await Promise.all(res.producers.filter((p) => autoConsumed(p.source)).map((p) => this.consume(p).catch(() => {})));
   }
@@ -257,6 +263,8 @@ class VoiceEngine {
     this.stopScreenLocal();
     this.stopCameraLocal();
     this.closeMic();
+    // Out of voice for good (not a channel switch): the mic context's audio thread can sleep.
+    setTimeout(() => { if (!this.micStream && !useVoice.getState().channelId) idleMicContext(); }, 1000);
     setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null, camera: null, cams: {} });
     platform.media?.setInCall(false).catch(() => {});
   }
@@ -287,7 +295,18 @@ class VoiceEngine {
     switch (e) {
       case "ready": {
         // Socket reconnected: the old session died with the old socket. Rejoin.
-        if (v.channelId && v.guildId) void this.rejoin(v.guildId, v.channelId);
+        if (v.channelId && v.guildId) {
+          // Seen over Hamachi: the whole connection stalls ~15 s after WebRTC media starts, again and again.
+          // After the second such drop, this call carries its media over the WebSocket instead.
+          if (this.mode === "rtc" && this.rtcSince && Date.now() - this.rtcSince < 60_000) this.rtcDrops++;
+          this.rtcSince = 0;
+          if (this.rtcDrops >= 2 && !this.fallbackWs && wsMediaSupported()) {
+            this.fallbackWs = true;
+            const tunnel = !!useStore.getState().hostInfo?.tunnelUrl;
+            useStore.getState().toast(t(tunnel ? "err.voiceUnstableTunnel" : "err.voiceUnstable"), "info");
+          }
+          void this.rejoin(v.guildId, v.channelId);
+        }
         break;
       }
       case "voice.ended": {
@@ -403,9 +422,27 @@ class VoiceEngine {
     // The producer gets a clone so the gate can silence it while the meter still hears the original.
     this.micSendTrack = track.clone();
     this.micSendTrack.enabled = false;
-    this.micMeter = await meter(track, (db) => this.onMicLevel(db)).catch(() => null);
+    this.micMeter = await meter(track, (db) => this.onMicLevel(db), (n) => this.onMicHoles(n)).catch(() => null);
     this.watchPtt();
     this.watchHotkeys();
+  }
+
+  /**
+   * Self-healing for crackling microphone audio: once the capture path starts dropping blocks it
+   * rarely recovers by itself, but re-opening the microphone fixes it (users did this by switching the
+   * noise mode back and forth). Many dropouts within 10 s -> rebuild, at most every 30 s.
+   */
+  private holeTimes: number[] = [];
+  private healedAt = 0;
+  private onMicHoles(n: number) {
+    const now = performance.now();
+    for (let i = 0; i < n; i++) this.holeTimes.push(now);
+    this.holeTimes = this.holeTimes.filter((x) => now - x < 10_000);
+    if (this.holeTimes.length < 15 || now - this.healedAt < 30_000) return;
+    this.healedAt = now;
+    this.holeTimes = [];
+    console.warn("[voice] microphone audio is dropping out, re-opening the microphone");
+    void this.restartMic();
   }
 
   private closeMic() {

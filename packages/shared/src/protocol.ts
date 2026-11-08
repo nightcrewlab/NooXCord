@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import type { Methods } from "./schemas";
 import type {
-  Channel, ConsumerParams, DmChannel, Guild, GuildState, Invite, Member, Message, PublicUser, ReadyPayload, RemoteInputEvent, RemoteProducer, Role, SelfUser,
+  Channel, ConsumerParams, DmChannel, Guild, GuildState, HostInfo, Invite, Member, Message, PublicUser, ReadyPayload, RemoteInputEvent, RemoteProducer, Role, SelfUser,
   VoiceJoinResult, VoiceState,
 } from "./models";
 
@@ -98,6 +98,8 @@ export interface MethodResults {
 // ---------- Server events ----------
 export interface Events {
   ready: ReadyPayload;
+  /** Host settings changed (e.g. the owner opened or closed a tunnel). */
+  "host.update": HostInfo;
   "guild.add": { state: GuildState; users: PublicUser[] }; // you joined / created a guild
   "guild.update": Guild;
   "guild.remove": { guildId: string }; // deleted, left, kicked or banned

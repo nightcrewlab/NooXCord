@@ -3,7 +3,9 @@ import { audioContext } from "./level";
 /*
  * Plays raw PCM (interleaved float32) from a MessagePort through an AudioWorklet ring buffer and
  * exposes it as a MediaStreamTrack. Used for desktop system audio (WASAPI process loopback).
- * ADR 0002 rule: ring buffer with a 60–80 ms target and ±0.5 % rate correction for clock drift.
+ * Ring buffer with ±0.5 % rate correction for clock drift (ADR 0002). Target 120 ms: the PCM comes
+ * from the main process in ~10 ms polls whose timing jitters (Windows timers, busy main process); the
+ * earlier 70 ms ran dry under load and every refill was an audible click in the stream.
  */
 const WORKLET = `
 class NxPcm extends AudioWorkletProcessor {
@@ -14,7 +16,7 @@ class NxPcm extends AudioWorkletProcessor {
     this.cap = Math.ceil(this.inRate * 0.5); // 500 ms
     this.buf = new Float32Array(this.cap * this.ch);
     this.w = 0; this.r = 0; this.fill = 0;
-    this.target = this.inRate * 0.07; this.started = false;
+    this.target = this.inRate * 0.12; this.started = false;
     this.step = this.inRate / sampleRate;
     this.port.onmessage = (e) => {
       if (e.data && e.data.port) { e.data.port.onmessage = (m) => this.push(m.data); return; }
@@ -34,7 +36,7 @@ class NxPcm extends AudioWorkletProcessor {
     const out = outputs[0]; const n = out[0].length;
     if (!this.started) { if (this.fill < this.target) return true; this.started = true; this.pos = 0; }
     const drift = (this.fill - this.target) / this.target;
-    const step = this.step * (1 + Math.max(-0.005, Math.min(0.005, drift * 0.01)));
+    const step = this.step * (1 + Math.max(-0.005, Math.min(0.005, drift * 0.02)));
     for (let i = 0; i < n; i++) {
       if (this.fill < 2) { this.started = false; for (const o of out) o.fill(0, i); return true; }
       const a = this.r, b = (this.r + 1) % this.cap, t = this.pos;

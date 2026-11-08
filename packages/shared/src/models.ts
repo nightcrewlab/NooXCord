@@ -210,4 +210,6 @@ export interface HostInfo {
   allowGuests: boolean;
   /** Guests must enter the host's guest password. */
   guestPassword: boolean;
+  /** Public tunnel URL while the host owner has a tunnel open (only sent to signed-in clients). */
+  tunnelUrl?: string | null;
 }

@@ -40,6 +40,8 @@ export interface HostConfig {
   allowGuests: boolean;
   /** Optional shared password for browser guests (recommended when a tunnel is open). */
   guestPassword: string | null;
+  /** The owner's open tunnel (shown to signed-in members as "switch to tunnel"), null when closed. */
+  tunnelUrl: string | null;
 }
 
 export interface RunningHost {
@@ -97,9 +99,9 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   const store = new Store(db, hub.isOnline);
   const auth = new Auth(db, store);
   const api = new Api(db, store, hub, dirs.uploads);
-  const config: HostConfig = { allowRegistration: true, allowGuests: true, guestPassword: null, ...opts.config };
-  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: true, guestPassword: false };
-  const syncInfo = () => Object.assign(info, { allowRegistration: config.allowRegistration, allowGuests: config.allowGuests, guestPassword: !!config.guestPassword });
+  const config: HostConfig = { allowRegistration: true, allowGuests: true, guestPassword: null, tunnelUrl: null, ...opts.config };
+  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: true, guestPassword: false, tunnelUrl: null };
+  const syncInfo = () => Object.assign(info, { allowRegistration: config.allowRegistration, allowGuests: config.allowGuests, guestPassword: !!config.guestPassword, tunnelUrl: config.tunnelUrl });
   syncInfo();
 
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 64 * 1024, trustProxy: true });
@@ -158,7 +160,8 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   }
 
   // ---------- HTTP API ----------
-  app.get("/api/info", async () => info);
+  // The tunnel URL is for members only (ready / host.update), not for anyone probing the port.
+  app.get("/api/info", async () => ({ ...info, tunnelUrl: null }));
 
   const authLimit = { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } };
   app.post("/api/auth/register", authLimit, async (req) => {
@@ -370,7 +373,10 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     });
 
     const ping = setInterval(() => {
-      if (Date.now() - lastSeen > 15_000) return ws.terminate();
+      if (Date.now() - lastSeen > 15_000) {
+        if (conn) console.log(`[ws] ${store.userRow(conn.userId)?.nickname ?? conn.userId}: nothing received for 15 s, dropping (network path stalled)`);
+        return ws.terminate();
+      }
       if (ws.readyState === 1) ws.send('{"t":"ping"}');
     }, PING_INTERVAL_MS);
 
@@ -409,8 +415,13 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   return {
     port,
     setConfig(c) {
+      const tunnelBefore = info.tunnelUrl;
       Object.assign(config, c);
       syncInfo();
+      if (info.tunnelUrl !== tunnelBefore) {
+        console.log(`[host] tunnel ${info.tunnelUrl ? `open: ${info.tunnelUrl}` : "closed"}`);
+        for (const conn of hub.all()) hub.send(conn, { t: "evt", e: "host.update", d: info });
+      }
     },
     backup(tag) {
       const b = snapshot(db.raw, backupsDir, tag);

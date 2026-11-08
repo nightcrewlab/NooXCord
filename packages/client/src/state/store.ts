@@ -54,6 +54,8 @@ interface State {
 
 interface Actions {
   openHost(url: string): Promise<void>;
+  /** Same host, another address (e.g. its tunnel): keeps the session token and the open channel. */
+  switchAddress(url: string): Promise<void>;
   leaveHost(): Promise<void>;
   authenticated(token: string, me: SelfUser): Promise<void>;
   logout(): Promise<void>;
@@ -119,6 +121,9 @@ export const useStore = create<Store>()((set, get) => {
         });
         break;
       }
+      case "host.update":
+        set({ hostInfo: raw as Events["host.update"] });
+        break;
       case "guild.add": {
         const d = raw as Events["guild.add"];
         set((s) => ({
@@ -316,6 +321,16 @@ export const useStore = create<Store>()((set, get) => {
         http.token = token;
         startConnection(http);
       }
+    },
+
+    async switchAddress(url) {
+      const { hostUrl, selectedGuild, selectedChannel } = get();
+      await new HostHttp(url).info(); // unreachable: stay where we are (throws)
+      const token = hostUrl ? await platform.hosts.getToken(hostUrl) : null;
+      if (token) await platform.hosts.setToken(url, token);
+      get().conn?.close();
+      await get().openHost(url);
+      set({ selectedGuild, selectedChannel });
     },
 
     async leaveHost() {

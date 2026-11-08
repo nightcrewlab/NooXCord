@@ -55,10 +55,19 @@ function pipeLog(proc: UtilityProcess): void {
   proc.on("exit", (code) => { out.end(`${stamp()} ---- host exited (${code}) ----\n`); });
 }
 
+let tunnelUrl: string | null = null;
+
 /** Host-owner settings handed to the server (never changeable over the network). */
 function hostConfig() {
   const p = hosts.localHostPrefs();
-  return { allowGuests: p.allowGuests, guestPassword: p.guestPassword || null };
+  return { allowGuests: p.allowGuests, guestPassword: p.guestPassword || null, tunnelUrl };
+}
+
+/** The tunnel opened/closed: members connected another way get a "switch to tunnel" button. */
+export function setTunnelUrl(url: string | null): void {
+  if (url === tunnelUrl) return;
+  tunnelUrl = url;
+  pushConfig();
 }
 
 /** Push changed guest settings to the running host. */

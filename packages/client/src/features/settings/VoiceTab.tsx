@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../../i18n";
 import { NOISE_MODES, denoise, type Denoised } from "../../media/denoise";
-import { VadGate, audioContext, meter, type LevelMeter } from "../../media/level";
+import { VadGate, audioContext, idleMicContext, meter, type LevelMeter } from "../../media/level";
 import { useVoice, voice, comboOf } from "../../media/engine";
 import { useVoiceSettings, type VoiceSettings } from "../../media/settings";
 import { platform } from "../../platform";
@@ -83,6 +83,7 @@ export function VoiceTab() {
     test.current?.stream.getTracks().forEach((x) => x.stop());
     test.current = null;
     setTestLevel(null);
+    if (!useVoice.getState().channelId) idleMicContext();
   }
 
   /** Changing capture options re-opens the call microphone. */

@@ -629,7 +629,9 @@ export class Media {
       this.peers.set(conn.userId, peer);
       this.log(`[voice] ${this.name(conn.userId)} joined ${ch!.name} via ${p.transport ?? "rtc"}${conn.desktop ? " (desktop)" : ""}`);
       if (!tunnel) {
-        for (const t of [send, recv] as ms.WebRtcTransport[]) {
+        for (const [dir, t] of [["send", send], ["recv", recv]] as [string, ms.WebRtcTransport][]) {
+          // Which address pair carries the media (Hamachi 25.x, LAN, TCP?) — needed to tell network problems apart.
+          t.on("iceselectedtuplechange", (tu) => this.log(`[voice] ${this.name(conn.userId)} ${dir} media via ${tu.protocol} ${tu.localAddress}:${tu.localPort} <-> ${tu.remoteIp}:${tu.remotePort}`));
           t.on("icestatechange", (st) => { if (st === "disconnected") this.log(`[voice] ${this.name(conn.userId)} ICE disconnected`); });
           t.on("dtlsstatechange", (st) => { if (st === "failed" || st === "closed") this.log(`[voice] ${this.name(conn.userId)} DTLS ${st}`); });
         }

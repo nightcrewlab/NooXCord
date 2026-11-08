@@ -1,4 +1,4 @@
-import { audioContext } from "./level";
+import { micContext } from "./level";
 
 /*
  * Microphone noise suppression (CLAUDE.md §12.3), all on the client so it works the same on desktop,
@@ -46,7 +46,7 @@ async function assets(mode: "rnnoise" | "gtcrn") {
 export async function denoise(track: MediaStreamTrack, mode: NoiseMode): Promise<Denoised | null> {
   if (mode !== "rnnoise" && mode !== "gtcrn") return null;
   if (typeof AudioWorkletNode === "undefined") return null;
-  const c = audioContext();
+  const c = micContext();
   lib ??= import("@sapphi-red/web-noise-suppressor");
   const l = await lib;
   const a = await assets(mode);

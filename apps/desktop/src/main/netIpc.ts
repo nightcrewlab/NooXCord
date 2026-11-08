@@ -23,7 +23,10 @@ export function registerNetIpc(): void {
       ...(p.provider ? { tunnelProvider: p.provider } : {}),
       ...("devTunnelId" in p ? { devTunnelId: p.devTunnelId ?? null } : {}),
     }),
-    onState: (s) => broadcast("tunnel:state", s),
+    onState: (s) => {
+      broadcast("tunnel:state", s);
+      localHost.setTunnelUrl(s.status === "on" && s.url ? s.url : null);
+    },
     onUrl: (url) => {
       if (hosts.localHostPrefs().copyTunnelUrl) clipboard.writeText(url);
       if (Notification.isSupported()) {

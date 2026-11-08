@@ -48,6 +48,14 @@
 .chan.active { background: var(--nx-bg-3); color: var(--nx-text-1); }
 .chan.unread { color: var(--nx-text-1); font-weight: 650; }
 .chan.unread::before { content: ""; position: absolute; left: -8px; width: 4px; height: 8px; border-radius: 0 4px 4px 0; background: var(--nx-text-1); }
+.tunnelSwitch {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 10px; margin-bottom: 4px;
+  border: 1px solid color-mix(in srgb, var(--nx-accent) 45%, transparent); border-radius: var(--nx-radius-s);
+  background: color-mix(in srgb, var(--nx-accent) 12%, transparent); color: var(--nx-accent); font: 600 14px var(--nx-font); cursor: pointer; text-align: left;
+  transition: background 150ms cubic-bezier(.2,.8,.2,1);
+}
+.tunnelSwitch:hover { background: color-mix(in srgb, var(--nx-accent) 20%, transparent); }
+.tunnelSwitch:disabled { opacity: .6; cursor: default; }
 .chanName { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .me { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid var(--nx-line); background: var(--nx-bg-2); }
