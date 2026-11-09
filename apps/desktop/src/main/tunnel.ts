@@ -1,3 +1,4 @@
+import os from "node:os";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -148,6 +149,9 @@ export class TunnelManager {
   private spawnTunnel(file: string, args: string[], urlRe: RegExp) {
     const child = spawn(file, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     this.child = child;
+    // All tunnel-mode media of every viewer passes through this process: keep it ahead of a game on the
+    // host (same as the host process and the mediasoup worker).
+    if (child.pid) try { os.setPriority(child.pid, os.constants.priority.PRIORITY_ABOVE_NORMAL); } catch { /* best effort */ }
     let found = false;
     this.startTimer = setTimeout(() => {
       if (!found && this.child === child) this.fail(s("main.tunnel.timeout"));

@@ -35,6 +35,12 @@ class NxPcm extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const out = outputs[0]; const n = out[0].length;
     if (!this.started) { if (this.fill < this.target) return true; this.started = true; this.pos = 0; this.amp = 0; }
+    // Far too much queued (a burst after the producer stalled, e.g. a game hogging the CPU): the slow
+    // ±0.5 % correction would take a minute to catch up, heard as a growing delay. Skip to the target.
+    if (this.fill > this.target + this.inRate * 0.15) {
+      const skip = Math.floor(this.fill - this.target);
+      this.r = (this.r + skip) % this.cap; this.fill -= skip; this.amp = 0;
+    }
     const drift = (this.fill - this.target) / this.target;
     const step = this.step * (1 + Math.max(-0.005, Math.min(0.005, drift * 0.02)));
     for (let i = 0; i < n; i++) {
