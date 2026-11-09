@@ -8,6 +8,8 @@ import { DM_HOME, useStore } from "../../state/store";
 import { IconButton, cx } from "../../ui";
 import s from "./chat.module.css";
 
+const touchOnly = (): boolean => typeof matchMedia === "function" && matchMedia("(hover: none) and (pointer: coarse)").matches;
+
 interface Upload {
   id: number;
   file: File;
@@ -40,7 +42,8 @@ export function Composer({ channel, gs, replyTo, clearReply, onEditLast }: { cha
   useEffect(() => {
     setText(drafts.get(channel.id) ?? "");
     setUploads((u) => { u.forEach((x) => x.abort()); return []; });
-    ref.current?.focus();
+    // Touch screens: focusing pops the on-screen keyboard over the chat; wait for a tap on the field.
+    if (!touchOnly()) ref.current?.focus();
   }, [channel.id]);
   useEffect(() => { if (replyTo) ref.current?.focus(); }, [replyTo]);
   useEffect(() => {

@@ -233,6 +233,13 @@ export function VoiceTab() {
               <button role="switch" aria-checked={st[k]} aria-label={t(label)} className={s.toggle} onClick={() => setAndRestart({ [k]: !st[k] })} />
             </div>
           ))}
+          <div className={s.perm}>
+            <span>
+              <div>{t("settings.voiceSounds")}</div>
+              <div className={s.hintText}>{t("settings.voiceSoundsDesc")}</div>
+            </span>
+            <button role="switch" aria-checked={st.voiceSounds} aria-label={t("settings.voiceSounds")} className={s.toggle} onClick={() => st.set({ voiceSounds: !st.voiceSounds })} />
+          </div>
           {platform.overlay && (
             <div className={s.perm}>
               <span>

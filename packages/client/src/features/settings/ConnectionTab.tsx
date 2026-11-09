@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import qrcode from "qrcode-generator";
 import { Icon } from "@nooxcord/icons";
 import { t } from "../../i18n";
-import { platform, type HostPrefs, type LocalHostStatus, type NetAddresses, type PortCheck, type TunnelState } from "../../platform";
+import { appJoinLink, platform, type HostPrefs, type LocalHostStatus, type NetAddresses, type PortCheck, type TunnelState } from "../../platform";
 import { useStore } from "../../state/store";
 import { Button, Field, cx, useConfirm } from "../../ui";
 import s from "./settings.module.css";
@@ -297,8 +297,10 @@ function TunnelSection({ hostRunning, prefs, onPrefs, guestPassword }: { hostRun
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Button size="small" variant="primary" icon="copy" onClick={() => run(async () => { await tunnel.copy(); toast(t("common.copied")); })}>{t("net.copyUrl")}</Button>
               <Button size="small" variant="ghost" icon="external" onClick={() => platform.openExternal(st.url!)}>{t("net.openUrl")}</Button>
+              <Button size="small" variant="ghost" icon="link" onClick={() => run(async () => { await navigator.clipboard.writeText(appJoinLink(st.url!, null)); toast(t("common.copied")); })}>{t("net.copyAppLink")}</Button>
             </div>
             <div className={s.hintText}>{t("net.copyShortcut")}</div>
+            <div className={s.hintText}>{t("net.appLinkHint")}</div>
             {st.provider === "cloudflare" && <div className={s.hintText}>{t("net.cloudflareChanges")}</div>}
             {!guestPassword && <div className={s.warnText}><Icon name="alert" size={14} />{t("net.publicWarning")}</div>}
           </div>

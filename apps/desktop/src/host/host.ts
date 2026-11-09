@@ -1,6 +1,10 @@
 // Entry point of the host utility process (Electron utilityProcess).
 // Receives { type: "start", port, dataDir, webDir } and replies with "started" / "error".
+import os from "node:os";
 import { startHost, type HostConfig, type RunningHost } from "@nooxcord/server";
+
+// Tunnel-mode voice is relayed by this process (NXM-WS): keep it ahead of a game on the host PC.
+try { os.setPriority(0, os.constants.priority.PRIORITY_ABOVE_NORMAL); } catch { /* best effort */ }
 
 interface ParentPort {
   on(e: "message", fn: (ev: { data: unknown }) => void): void;

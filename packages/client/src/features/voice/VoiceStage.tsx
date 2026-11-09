@@ -363,6 +363,31 @@ async function toggleFullscreen(el: HTMLElement, fallback: () => void): Promise<
   fallback();
 }
 
+type PipVideo = HTMLVideoElement & { webkitSupportsPresentationMode?: (m: string) => boolean; webkitSetPresentationMode?: (m: string) => void; webkitPresentationMode?: string };
+
+/** Floating mini player (Picture-in-Picture): standard API, or Safari's presentation mode on iPhone. */
+function pipSupported(): boolean {
+  if (typeof document === "undefined") return false;
+  if ((document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled) return true;
+  const v = document.createElement("video") as PipVideo;
+  return !!v.webkitSupportsPresentationMode && typeof v.webkitSetPresentationMode === "function";
+}
+const PIP = pipSupported();
+
+async function togglePip(tile: HTMLElement): Promise<void> {
+  const v = tile.querySelector("video") as PipVideo | null;
+  if (!v) return;
+  const d = document as Document & { pictureInPictureElement?: Element | null; exitPictureInPicture?: () => Promise<void> };
+  try {
+    if (d.pictureInPictureElement) { await d.exitPictureInPicture?.(); return; }
+    if (v.webkitSetPresentationMode && v.webkitSupportsPresentationMode?.("picture-in-picture")) {
+      v.webkitSetPresentationMode(v.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
+      return;
+    }
+    await v.requestPictureInPicture();
+  } catch { /* refused (no video frame yet) */ }
+}
+
 function WatchTile({ userId, w, state, big, onPick }: { userId: string; w: WatchedStream | null; state: VoiceState | undefined; big?: boolean; onPick?: () => void }) {
   const user = useStore((st) => st.users[userId]);
   const deafened = useVoice((x) => x.deafened);
@@ -397,6 +422,7 @@ function WatchTile({ userId, w, state, big, onPick }: { userId: string; w: Watch
         {canAsk && (rc.controlling
           ? <button className={cx(s.tileBtn, s.tileBtnOn)} title={t("remote.release")} aria-label={t("remote.release")} onClick={() => void remote.release()}><Icon name="hand" size={16} /></button>
           : <button className={s.tileBtn} disabled={rc.asked} title={rc.asked ? t("remote.requested") : t("remote.request")} aria-label={t("remote.request")} onClick={() => void remote.request(userId)}><Icon name="hand" size={16} /></button>)}
+        {PIP && live && <button className={s.tileBtn} title={t("stream.pip")} aria-label={t("stream.pip")} onClick={() => { if (ref.current) void togglePip(ref.current); }}><Icon name="pip" size={16} /></button>}
         <button className={s.tileBtn} title={t("stream.fullscreen")} aria-label={t("stream.fullscreen")} onClick={() => { if (pseudo) setPseudo(false); else if (ref.current) void toggleFullscreen(ref.current, () => setPseudo(true)); }}><Icon name="fullscreen" size={16} /></button>
         <button className={s.tileBtn} title={t("stream.unwatch")} aria-label={t("stream.unwatch")} onClick={() => void voice.unwatch(userId)}><Icon name="eye-off" size={16} /></button>
       </div>

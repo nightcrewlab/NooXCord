@@ -9,9 +9,11 @@ import { ConfirmProvider, MenuProvider, Spinner, Toasts } from "./ui";
 import { RemoteLayer } from "./features/remote/Remote";
 import { UpdatePopup } from "./features/updates/UpdatePopup";
 import { initNotifications } from "./features/notify/notify";
+import { initVoiceSounds } from "./features/voice/sounds";
 import { useVoice, voice } from "./media/engine";
 
 initNotifications();
+initVoiceSounds();
 
 /** Desktop tray mirrors the call state and can mute/deafen. */
 if (platform.app) {

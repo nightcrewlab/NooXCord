@@ -9,12 +9,12 @@ import { InviteModal } from "../guilds/InviteModal";
 import s from "../layout/layout.module.css";
 import { SettingsModal } from "../settings/SettingsModal";
 import { ChannelModal } from "./ChannelModal";
-import { useVoice, voice as engine } from "../../media/engine";
+import { switchToTunnel, useVoice, voice as engine } from "../../media/engine";
 import { openShareModal } from "../voice/common";
 import { useNotify } from "../notify/notify";
 import { VoiceBar, VoiceChannelUsers } from "../voice/VoiceSidebar";
 import vs from "../voice/voice.module.css";
-import { isDesktop } from "../../platform";
+import { appJoinLink, isDesktop, platform } from "../../platform";
 
 const origin = (u: string): string | null => { try { return new URL(u).origin; } catch { return null; } };
 const isLoopback = (u: string): boolean => { try { return /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(new URL(u).hostname); } catch { return false; } };
@@ -33,20 +33,8 @@ function TunnelSwitch() {
   async function go() {
     if (busy || !tunnelUrl) return;
     setBusy(true);
-    const v = useVoice.getState();
-    const rejoin = v.guildId && v.channelId ? { guildId: v.guildId, channelId: v.channelId } : null;
     try {
-      if (rejoin) await engine.leave();
-      await useStore.getState().switchAddress(tunnelUrl);
-      toast(t("tunnelSwitch.done"));
-      if (rejoin) {
-        // Back into the same voice channel once the new connection is up.
-        const off = useStore.subscribe((st) => {
-          if (st.connStatus !== "ready") return;
-          off();
-          void engine.join(rejoin.guildId, rejoin.channelId);
-        });
-      }
+      await switchToTunnel(tunnelUrl);
     } catch {
       toast(t("tunnelSwitch.failed"), "error");
     } finally {
@@ -58,6 +46,17 @@ function TunnelSwitch() {
     <button className={s.tunnelSwitch} onClick={() => void go()} disabled={busy} title={tunnelUrl}>
       <Icon name="tunnel" size={18} />
       <span className={s.chanName}>{busy ? t("tunnelSwitch.busy") : t("tunnelSwitch.label")}</span>
+    </button>
+  );
+}
+
+/** PC browser (tunnel or LAN page): jump into the installed desktop app on the same host and channel. */
+function OpenInAppButton() {
+  if (platform.kind !== "web" || platform.isMobile) return null;
+  return (
+    <button className={s.tunnelSwitch} onClick={() => { location.href = appJoinLink(location.origin, null); }} title={location.origin}>
+      <Icon name="external" size={18} />
+      <span className={s.chanName}>{t("auth.openInApp")}</span>
     </button>
   );
 }
@@ -188,6 +187,7 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
       </button>
       <div className={s.channels}>
         <TunnelSwitch />
+        <OpenInAppButton />
         {renderGroup("text", text)}
         {renderGroup("voice", voice)}
       </div>

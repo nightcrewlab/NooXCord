@@ -11,6 +11,7 @@ import { pcmTrack, type PcmTrack } from "./pcm";
 import { voiceSettings, useVoiceSettings } from "./settings";
 import { WsMedia, wsMediaSupported, type WsAudio } from "./wsMedia";
 import { t } from "../i18n";
+import { startBackgroundCall, stopBackgroundCall } from "./background";
 
 /*
  * Voice & stream engine (mediasoup-client). Owns the WebRTC transports, the microphone, the outgoing
@@ -149,6 +150,13 @@ class VoiceEngine {
     audioContext(); // unlock audio inside the gesture
     micContext();
     const micPromise = this.openMic(); // getUserMedia before the first await (iOS)
+    // Phones: keep the call alive in the background (silent media loop must start inside the tap).
+    const chName = useStore.getState().guilds[guildId]?.channels.find((c) => c.id === channelId)?.name ?? "NooXCord";
+    startBackgroundCall(chName, {
+      hangup: () => void this.leave(),
+      toggleMic: () => void this.setMuted(!useVoice.getState().muted),
+      fixMic: () => void this.repairMic(),
+    });
     const seq = ++this.seq;
     // A new join tries WebRTC again: an earlier failure (a dropped connection) must not pin tunnel mode forever.
     this.fallbackWs = false;
@@ -264,7 +272,11 @@ class VoiceEngine {
     this.stopCameraLocal();
     this.closeMic();
     // Out of voice for good (not a channel switch): the mic context's audio thread can sleep.
-    setTimeout(() => { if (!this.micStream && !useVoice.getState().channelId) idleMicContext(); }, 1000);
+    setTimeout(() => {
+      if (useVoice.getState().channelId) return;
+      if (!this.micStream) idleMicContext();
+      stopBackgroundCall();
+    }, 1000);
     setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null, camera: null, cams: {} });
     platform.media?.setInCall(false).catch(() => {});
   }
@@ -296,14 +308,24 @@ class VoiceEngine {
       case "ready": {
         // Socket reconnected: the old session died with the old socket. Rejoin.
         if (v.channelId && v.guildId) {
-          // Seen over Hamachi: the whole connection stalls ~15 s after WebRTC media starts, again and again.
-          // After the second such drop, this call carries its media over the WebSocket instead.
+          // Seen over Hamachi: the connection stalls ~15 s after WebRTC media starts, again and again
+          // (host.log, 2026-11-07/08). The first such drop already moves this call off WebRTC: to the
+          // host's tunnel when one is open (desktop app), else media over this same WebSocket.
           if (this.mode === "rtc" && this.rtcSince && Date.now() - this.rtcSince < 60_000) this.rtcDrops++;
           this.rtcSince = 0;
-          if (this.rtcDrops >= 2 && !this.fallbackWs && wsMediaSupported()) {
+          if (this.rtcDrops >= 1 && !this.fallbackWs) {
             this.fallbackWs = true;
-            const tunnel = !!useStore.getState().hostInfo?.tunnelUrl;
-            useStore.getState().toast(t(tunnel ? "err.voiceUnstableTunnel" : "err.voiceUnstable"), "info");
+            const st = useStore.getState();
+            const tunnelUrl = st.hostInfo?.tunnelUrl ?? null;
+            if (tunnelUrl && platform.kind === "desktop" && st.hostUrl && !sameOrigin(st.hostUrl, tunnelUrl)) {
+              st.toast(t("err.voiceUnstableMoved"), "info");
+              void switchToTunnel(tunnelUrl).catch(() => {
+                st.toast(t("tunnelSwitch.failed"), "error");
+                void this.rejoin(v.guildId!, v.channelId!);
+              });
+              break;
+            }
+            if (wsMediaSupported()) st.toast(t("err.voiceUnstable"), "info");
           }
           void this.rejoin(v.guildId, v.channelId);
         }
@@ -485,6 +507,8 @@ class VoiceEngine {
     this.micProducer = await this.send.produce({
       track: this.micSendTrack,
       stopTracks: false,
+      // Voice first when the uplink is busy (a stream or a game download): bandwidth and DSCP priority.
+      encodings: [{ priority: "high", networkPriority: "high" }],
       codecOptions: { opusStereo: false, opusDtx: true, opusFec: true },
       appData: { source: "mic" },
     });
@@ -606,6 +630,13 @@ class VoiceEngine {
     await this.conn?.call("voice.update", { deafened }).catch(() => {});
   }
 
+  /** iOS ends the microphone track while the page is in the background: reopen it on return. */
+  async repairMic(): Promise<void> {
+    const track = this.micStream?.getAudioTracks()[0];
+    if (!useVoice.getState().channelId || !track || track.readyState === "live") return;
+    await this.restartMic();
+  }
+
   /** Re-open the microphone after a device/processing change. */
   async restartMic(): Promise<void> {
     if (!useVoice.getState().channelId) return;
@@ -660,6 +691,7 @@ class VoiceEngine {
       rtpParameters: params.rtpParameters as msc.RtpParameters,
       appData: { userId: params.userId, source: params.source },
     });
+    if (params.kind === "audio") holdJitter(consumer.rtpReceiver, params.source === "mic" ? 80 : 120);
     const entry: ConsumerEntry = { id: consumer.id, producerId: p.id, userId: params.userId, source: params.source, track: consumer.track, close: () => consumer.close() };
     this.consumers.set(consumer.id, entry);
     if (params.source === "mic") {
@@ -1006,6 +1038,7 @@ class VoiceEngine {
       this.screenAudioProducer = await send.produce({
         track: audio,
         stopTracks: false,
+        encodings: [{ priority: "high", networkPriority: "high" }],
         codecOptions: { opusStereo: true, opusDtx: false, opusFec: true, opusMaxAverageBitrate: 128_000 },
         appData: { source: "screen-audio" },
       });
@@ -1135,6 +1168,29 @@ class VoiceEngine {
 
 export const voice = new VoiceEngine();
 
+const sameOrigin = (a: string, b: string): boolean => {
+  try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
+};
+
+/**
+ * Moves this desktop session to the host's tunnel URL (same account, server and channel) and, if in
+ * voice, back into the same voice channel once connected (CLAUDE.md §10.4).
+ */
+export async function switchToTunnel(tunnelUrl: string): Promise<void> {
+  const v = useVoice.getState();
+  const rejoin = v.guildId && v.channelId ? { guildId: v.guildId, channelId: v.channelId } : null;
+  if (rejoin) await voice.leave();
+  await useStore.getState().switchAddress(tunnelUrl);
+  useStore.getState().toast(t("tunnelSwitch.done"));
+  if (rejoin) {
+    const off = useStore.subscribe((st) => {
+      if (st.connStatus !== "ready") return;
+      off();
+      void voice.join(rejoin.guildId, rejoin.channelId);
+    });
+  }
+}
+
 // Leave voice when the host connection goes away for good (logout / switch host).
 useStore.subscribe((s, prev) => {
   if (prev.conn && !s.conn && useVoice.getState().channelId) void voice.leave();
@@ -1154,4 +1210,18 @@ const MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "ShiftLeft", "Shi
 export function comboOf(e: { code: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): string | null {
   if (MODIFIER_CODES.has(e.code)) return null;
   return [e.ctrlKey && "Ctrl", e.shiftKey && "Shift", e.altKey && "Alt", e.code].filter(Boolean).join("+");
+}
+
+/*
+ * Minimum playout buffer for a received audio track. Over jittery paths (Wi-Fi, Hamachi, a busy host)
+ * WebRTC's adaptive buffer ran near-empty and stretched / squeezed speech to catch up (robotic voice);
+ * a small floor absorbs that for ~50 ms extra latency.
+ */
+function holdJitter(receiver: RTCRtpReceiver | undefined, ms: number): void {
+  if (!receiver) return;
+  const r = receiver as unknown as { jitterBufferTarget?: number | null; playoutDelayHint?: number };
+  try {
+    if ("jitterBufferTarget" in receiver) r.jitterBufferTarget = ms;
+    else r.playoutDelayHint = ms / 1000;
+  } catch { /* unsupported */ }
 }

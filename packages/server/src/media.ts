@@ -13,6 +13,13 @@ import type { Store } from "./store";
 import { FRAME_CAM, FRAME_KEYREQ, FRAME_MIC, FRAME_SCREEN, FRAME_SCREEN_AUDIO, FrameAssembler, audioFrame, buildRtp, keyFrameSsrcs, packetizeH264, parseRtp, videoFrame } from "./rtp";
 import { fail, randomToken } from "./util";
 
+/** Above-normal CPU priority (no admin needed); best effort. 0 = this process. */
+export function raisePriority(pid: number): void {
+  try {
+    os.setPriority(pid, os.constants.priority.PRIORITY_ABOVE_NORMAL);
+  } catch { /* not permitted: keep normal */ }
+}
+
 /*
  * Voice & streaming SFU (mediasoup). One router per active voice channel, one WebRtcServer
  * (single UDP+TCP port = main port + 1) shared by every transport. A user has at most one voice
@@ -302,6 +309,9 @@ export class Media {
     if (this.webRtcServer) return;
     this.starting ??= (async () => {
       const worker = await mediasoup.createWorker({ logLevel: "warn", rtcMinPort: 0, rtcMaxPort: 0 });
+      // Every voice and stream packet of the room passes through this process. A game on the host PC
+      // starved it at normal priority (jitter → robotic / crackling audio for everyone): run it higher.
+      raisePriority(worker.pid);
       worker.on("died", (err) => {
         this.log("[media] worker died", err);
         if (this.worker !== worker) return;

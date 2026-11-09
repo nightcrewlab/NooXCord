@@ -30,6 +30,8 @@ export interface VoiceSettings {
   /** Theater view (watching a stream): the participant strip under it is collapsed. */
   stripHidden: boolean;
   overlay: boolean;
+  /** Tones when people join / leave my voice channel or mute / deafen. */
+  voiceSounds: boolean;
 }
 
 const KEY = "nx.voice";
@@ -52,6 +54,7 @@ const defaults: VoiceSettings = {
   streamTunnelHigh: false,
   stripHidden: false,
   overlay: true,
+  voiceSounds: true,
 };
 
 function load(): VoiceSettings {

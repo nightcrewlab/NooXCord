@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, shell } from "electron";
+import { execFile } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { hosts } from "./hosts";
@@ -21,6 +23,9 @@ if (!app.requestSingleInstanceLock()) app.quit();
 // entry under the real ID made the installed app show the Electron logo.
 const AUMID = app.isPackaged ? "com.nooxrii.nooxcord" : "com.nooxrii.nooxcord.dev";
 app.setAppUserModelId(AUMID);
+// Hidden / minimised (a game in front) the renderer dropped to background CPU priority, and the voice
+// it decodes and the microphone it processes broke up (robotic / crackling). Keep it at normal priority.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
 initLogs();
 
 let mainWindow: BrowserWindow | null = null;
@@ -86,6 +91,34 @@ function registerIpc(): void {
   registerServices(() => mainWindow);
 }
 
+/*
+ * Start menu / desktop / pinned taskbar shortcuts point their icon at resources/icon.ico (not the exe,
+ * whose cached icon may be Electron's), once per version; then the shell icon cache is refreshed.
+ */
+function fixShortcutIcons(ico: string): void {
+  const marker = path.join(app.getPath("userData"), "shortcut-icons.txt");
+  try {
+    if (fs.readFileSync(marker, "utf8") === app.getVersion()) return;
+  } catch { /* first run */ }
+  const appData = process.env.APPDATA ?? "";
+  const links = [
+    path.join(appData, "Microsoft/Windows/Start Menu/Programs/NooXCord.lnk"),
+    path.join(app.getPath("desktop"), "NooXCord.lnk"),
+    path.join(appData, "Microsoft/Internet Explorer/Quick Launch/User Pinned/TaskBar/NooXCord.lnk"),
+  ];
+  for (const lnk of links) {
+    try {
+      if (!fs.existsSync(lnk)) continue;
+      const cur = shell.readShortcutLink(lnk);
+      if (path.resolve(cur.target).toLowerCase() !== path.resolve(process.execPath).toLowerCase()) continue;
+      shell.writeShortcutLink(lnk, "update", { target: cur.target, icon: ico, iconIndex: 0, appUserModelId: AUMID });
+    } catch { /* shortcut unreadable: leave it */ }
+  }
+  // Rebuilds the per-user icon cache entries (no admin); harmless if it fails.
+  execFile(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "ie4uinit.exe"), ["-show"], { windowsHide: true }, () => {});
+  try { fs.writeFileSync(marker, app.getVersion()); } catch { /* read-only profile */ }
+}
+
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -105,9 +138,12 @@ function createMainWindow(): void {
       spellcheck: false,
     },
   });
-  // Taskbar button icon from the exe itself (overrides a stale per-ID icon in the shell's cache).
+  // Taskbar button icon. Windows caches icons per file path: NooXCord.exe once carried the Electron icon
+  // and the shell kept showing it after updates. A separate .ico path is never in that cache.
   if (process.platform === "win32" && app.isPackaged) {
-    mainWindow.setAppDetails({ appId: AUMID, appIconPath: process.execPath, appIconIndex: 0, relaunchCommand: `"${process.execPath}"`, relaunchDisplayName: "NooXCord" });
+    const ico = path.join(process.resourcesPath, "icon.ico");
+    mainWindow.setAppDetails({ appId: AUMID, appIconPath: ico, appIconIndex: 0, relaunchCommand: `"${process.execPath}"`, relaunchDisplayName: "NooXCord" });
+    fixShortcutIcons(ico);
   }
   if (!process.env.NX_SELFTEST && !startHidden()) mainWindow.once("ready-to-show", () => mainWindow?.show());
   // Close to tray (setting, default on): the app keeps running for voice, hosting and notifications.

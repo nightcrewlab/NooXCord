@@ -86,6 +86,7 @@ export class HostConnection {
   private pingTimer = 0;
   private retry = 0;
   private lastRecv = 0;
+  private lastPong = 0;
   private closedByUser = false;
   status: ConnStatus = "connecting";
 
@@ -112,11 +113,14 @@ export class HostConnection {
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
     ws.onopen = () => {
-      this.lastRecv = Date.now();
+      this.lastRecv = this.lastPong = Date.now();
       ws.send(JSON.stringify({ t: "auth", d: { token: this.http.token, client: platform.kind } }));
       clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(() => {
         if (Date.now() - this.lastRecv > 12_000) return ws.close(4000, "stale");
+        // Our pings get no answer while the host's messages still arrive: the uplink of this socket is
+        // stuck (seen over Hamachi once voice starts). Reconnect now instead of waiting for the host's 15 s.
+        if (Date.now() - this.lastPong > 7_000) return ws.close(4000, "stale-up");
         if (ws.readyState === 1) ws.send('{"t":"ping"}');
       }, PING_INTERVAL_MS);
     };
@@ -125,7 +129,7 @@ export class HostConnection {
       let f: ServerFrame;
       try { f = JSON.parse(ev.data as string); } catch { return; }
       if (f.t === "ping") return ws.send('{"t":"pong"}');
-      if (f.t === "pong") return;
+      if (f.t === "pong") { this.lastPong = Date.now(); return; }
       if (f.t === "res") {
         const p = this.pending.get(f.id);
         if (!p) return;
