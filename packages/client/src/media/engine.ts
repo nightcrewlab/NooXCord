@@ -64,6 +64,8 @@ interface VoiceUi {
   camera: { facing: "user" | "environment"; canFlip: boolean } | null;
   /** Other people's cameras (userId -> video). */
   cams: Record<string, MediaStream>;
+  /** Tunnel mode: audio dropouts so far and the playback buffer size (diagnostics, shown in the voice bar). */
+  audioDiag: { dropouts: number; holdMs: number } | null;
 }
 
 export const useVoice = create<VoiceUi>()(() => ({
@@ -81,6 +83,7 @@ export const useVoice = create<VoiceUi>()(() => ({
   transport: null,
   camera: null,
   cams: {},
+  audioDiag: null,
 }));
 
 const setV = (p: Partial<VoiceUi> | ((s: VoiceUi) => Partial<VoiceUi>)) => useVoice.setState(p);
@@ -163,7 +166,7 @@ class VoiceEngine {
     this.fallbackWs = false;
     this.rtcDrops = 0;
     if (useVoice.getState().channelId) await this.teardown(true);
-    setV({ status: "connecting", guildId, channelId, watching: {}, focus: null, sharing: null });
+    setV({ status: "connecting", guildId, channelId, watching: {}, focus: null, sharing: null, audioDiag: null });
     this.bindConn(conn);
     try {
       await this.connect(conn, channelId, seq);
@@ -208,6 +211,7 @@ class VoiceEngine {
         const v = useVoice.getState();
         if (seq === this.seq && v.guildId && v.channelId) void this.rejoin(v.guildId, v.channelId);
       });
+      wsm.onAudioDiag = (d) => { if (this.wsm === wsm) setV({ audioDiag: d }); };
       await wsm.open();
       if (seq !== this.seq) return wsm.close();
       this.wsm = wsm;
@@ -278,7 +282,7 @@ class VoiceEngine {
       if (!this.micStream) idleMicContext();
       stopBackgroundCall();
     }, 1000);
-    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null, camera: null, cams: {} });
+    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null, camera: null, cams: {}, audioDiag: null });
     platform.media?.setInCall(false).catch(() => {});
   }
 

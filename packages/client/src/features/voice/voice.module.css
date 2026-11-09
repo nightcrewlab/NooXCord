@@ -164,6 +164,7 @@
 @media (prefers-reduced-motion: reduce) {
   .ringOn, .person { transition: none; }
 }
+.audioDiag { color: var(--nx-text-3); font: 500 11px var(--nx-font); margin: 1px 0 2px; }
 .tunnelTag { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: var(--nx-bg-3); color: var(--nx-warn); font: 700 10px var(--nx-font); letter-spacing: .04em; text-transform: uppercase; }
 
 .tileBtnOn { color: var(--nx-live); }

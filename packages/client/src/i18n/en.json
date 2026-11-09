@@ -344,6 +344,7 @@
   "mobile.pickVoice": "Tap a voice channel in the Servers tab.",
   "voice.tunnelMode": "Tunnel mode",
   "voice.tunnelModeDesc": "Voice and video arrive over WebSocket through the tunnel; the delay is a bit higher. Screen sharing in this mode is limited to 720p, without audio.",
+  "voice.audioDiag": "Audio dropouts: {n} · buffer {ms} ms",
   "remote.request": "Request control",
   "remote.requested": "Request sent",
   "remote.release": "Release control",

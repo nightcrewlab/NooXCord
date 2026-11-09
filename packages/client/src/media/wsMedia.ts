@@ -1,5 +1,5 @@
 import { audioContext, micContext } from "./level";
-import { pcmNode } from "./pcm";
+import { pcmNode, type PcmReport } from "./pcm";
 import { t } from "../i18n";
 
 /*
@@ -85,6 +85,9 @@ export class WsMedia {
   /** Outgoing H.264 (camera, screen share). */
   private senders: Record<VideoKind, VideoSender | null> = { camera: null, screen: null };
   readonly stats = { framesDecoded: 0, audioBytes: 0, bytes: 0, sentBytes: 0 };
+  /** Playback buffer health per audio tag; summed for the voice bar (visible on phones, no console there). */
+  private diag = new Map<number, PcmReport>();
+  onAudioDiag: ((d: { dropouts: number; holdMs: number }) => void) | null = null;
 
   constructor(private url: string, private ticket: string, private onClosed: () => void) {}
 
@@ -126,7 +129,13 @@ export class WsMedia {
 
   async addAudio(tag: number, channels: 1 | 2, volume: number, muted: boolean): Promise<WsAudio> {
     const ch = new MessageChannel();
-    const node = await pcmNode(ch.port2, 48000, channels, `tunnel ${channels === 1 ? "voice" : "stream"} ${tag}`);
+    const node = await pcmNode(ch.port2, 48000, channels, `tunnel ${channels === 1 ? "voice" : "stream"} ${tag}`, (r) => {
+      if (!this.audio.has(tag)) return;
+      this.diag.set(tag, r);
+      let dropouts = 0, holdMs = 0;
+      for (const d of this.diag.values()) { dropouts += d.underruns + d.skips; holdMs = Math.max(holdMs, d.targetMs); }
+      this.onAudioDiag?.({ dropouts, holdMs });
+    });
     const c = audioContext();
     const gain = c.createGain();
     gain.gain.value = muted ? 0 : volume;
@@ -177,6 +186,7 @@ export class WsMedia {
     const a = this.audio.get(tag);
     if (a) {
       this.audio.delete(tag);
+      this.diag.delete(tag);
       try { a.dec.close(); } catch { /* closed */ }
       try { a.node.disconnect(); a.gain.disconnect(); } catch { /* closed */ }
       a.node.port.close();

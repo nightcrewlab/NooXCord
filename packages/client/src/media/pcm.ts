@@ -106,7 +106,9 @@ export interface PcmTrack {
  * the speakers: a MediaStream round trip (destination -> track -> source) adds a second FIFO that
  * under/overruns under load and was heard as a constant scratchy crackle in tunnel mode.
  */
-export async function pcmNode(port: MessagePort, sampleRate: number, channels: number, label = "pcm"): Promise<AudioWorkletNode> {
+export interface PcmReport { underruns: number; skips: number; targetMs: number }
+
+export async function pcmNode(port: MessagePort, sampleRate: number, channels: number, label = "pcm", onReport?: (r: PcmReport) => void): Promise<AudioWorkletNode> {
   const c = audioContext();
   loaded ??= (async () => {
     const url = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
@@ -115,8 +117,10 @@ export async function pcmNode(port: MessagePort, sampleRate: number, channels: n
   await loaded;
   const node = new AudioWorkletNode(c, "nx-pcm", { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { sampleRate, channels } });
   node.port.postMessage({ port }, [port]);
-  node.port.onmessage = (e: MessageEvent<{ underruns: number; skips: number; targetMs: number }>) =>
+  node.port.onmessage = (e: MessageEvent<PcmReport>) => {
     console.warn(`[audio] ${label}: buffer ran dry ${e.data.underruns}x, skipped ${e.data.skips}x, now holds ${e.data.targetMs} ms`);
+    onReport?.(e.data);
+  };
   return node;
 }
 
