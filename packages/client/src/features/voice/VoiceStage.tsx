@@ -12,7 +12,7 @@ import { Avatar, Button, IconButton, Spinner, cx, useMenu } from "../../ui";
 import { RemoteSurface } from "../remote/Remote";
 import chat from "../chat/chat.module.css";
 import layout from "../layout/layout.module.css";
-import { LiveBadge, StreamVideo, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
+import { CallTimer, LiveBadge, StreamVideo, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
 import s from "./voice.module.css";
 
 /** Main area for a voice channel: streams on top, participants below, call controls at the bottom. */
@@ -39,6 +39,7 @@ export function VoiceStage({ guildId, channel, onShare }: { guildId: string; cha
       <header className={chat.head}>
         <Icon name="speaker" size={22} />
         <span className={chat.headName}>{channel.name}</span>
+        <CallTimer guildId={guildId} channelId={channel.id} />
         <span style={{ flex: 1 }} />
         {!theater && <IconButton icon="users" label={t("members.toggle")} aria-pressed={showMembers} onClick={toggleMembers} />}
       </header>

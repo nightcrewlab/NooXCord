@@ -6,7 +6,7 @@ import { useVoice, voice } from "../../media/engine";
 import { platform } from "../../platform";
 import { useStore } from "../../state/store";
 import { Avatar, cx } from "../../ui";
-import { LiveBadge, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
+import { CallTimer, LiveBadge, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
 import { cameraSupported, toggleCamera } from "./VoiceStage";
 import s from "./voice.module.css";
 
@@ -60,6 +60,7 @@ export function VoiceBar({ onShare }: { onShare: () => void }) {
             <Icon name="signal" size={16} />
             {ok ? t("voice.connected") : v.status === "reconnecting" ? t("voice.reconnecting") : t("voice.connecting")}
             {ok && v.transport === "ws" && <span className={s.tunnelTag} title={t("voice.tunnelModeDesc")}>{t("voice.tunnelMode")}</span>}
+            {ok && <CallTimer guildId={v.guildId!} channelId={v.channelId!} className={s.barTimer} />}
           </div>
           {ok && v.transport === "ws" && v.diag && <div className={s.audioDiag}>{t("voice.audioDiag", { n: v.diag.dropouts, ms: v.diag.holdMs })}</div>}
           <button className={s.barChan} onClick={() => selectChannel(v.guildId!, v.channelId!)}>{channel?.name ?? ""} / {guildName}</button>

@@ -22,6 +22,30 @@ export function useChannelVoice(guildId: string, channelId: string): VoiceState[
   return (list ?? []).filter((v) => v.channelId === channelId).sort((a, b) => a.joinedAt - b.joinedAt);
 }
 
+/** "m:ss" or "h:mm:ss". */
+export function formatDuration(ms: number): string {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${two(m)}:${two(x)}` : `${m}:${two(x)}`;
+}
+
+/** How long the call in this channel has been going (live, from the host's call start). Nothing while empty. */
+export function CallTimer({ guildId, channelId, className }: { guildId: string; channelId: string; className?: string }) {
+  const states = useChannelVoice(guildId, channelId);
+  // Older hosts send no callSince: fall back to the earliest joiner.
+  const since = states.length ? Math.min(...states.map((v) => v.callSince || v.joinedAt)) : 0;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!since) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [since]);
+  if (!since) return null;
+  return <span className={className ?? s.callTimer} title={t("voice.callTime")}>{formatDuration(now - since)}</span>;
+}
+
 export function LiveBadge() {
   return <span className={s.live}>{t("stream.live")}</span>;
 }

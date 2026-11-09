@@ -345,6 +345,7 @@
   "voice.tunnelMode": "Tünel modu",
   "voice.tunnelModeDesc": "Ses ve görüntü tünel üzerinden WebSocket ile geliyor; gecikme biraz daha yüksek. Bu modda ekran yayını en fazla 720p ve sessiz gider.",
   "voice.audioDiag": "Ses kesilmesi: {n} · tampon {ms} ms",
+  "voice.callTime": "Sesli sohbet süresi",
   "remote.request": "Kontrol iste",
   "remote.requested": "İstek gönderildi",
   "remote.release": "Kontrolü bırak",

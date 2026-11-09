@@ -208,6 +208,18 @@ try {
   R.ws.close();
   ok("ready payload lists DMs and their users");
 
+  // Call timer: one start time for the channel, kept across a quick empty moment (a reconnect).
+  const since = live.callSince;
+  assert.ok(since > 0 && since <= Date.now());
+  const mutedState = await B.call<VoiceState>("voice.update", { muted: true });
+  assert.equal(mutedState.callSince, since);
+  for (const c of [A, B, W, G]) await c.call("voice.leave", {}).catch(() => {});
+  await A.call<VoiceJoinResult>("voice.join", { channelId: vc });
+  const back = await A.call<VoiceState>("voice.update", { muted: false });
+  assert.equal(back.callSince, since);
+  await A.call("voice.leave", {});
+  ok("call timer: same start for everyone, survives a quick rejoin");
+
   for (const c of [A, B, W, G]) c.ws.close();
   await host.close();
   console.log(`\nREMOTE PASS (${passed} checks)`);

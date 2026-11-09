@@ -13,6 +13,7 @@ import { switchToTunnel, useVoice, voice as engine } from "../../media/engine";
 import { openShareModal } from "../voice/common";
 import { useNotify } from "../notify/notify";
 import { VoiceBar, VoiceChannelUsers } from "../voice/VoiceSidebar";
+import { CallTimer } from "../voice/common";
 import vs from "../voice/voice.module.css";
 import { appJoinLink, isDesktop, platform } from "../../platform";
 
@@ -171,6 +172,7 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
             >
               <Icon name={kind === "text" ? "hash" : "speaker"} size={18} />
               <span className={s.chanName}>{c.name}</span>
+              {kind === "voice" && <CallTimer guildId={guildId} channelId={c.id} />}
             </button>
             {kind === "voice" && <VoiceChannelUsers guildId={guildId} channelId={c.id} />}
           </div>

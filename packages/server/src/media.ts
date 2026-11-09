@@ -72,6 +72,8 @@ const CAM_H264 = { "packetization-mode": 1, "profile-level-id": "42e01f", "level
  */
 const VIDEO_BACKLOG_S = 0.4, VIDEO_BACKLOG_MIN = 250_000; // then skip to the next key frame
 const AUDIO_BACKLOG_S = 1.2, AUDIO_BACKLOG_MIN = 300_000;
+/** A call that empties for less than this (a reconnect, a quick rejoin) keeps its start time. */
+const CALL_GRACE = 30_000;
 const TUNNEL_HIGH_RETRY = 20_000; // after a tunnel viewer fell behind on the full layer, small layer this long
 
 interface Peer {
@@ -91,6 +93,8 @@ interface Peer {
 interface Room {
   channelId: string;
   guildId: string;
+  /** Call start (shown as a live timer). */
+  since: number;
   router: ms.Router;
   peers: Map<string, Peer>;
   speaking: string[];
@@ -117,6 +121,8 @@ export class Media {
   /** Addresses the current WebRtcServer listens on. */
   private listening: string[] = [];
   private rooms = new Map<string, Room>();
+  /** Call start of rooms that just emptied: a rejoin within CALL_GRACE keeps the timer running. */
+  private endedCalls = new Map<string, { since: number; at: number }>();
   private peers = new Map<string, Peer>();
   private thumbs = new Map<string, Thumb>(); // userId -> latest stream thumbnail
   private tickets = new Map<string, Peer>();
@@ -376,7 +382,10 @@ export class Media {
     const again = this.rooms.get(channelId); // another join may have won the race
     if (again) return again;
     const router = await this.worker!.createRouter({ mediaCodecs: CODECS });
-    const room: Room = { channelId, guildId, router, peers: new Map(), speaking: [] };
+    const ended = this.endedCalls.get(channelId);
+    this.endedCalls.delete(channelId);
+    const since = ended && Date.now() - ended.at < CALL_GRACE ? ended.since : Date.now();
+    const room: Room = { channelId, guildId, since, router, peers: new Map(), speaking: [] };
     this.rooms.set(channelId, room);
     return room;
   }
@@ -531,6 +540,9 @@ export class Media {
     if (room.peers.size === 0) {
       room.router.close();
       this.rooms.delete(room.channelId);
+      const now = Date.now();
+      for (const [id, e] of this.endedCalls) if (now - e.at > CALL_GRACE) this.endedCalls.delete(id);
+      this.endedCalls.set(room.channelId, { since: room.since, at: now });
     }
   }
 
@@ -631,7 +643,7 @@ export class Media {
       const state: VoiceState = {
         userId: conn.userId, guildId: ch!.guildId, channelId: ch!.id,
         muted: !!p.muted, deafened: !!p.deafened, suppressed: !has(perms, P.SPEAK),
-        joinedAt: Date.now(), stream: null, camera: false,
+        joinedAt: Date.now(), callSince: room.since, stream: null, camera: false,
       };
       const ws: WsLink | null = tunnel
         ? {

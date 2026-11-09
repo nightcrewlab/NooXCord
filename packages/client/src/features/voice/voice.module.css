@@ -21,7 +21,8 @@
 .bar { flex: none; padding: 10px 10px 8px; border-top: 1px solid var(--nx-line); background: var(--nx-bg-2); display: flex; flex-direction: column; gap: 8px; }
 .barTop { display: flex; align-items: center; gap: 8px; }
 .barStatus { flex: 1; min-width: 0; }
-.barTitle { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; color: var(--nx-speaking); }
+.barTitle { display: flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 0; font-weight: 700; font-size: 13px; color: var(--nx-speaking); }
+.barTitle > svg { flex: none; }
 .barTitle.warn { color: var(--nx-warn); }
 .barChan { font-size: 12px; color: var(--nx-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; max-width: 100%; }
 .barChan:hover { color: var(--nx-text-2); text-decoration: underline; }
@@ -164,8 +165,10 @@
 @media (prefers-reduced-motion: reduce) {
   .ringOn, .person { transition: none; }
 }
+.callTimer { margin-left: 8px; padding: 1px 6px; border-radius: 4px; background: var(--nx-bg-3); color: var(--nx-speaking); font: 600 11px var(--nx-font); font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
+.barTimer { margin-left: auto; color: var(--nx-speaking); font-variant-numeric: tabular-nums; }
 .audioDiag { color: var(--nx-text-3); font: 500 11px var(--nx-font); margin: 1px 0 2px; }
-.tunnelTag { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: var(--nx-bg-3); color: var(--nx-warn); font: 700 10px var(--nx-font); letter-spacing: .04em; text-transform: uppercase; }
+.tunnelTag { white-space: nowrap; margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: var(--nx-bg-3); color: var(--nx-warn); font: 700 10px var(--nx-font); letter-spacing: .04em; text-transform: uppercase; }
 
 .tileBtnOn { color: var(--nx-live); }
 .tileBtn:disabled { opacity: 0.5; cursor: default; }

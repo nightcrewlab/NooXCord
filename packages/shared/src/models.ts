@@ -142,6 +142,8 @@ export interface VoiceState {
   /** Muted by the server (no SPEAK permission). */
   suppressed: boolean;
   joinedAt: number;
+  /** When the call in this channel began (first person joined; survives a quick empty moment). */
+  callSince: number;
   stream: StreamInfo | null;
   /** Camera on (sent automatically to everyone in the channel, unlike screen streams). */
   camera: boolean;
