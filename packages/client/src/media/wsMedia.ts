@@ -126,7 +126,7 @@ export class WsMedia {
 
   async addAudio(tag: number, channels: 1 | 2, volume: number, muted: boolean): Promise<WsAudio> {
     const ch = new MessageChannel();
-    const node = await pcmNode(ch.port2, 48000, channels);
+    const node = await pcmNode(ch.port2, 48000, channels, `tunnel ${channels === 1 ? "voice" : "stream"} ${tag}`);
     const c = audioContext();
     const gain = c.createGain();
     gain.gain.value = muted ? 0 : volume;
