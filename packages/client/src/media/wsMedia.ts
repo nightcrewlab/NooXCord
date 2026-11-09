@@ -1,5 +1,5 @@
-import { audioContext } from "./level";
-import { pcmTrack, type PcmTrack } from "./pcm";
+import { audioContext, micContext } from "./level";
+import { pcmNode } from "./pcm";
 import { t } from "../i18n";
 
 /*
@@ -34,7 +34,8 @@ class NxCapture extends AudioWorkletProcessor {
 registerProcessor("nx-capture", NxCapture);
 `;
 
-let captureLoaded: Promise<void> | null = null;
+/** The capture worklet, loaded once per AudioContext. */
+const captureLoaded = new WeakMap<AudioContext, Promise<void>>();
 
 /** Can this browser use tunnel mode? (Listening needs AudioDecoder; video needs VideoDecoder.) */
 export function wsMediaSupported(): boolean {
@@ -50,10 +51,9 @@ export interface WsAudio {
 
 interface AudioSink {
   dec: AudioDecoder;
-  pcm: PcmTrack;
+  node: AudioWorkletNode;
   port: MessagePort;
   gain: GainNode;
-  src: MediaStreamAudioSourceNode;
 }
 
 interface VideoSink {
@@ -126,12 +126,11 @@ export class WsMedia {
 
   async addAudio(tag: number, channels: 1 | 2, volume: number, muted: boolean): Promise<WsAudio> {
     const ch = new MessageChannel();
-    const pcm = await pcmTrack(ch.port2, 48000, channels);
+    const node = await pcmNode(ch.port2, 48000, channels);
     const c = audioContext();
-    const src = c.createMediaStreamSource(new MediaStream([pcm.track]));
     const gain = c.createGain();
     gain.gain.value = muted ? 0 : volume;
-    src.connect(gain).connect(c.destination);
+    node.connect(gain).connect(c.destination);
     const dec = new AudioDecoder({
       output: (ad) => {
         const n = ad.numberOfFrames, k = ad.numberOfChannels;
@@ -152,7 +151,7 @@ export class WsMedia {
       error: () => { /* a broken packet; the next one decodes */ },
     });
     dec.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: channels });
-    this.audio.set(tag, { dec, pcm, port: ch.port1, gain, src });
+    this.audio.set(tag, { dec, node, port: ch.port1, gain });
     let vol = volume, mute = muted;
     const apply = () => (gain.gain.value = mute ? 0 : vol);
     return {
@@ -179,8 +178,8 @@ export class WsMedia {
     if (a) {
       this.audio.delete(tag);
       try { a.dec.close(); } catch { /* closed */ }
-      try { a.src.disconnect(); a.gain.disconnect(); } catch { /* closed */ }
-      a.pcm.stop();
+      try { a.node.disconnect(); a.gain.disconnect(); } catch { /* closed */ }
+      a.node.port.close();
       a.port.close();
     }
     const v = this.video.get(tag);
@@ -285,12 +284,18 @@ export class WsMedia {
     if (typeof AudioEncoder === "undefined") throw new Error(t("err.wsNoEncoder"));
     const config: AudioEncoderConfig = { codec: "opus", sampleRate: 48000, numberOfChannels: channels, bitrate };
     if (!(await AudioEncoder.isConfigSupported(config)).supported) throw new Error(t("err.wsNoOpus"));
-    const c = audioContext();
-    captureLoaded ??= (async () => {
-      const url = URL.createObjectURL(new Blob([CAPTURE], { type: "text/javascript" }));
-      try { await c.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
-    })();
-    await captureLoaded;
+    // The microphone track comes from the mic's own context (noise suppression): capture it there, on
+    // the same clock. Reading it from the shared context drifts between two clocks -> periodic crackle.
+    const c = frame === FRAME_MIC ? micContext() : audioContext();
+    let loaded = captureLoaded.get(c);
+    if (!loaded) {
+      loaded = (async () => {
+        const url = URL.createObjectURL(new Blob([CAPTURE], { type: "text/javascript" }));
+        try { await c.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      })();
+      captureLoaded.set(c, loaded);
+    }
+    await loaded;
     const enc = new AudioEncoder({
       output: (chunk) => {
         const ws = this.ws;
@@ -318,8 +323,11 @@ export class WsMedia {
       const n = planes[0]?.length ?? 0;
       if (!open()) { fill = 0; return; } // gate closed: send nothing (like DTX)
       for (; pos < n; pos += step) {
-        const i = Math.floor(pos);
-        for (let k = 0; k < channels; k++) acc[k * FRAME + fill] = (planes[k] ?? planes[0]!)[i]!;
+        const i = Math.floor(pos), f = pos - i, j = Math.min(i + 1, n - 1);
+        for (let k = 0; k < channels; k++) {
+          const pl = planes[k] ?? planes[0]!;
+          acc[k * FRAME + fill] = f ? pl[i]! * (1 - f) + pl[j]! * f : pl[i]!; // linear, not nearest (aliasing hiss)
+        }
         if (++fill === FRAME) {
           if (enc.state === "configured") {
             enc.encode(new AudioData({ format: "f32-planar", sampleRate: 48000, numberOfFrames: FRAME, numberOfChannels: channels, timestamp: Math.round((samples / 48000) * 1e6), data: acc }));

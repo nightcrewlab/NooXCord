@@ -5,7 +5,8 @@
  *  - A looping silent <audio> element: a page with playing media is not frozen in the background,
  *    so the WebSocket and the tunnel-mode audio keep running.
  *  - Media Session: lock screen / Control Center shows the channel with a hang-up (where supported).
- *  - Back in front: AudioContexts that iOS interrupted are resumed, a microphone that iOS ended is reopened.
+ *  - Back in front: AudioContexts that iOS interrupted are resumed, a microphone that iOS ended is reopened,
+ *    watched streams that froze in the background are re-subscribed.
  */
 import { audioContext, micContext } from "./level";
 
@@ -44,7 +45,16 @@ function setSession(type: AudioSessionType): void {
  * Call inside the join gesture (iOS starts media playback only from a tap).
  * `fixMic` reopens the microphone if iOS stopped it while in the background.
  */
-export function startBackgroundCall(channelName: string, actions: { hangup(): void; toggleMic(): void; fixMic(): void }): void {
+/** Is a video playing picture-in-picture (standard API or Safari's presentation mode)? */
+function pipActive(): boolean {
+  if ((document as Document & { pictureInPictureElement?: Element | null }).pictureInPictureElement) return true;
+  for (const v of document.querySelectorAll("video")) {
+    if ((v as HTMLVideoElement & { webkitPresentationMode?: string }).webkitPresentationMode === "picture-in-picture") return true;
+  }
+  return false;
+}
+
+export function startBackgroundCall(channelName: string, actions: { hangup(): void; toggleMic(): void; fixMic(): void; refreshVideo(): void }): void {
   if (!isMobileWeb()) return;
   setSession("play-and-record");
   if (!keepAlive) {
@@ -70,8 +80,18 @@ export function startBackgroundCall(channelName: string, actions: { hangup(): vo
   }
 
   if (!onVisible) {
+    // iOS stops video decoding for a page in the background (unless a video is in PiP); the watched
+    // stream stays frozen on its last frame after coming back. Re-subscribing fixes it (fresh decoder +
+    // key frame), the same as the user pressing stop / watch.
+    let hiddenAt = 0, pipAtHide = false;
     onVisible = () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible") {
+        if (!hiddenAt) { hiddenAt = performance.now(); pipAtHide = pipActive(); }
+        return;
+      }
+      const away = hiddenAt ? performance.now() - hiddenAt : 0;
+      hiddenAt = 0;
+      if (away > 1000 && !pipAtHide) actions.refreshVideo();
       // iOS leaves contexts "interrupted"/"suspended" after the background: resume (and the loop).
       try { audioContext(); micContext(); } catch { /* closed */ }
       void keepAlive?.play().catch(() => {});
@@ -79,6 +99,7 @@ export function startBackgroundCall(channelName: string, actions: { hangup(): vo
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("pageshow", onVisible);
+    window.addEventListener("pagehide", onVisible);
   }
 }
 
@@ -86,6 +107,7 @@ export function stopBackgroundCall(): void {
   if (onVisible) {
     document.removeEventListener("visibilitychange", onVisible);
     window.removeEventListener("pageshow", onVisible);
+    window.removeEventListener("pagehide", onVisible);
     onVisible = null;
   }
   if (keepAlive) {

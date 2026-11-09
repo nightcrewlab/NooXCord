@@ -16,7 +16,7 @@ class NxPcm extends AudioWorkletProcessor {
     this.cap = Math.ceil(this.inRate * 0.5); // 500 ms
     this.buf = new Float32Array(this.cap * this.ch);
     this.w = 0; this.r = 0; this.fill = 0;
-    this.target = this.inRate * 0.12; this.started = false;
+    this.target = this.inRate * 0.12; this.started = false; this.amp = 1; this.last = [0, 0];
     this.step = this.inRate / sampleRate;
     this.port.onmessage = (e) => {
       if (e.data && e.data.port) { e.data.port.onmessage = (m) => this.push(m.data); return; }
@@ -34,16 +34,24 @@ class NxPcm extends AudioWorkletProcessor {
   }
   process(_inputs, outputs) {
     const out = outputs[0]; const n = out[0].length;
-    if (!this.started) { if (this.fill < this.target) return true; this.started = true; this.pos = 0; }
+    if (!this.started) { if (this.fill < this.target) return true; this.started = true; this.pos = 0; this.amp = 0; }
     const drift = (this.fill - this.target) / this.target;
     const step = this.step * (1 + Math.max(-0.005, Math.min(0.005, drift * 0.02)));
     for (let i = 0; i < n; i++) {
-      if (this.fill < 2) { this.started = false; for (const o of out) o.fill(0, i); return true; }
+      if (this.fill < 2) {
+        // Ran dry: fade the last sample out instead of jumping to 0 (a jump is an audible click).
+        this.started = false;
+        for (let c = 0; c < out.length; c++) { let v = this.last[c] || 0; for (let j = i; j < n; j++) { v *= 0.97; out[c][j] = v; } }
+        this.last = [0, 0];
+        return true;
+      }
       const a = this.r, b = (this.r + 1) % this.cap, t = this.pos;
       for (let c = 0; c < out.length; c++) {
         const sc = Math.min(c, this.ch - 1);
-        out[c][i] = this.buf[a * this.ch + sc] * (1 - t) + this.buf[b * this.ch + sc] * t;
+        const v = (this.buf[a * this.ch + sc] * (1 - t) + this.buf[b * this.ch + sc] * t) * this.amp;
+        out[c][i] = v; this.last[c] = v;
       }
+      if (this.amp < 1) this.amp = Math.min(1, this.amp + 1 / 240); // 5 ms fade-in after a (re)start
       this.pos += step;
       while (this.pos >= 1) { this.pos -= 1; this.r = b; this.fill--; }
     }
@@ -60,7 +68,12 @@ export interface PcmTrack {
   stop(): void;
 }
 
-export async function pcmTrack(port: MessagePort, sampleRate: number, channels: number): Promise<PcmTrack> {
+/**
+ * The ring-buffer player as an audio node on the shared context. Tunnel audio connects it straight to
+ * the speakers: a MediaStream round trip (destination -> track -> source) adds a second FIFO that
+ * under/overruns under load and was heard as a constant scratchy crackle in tunnel mode.
+ */
+export async function pcmNode(port: MessagePort, sampleRate: number, channels: number): Promise<AudioWorkletNode> {
   const c = audioContext();
   loaded ??= (async () => {
     const url = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
@@ -68,9 +81,15 @@ export async function pcmTrack(port: MessagePort, sampleRate: number, channels: 
   })();
   await loaded;
   const node = new AudioWorkletNode(c, "nx-pcm", { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { sampleRate, channels } });
+  node.port.postMessage({ port }, [port]);
+  return node;
+}
+
+export async function pcmTrack(port: MessagePort, sampleRate: number, channels: number): Promise<PcmTrack> {
+  const c = audioContext();
+  const node = await pcmNode(port, sampleRate, channels);
   const dest = c.createMediaStreamDestination();
   node.connect(dest);
-  node.port.postMessage({ port }, [port]);
   const track = dest.stream.getAudioTracks()[0]!;
   return {
     track,

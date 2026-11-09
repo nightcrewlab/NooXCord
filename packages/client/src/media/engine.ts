@@ -156,6 +156,7 @@ class VoiceEngine {
       hangup: () => void this.leave(),
       toggleMic: () => void this.setMuted(!useVoice.getState().muted),
       fixMic: () => void this.repairMic(),
+      refreshVideo: () => void this.rewatchAll(),
     });
     const seq = ++this.seq;
     // A new join tries WebRTC again: an earlier failure (a dropped connection) must not pin tunnel mode forever.
@@ -428,7 +429,8 @@ class VoiceEngine {
       setV({ micError: null });
     } catch (e) {
       const name = (e as DOMException).name;
-      const msg = name === "NotAllowedError" ? t("err.micDenied") : name === "NotFoundError" ? t("err.micMissing") : t("err.micFailed");
+      // Browsers give no microphone on plain http:// (a LAN / Hamachi address): only https or localhost.
+      const msg = !window.isSecureContext ? t("err.micInsecure") : name === "NotAllowedError" ? t("err.micDenied") : name === "NotFoundError" ? t("err.micMissing") : t("err.micFailed");
       setV({ micError: msg });
       useStore.getState().toast(msg, "error");
       return;
@@ -780,6 +782,19 @@ class VoiceEngine {
   async unwatch(userId: string): Promise<void> {
     this.forgetWatch(userId);
     await this.conn?.call("stream.watch", { userId, watching: false }).catch(() => {});
+  }
+
+  /** Re-subscribe every watched stream (iPhone: decoding froze while the page was in the background). */
+  async rewatchAll(): Promise<void> {
+    const v = useVoice.getState();
+    const ids = Object.keys(v.watching);
+    if (!ids.length || v.status !== "connected") return;
+    const focus = v.focus;
+    for (const id of ids) {
+      await this.unwatch(id);
+      await this.watch(id);
+    }
+    if (focus && focus in useVoice.getState().watching) this.setFocus(focus);
   }
 
   private ensureWatchEntry(userId: string): WatchedStream {

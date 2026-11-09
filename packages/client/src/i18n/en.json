@@ -457,6 +457,7 @@
   "err.micDenied": "Microphone permission was denied; you can only listen.",
   "err.micMissing": "No microphone found; you can only listen.",
   "err.micFailed": "The microphone could not be opened; you can only listen.",
+  "err.micInsecure": "Browsers give no microphone on http:// addresses (LAN / Hamachi); you can only listen. To talk, use the tunnel address (https) or the desktop app.",
   "err.joinVoiceFirst": "Join a voice channel first.",
   "err.noVideo": "No video could be captured.",
   "err.sysAudioUnsupported": "System audio cannot be captured on this computer; the stream started without sound.",

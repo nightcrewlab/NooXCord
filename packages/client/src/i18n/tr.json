@@ -457,6 +457,7 @@
   "err.micDenied": "Mikrofon izni verilmedi; yalnızca dinleyebilirsin.",
   "err.micMissing": "Mikrofon bulunamadı; yalnızca dinleyebilirsin.",
   "err.micFailed": "Mikrofon açılamadı; yalnızca dinleyebilirsin.",
+  "err.micInsecure": "Tarayıcılar http:// adreslerinde (LAN / Hamachi) mikrofon vermiyor; yalnızca dinleyebilirsin. Konuşmak için tünel adresini (https) veya masaüstü uygulamasını kullan.",
   "err.joinVoiceFirst": "Önce bir sesli kanala katıl.",
   "err.noVideo": "Görüntü alınamadı.",
   "err.sysAudioUnsupported": "Sistem sesi bu bilgisayarda yakalanamıyor; yayın sessiz başladı.",
