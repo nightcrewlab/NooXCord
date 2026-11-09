@@ -48,6 +48,10 @@ interface WsLink {
   /** Browser-encoded H.264: [0] camera, [1] screen. */
   vid: [WsVideoIn, WsVideoIn];
   sent: number;
+  /** Measured delivery rate (bytes/s that left the socket buffer), for a time-based backlog limit. */
+  rate: number;
+  rateAt: number;
+  drainedAt: number;
 }
 
 interface WsAudioIn { ssrc: number; seq: number; ts: number }
@@ -59,9 +63,16 @@ const MIC_PT = 100;
 const CAM_PT = 101;
 /** Tunnel-mode cameras and screens are encoded by WebCodecs in the browser: H.264 constrained baseline. */
 const CAM_H264 = { "packetization-mode": 1, "profile-level-id": "42e01f", "level-asymmetry-allowed": 1 };
-const VIDEO_BACKLOG = 1_500_000; // bytes queued on the socket before we skip to the next key frame
+/*
+ * Tunnel-mode backlog: how much may wait on a viewer's socket before frames are dropped. Measured in
+ * time at the viewer's real delivery rate, not bytes: 1.5 MB on a 500 kbps link was 24 s of video, and
+ * because audio shares the socket (TCP), voice and stream audio queued behind it -> late bursts on the
+ * phone (crackle) and video seconds behind the sound after a network hiccup.
+ * The byte floor lets a whole key frame through even when the rate is still unknown.
+ */
+const VIDEO_BACKLOG_S = 0.4, VIDEO_BACKLOG_MIN = 250_000; // then skip to the next key frame
+const AUDIO_BACKLOG_S = 1.2, AUDIO_BACKLOG_MIN = 300_000;
 const TUNNEL_HIGH_RETRY = 20_000; // after a tunnel viewer fell behind on the full layer, small layer this long
-const AUDIO_BACKLOG = 4_000_000;
 
 interface Peer {
   userId: string;
@@ -258,12 +269,25 @@ export class Media {
   }
 
   /** Sends a frame to a tunnel-mode peer; false when the socket is too far behind. */
-  private wsSend(p: Peer, buf: Buffer, limit: number): boolean {
-    const sock = p.ws?.sock;
-    if (!sock || sock.readyState !== 1) return false;
-    if (sock.bufferedAmount > limit) return false;
+  private wsSend(p: Peer, buf: Buffer, kind: "audio" | "video"): boolean {
+    const ws = p.ws;
+    const sock = ws?.sock;
+    if (!ws || !sock || sock.readyState !== 1) return false;
+    const queued = sock.bufferedAmount;
+    const now = Date.now();
+    if (now - ws.rateAt >= 500) { // delivery rate, smoothed
+      const drained = ws.sent - queued;
+      const r = ((drained - ws.drainedAt) * 1000) / (now - ws.rateAt);
+      ws.rate = ws.rate ? ws.rate * 0.7 + r * 0.3 : r;
+      ws.rateAt = now;
+      ws.drainedAt = drained;
+    }
+    const limit = kind === "video"
+      ? Math.max(VIDEO_BACKLOG_MIN, ws.rate * VIDEO_BACKLOG_S)
+      : Math.max(AUDIO_BACKLOG_MIN, ws.rate * AUDIO_BACKLOG_S);
+    if (queued > limit) return false;
     sock.send(buf);
-    p.ws!.sent += buf.length;
+    ws.sent += buf.length;
     return true;
   }
 
@@ -524,7 +548,7 @@ export class Media {
     if (consumer.kind === "audio") {
       consumer.on("rtp", (b: Buffer) => {
         const r = parseRtp(b);
-        if (r && r.payload.length > 0) this.wsSend(peer, audioFrame(tag, r.timestamp, r.payload), AUDIO_BACKLOG);
+        if (r && r.payload.length > 0) this.wsSend(peer, audioFrame(tag, r.timestamp, r.payload), "audio");
       });
       return tag;
     }
@@ -558,7 +582,7 @@ export class Media {
       consumer.requestKeyFrame().catch(() => {});
     };
     const asm = new FrameAssembler(vp8 ? "vp8" : "h264", (f) => {
-      if (!this.wsSend(peer, videoFrame(tag, f, vp8), VIDEO_BACKLOG)) {
+      if (!this.wsSend(peer, videoFrame(tag, f, vp8), "video")) {
         fellBehind();
         asm.skipToKey();
         needKey();
@@ -612,7 +636,7 @@ export class Media {
       const ws: WsLink | null = tunnel
         ? {
           ticket: randomToken(24), sock: null, nextTag: 1, aud: [0, 1].map(() => ({ ssrc: (Math.random() * 0xffffffff) >>> 0, seq: 0, ts: 0 })) as [WsAudioIn, WsAudioIn],
-          vid: [0, 1].map(() => ({ ssrc: (Math.random() * 0xffffffff) >>> 0, seq: 0, lastKeyReq: 0 })) as [WsVideoIn, WsVideoIn], sent: 0,
+          vid: [0, 1].map(() => ({ ssrc: (Math.random() * 0xffffffff) >>> 0, seq: 0, lastKeyReq: 0 })) as [WsVideoIn, WsVideoIn], sent: 0, rate: 0, rateAt: Date.now(), drainedAt: 0,
         }
         : null;
       if (ws) {
