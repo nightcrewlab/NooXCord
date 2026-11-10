@@ -7,9 +7,9 @@
 }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.primary { background: linear-gradient(135deg, var(--nx-accent), var(--nx-accent-2)); color: #1a0e06; }
-.primary:hover:not(:disabled) { filter: brightness(1.06); }
-.secondary { background: var(--nx-bg-3); color: var(--nx-text-1); border-color: var(--nx-line); }
+.primary { background: linear-gradient(135deg, var(--nx-accent), var(--nx-accent-2)); color: #1a0e06; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), var(--nx-glow); }
+.primary:hover:not(:disabled) { filter: brightness(1.07); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 10px 28px -8px rgba(255, 122, 69, .7); }
+.secondary { background: var(--nx-bg-3); color: var(--nx-text-1); border-color: var(--nx-edge); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04); }
 .secondary:hover:not(:disabled) { background: #283040; }
 .ghost { background: transparent; color: var(--nx-text-2); }
 .ghost:hover:not(:disabled) { background: var(--nx-bg-3); color: var(--nx-text-1); }
@@ -24,7 +24,7 @@
   transition: background var(--nx-fast), color var(--nx-fast);
 }
 .iconBtn:hover:not(:disabled) { background: var(--nx-bg-3); color: var(--nx-text-1); }
-.iconBtn[aria-pressed="true"] { color: var(--nx-accent); }
+.iconBtn[aria-pressed="true"] { color: var(--nx-accent); background: var(--nx-tint); }
 .iconBtn:disabled { opacity: .4; cursor: not-allowed; }
 
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -40,13 +40,17 @@
 
 .backdrop {
   position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px;
-  background: rgba(5, 6, 9, .62); backdrop-filter: blur(6px);
+  background: rgba(5, 6, 9, .66); backdrop-filter: blur(10px) saturate(120%);
   animation: fade 140ms ease-out;
 }
 .modal {
   width: min(460px, 100%); max-height: calc(100vh - 32px); overflow: auto;
-  background: var(--nx-bg-1); border: 1px solid var(--nx-line); border-radius: var(--nx-radius-l);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, .5);
+  /* a thin accent line along the top edge marks every dialog */
+  background:
+    linear-gradient(90deg, transparent, var(--nx-accent) 30%, var(--nx-accent-2) 70%, transparent) top / 100% 1px no-repeat,
+    var(--nx-panel);
+  border: 1px solid var(--nx-edge); border-radius: 20px;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, .6);
   animation: pop 180ms cubic-bezier(.2, .8, .2, 1);
 }
 .modalWide { width: min(860px, 100%); height: min(640px, calc(100vh - 32px)); display: flex; overflow: hidden; }
@@ -57,13 +61,13 @@
 .modalBody { padding: 12px 20px; display: flex; flex-direction: column; gap: 16px; }
 .modalFoot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 20px; }
 
-.avatar { position: relative; flex: none; border-radius: 50%; display: grid; place-items: center; color: #11141a; font-weight: 800; user-select: none; }
-.avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
-.presence { position: absolute; right: -2px; bottom: -2px; border-radius: 50%; border: 3px solid var(--nx-bg-1); }
+.avatar { position: relative; flex: none; border-radius: var(--nx-squircle); display: grid; place-items: center; color: #11141a; font-weight: 800; user-select: none; }
+.avatar img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; display: block; }
+.presence { position: absolute; right: -3px; bottom: -3px; border-radius: 50%; border: 3px solid var(--nx-bg-1); }
 
 .menu {
   position: fixed; z-index: 200; min-width: 200px; padding: 6px;
-  background: #0f1217; border: 1px solid var(--nx-line); border-radius: var(--nx-radius-m);
+  background: rgba(15, 18, 23, .92); backdrop-filter: blur(14px); border: 1px solid var(--nx-edge); border-radius: 14px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, .55); animation: pop 120ms ease-out;
 }
 .menuItem {
@@ -79,7 +83,7 @@
 .toasts { position: fixed; z-index: 300; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
 .toast {
   display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 999px;
-  background: #0f1217; border: 1px solid var(--nx-line); box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
+  background: rgba(15, 18, 23, .92); backdrop-filter: blur(14px); border: 1px solid var(--nx-edge); box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
   font-size: 14px; animation: pop 160ms ease-out;
 }
 .toastError { border-color: rgba(255, 59, 92, .45); color: #ffb3c0; }

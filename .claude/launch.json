@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ui-host",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["exec", "cross-env", "PORT=47840", "NX_DATA=.data-ui", "pnpm", "dev:host"],
+      "port": 47840
+    },
+    {
+      "name": "ui-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["exec", "cross-env", "VITE_NX_HOST=http://localhost:47840", "pnpm", "dev:web"],
+      "port": 5173
+    }
+  ]
+}

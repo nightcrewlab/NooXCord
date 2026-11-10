@@ -1,8 +1,8 @@
 .panel { width: 240px; }
 .scroll { flex: 1; overflow-y: auto; padding: 8px; }
-.group { padding: 16px 8px 6px; font: 700 11px/1 var(--nx-font); letter-spacing: .06em; text-transform: uppercase; color: var(--nx-text-3); }
-.member { display: flex; align-items: center; gap: 10px; width: 100%; padding: 5px 8px; border-radius: var(--nx-radius-s); border: 0; background: none; color: var(--nx-text-1); cursor: pointer; text-align: left; }
-.member:hover { background: var(--nx-bg-2); }
+.group { padding: 16px 8px 8px; font: 700 10.5px/1 var(--nx-font); letter-spacing: .1em; text-transform: uppercase; color: var(--nx-text-3); }
+.member { display: flex; align-items: center; gap: 11px; width: 100%; padding: 6px 8px; border-radius: 10px; transition: background var(--nx-fast), opacity var(--nx-fast); border: 0; background: none; color: var(--nx-text-1); cursor: pointer; text-align: left; }
+.member:hover { background: rgba(255, 255, 255, .045); }
 .member[data-offline] { opacity: .42; }
 .member[data-offline]:hover { opacity: .8; }
 .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; font-size: 14px; }

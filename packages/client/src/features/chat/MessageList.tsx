@@ -77,8 +77,12 @@ export function MessageList({ channel, gs, onReply, editing, setEditing }: { cha
   // initial load per channel
   useEffect(() => {
     atBottom.current = true;
-    void loadMessages(channel.id);
-  }, [channel.id, loadMessages]);
+  }, [channel.id]);
+  // Also when the connection becomes ready: a channel opened while (re)connecting used to stay empty.
+  const online = useStore((st) => st.connStatus === "ready");
+  useEffect(() => {
+    if (online && !cm?.loaded) void loadMessages(channel.id);
+  }, [channel.id, online, cm?.loaded, loadMessages]);
 
   // keep pinned to bottom when new rows arrive; preserve position when older rows are prepended
   const prevFirstKey = useRef<string | null>(null);

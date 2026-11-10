@@ -295,6 +295,8 @@ export const useStore = create<Store>()((set, get) => {
     const conn = new HostConnection(http);
     conn.on(apply);
     conn.onStatus((st) => {
+      // A replaced connection closes late: its "closed" must not overwrite the new connection's status.
+      if (get().conn !== conn) return;
       set({ connStatus: st });
       if (st === "auth_failed") {
         void platform.hosts.setToken(http.base, null);
@@ -380,7 +382,7 @@ export const useStore = create<Store>()((set, get) => {
     async loadMessages(channelId, older = false) {
       const { conn, messages } = get();
       const cur = messages[channelId];
-      if (!conn || cur?.loading || (older && cur && !cur.hasMore) || (!older && cur?.loaded)) return;
+      if (!conn || conn.status !== "ready" || cur?.loading || (older && cur && !cur.hasMore) || (!older && cur?.loaded)) return;
       set((s) => ({ messages: { ...s.messages, [channelId]: { items: cur?.items ?? [], hasMore: cur?.hasMore ?? true, loaded: cur?.loaded ?? false, loading: true } } }));
       try {
         const before = older ? cur?.items[0]?.id : undefined;

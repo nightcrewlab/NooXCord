@@ -206,7 +206,7 @@ function Person({ state, onVolume, isMe }: { state: VoiceState; onVolume: (e: Re
         {(state.muted || state.suppressed) && <Icon name="mic-off" size={16} label={state.suppressed ? t("voice.suppressed") : t("voice.mute")} />}
         {state.deafened && <Icon name="headphones-off" size={16} label={t("voice.deafen")} />}
       </span>
-      <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={64} /></span>
+      <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={76} /></span>
       <div className={s.personName}>
         <span>{user.nickname}{isMe ? ` (${t("voice.you")})` : ""}</span>
         {state.stream && <LiveBadge />}

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
 import type { AuthResponse, Events, GuildState, Message, MethodName } from "@nooxcord/shared";
-import { P } from "@nooxcord/shared";
+import { P, PART_SIZE } from "@nooxcord/shared";
 import { startHost } from "../src/index";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nx-smoke-"));
@@ -98,6 +98,19 @@ try {
   assert.equal(seen.content, "Merhaba https://example.invalid");
   ok("message delivered realtime to other member");
 
+  // A long frame sent in small pieces (PART_SIZE, the Hamachi MTU workaround) is reassembled by the host.
+  assert.equal(readyA.host.parts, true);
+  const long = "ş".repeat(1500);
+  const frame = JSON.stringify({ t: "req", id: 900_001, m: "message.send", d: { channelId: text.id, content: long } })
+    .replace(/[\u0080-￿]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+  assert.ok(frame.length > 3 * PART_SIZE);
+  for (let i = 0; i < frame.length; i += PART_SIZE) {
+    B.ws.send((i + PART_SIZE >= frame.length ? "~1" : "~0") + frame.slice(i, i + PART_SIZE));
+    if (i === 0) B.ws.send('{"t":"ping"}'); // other frames may arrive in between
+  }
+  await A.waitFor<Message>("message.create", (m) => m.content === long);
+  ok("split client frame reassembled");
+
   await assert.rejects(A.call("message.edit", { messageId: msg.id, content: "hack" }), /kendi mesajını/);
   await B.call("message.edit", { messageId: msg.id, content: "Merhaba (düzenlendi)" });
   await A.waitFor<Message>("message.update", (m) => m.id === msg.id && m.editedAt !== null);
@@ -135,7 +148,7 @@ try {
 
   // --- history & roles ---
   const hist = await A.call<Message[]>("message.list", { channelId: text.id });
-  assert.equal(hist.length, 3);
+  assert.equal(hist.length, 4);
   ok("message.list returns history");
 
   const admin = gs.roles.find((r) => r.name === "Yönetici")!;

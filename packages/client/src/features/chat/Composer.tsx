@@ -180,7 +180,7 @@ export function Composer({ channel, gs, replyTo, clearReply, onEditLast }: { cha
             onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); addFiles(e.clipboardData.files); } }}
             aria-label={(channel.guildId === DM_HOME ? t("dm.placeholder", { user: channel.name }) : t("chat.placeholder", { channel: channel.name }))}
           />
-          <IconButton icon="send" label={t("chat.send")} onClick={submit} disabled={busy || (!text.trim() && !uploads.some((u) => u.result))} />
+          <IconButton className={s.send} icon="send" label={t("chat.send")} onClick={submit} disabled={busy || (!text.trim() && !uploads.some((u) => u.result))} />
         </div>
       </div>
       <div className={s.typing} aria-live="polite">

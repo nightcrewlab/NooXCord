@@ -4,7 +4,16 @@
   --nx-text-1: #e8ecf2; --nx-text-2: #9aa3b2; --nx-text-3: #5f6878;
   --nx-accent: #ff7a45; --nx-accent-2: #ffb347;
   --nx-speaking: #3ddc84; --nx-live: #ff3b5c; --nx-warn: #f5c451;
-  --nx-radius-s: 6px; --nx-radius-m: 10px; --nx-radius-l: 16px;
+  --nx-radius-s: 8px; --nx-radius-m: 12px; --nx-radius-l: 18px;
+  /* Squircle, like the app icon: avatars and server icons share the logo's silhouette. */
+  --nx-squircle: 32%;
+  --nx-edge: rgba(255, 255, 255, .07);
+  --nx-panel: linear-gradient(180deg, rgba(255, 255, 255, .028), rgba(255, 255, 255, 0) 140px), var(--nx-bg-1);
+  --nx-tint: rgba(255, 122, 69, .14);
+  --nx-glow: 0 8px 24px -8px rgba(255, 122, 69, .55);
+  --nx-shadow: 0 18px 48px -12px rgba(0, 0, 0, .6);
+  /* Sound-wave rings (the logo's arcs), used behind empty states and the join screen. */
+  --nx-rings: repeating-radial-gradient(circle at 50% 50%, transparent 0 26px, rgba(255, 122, 69, .09) 26px 27px);
   --nx-font: "Inter Variable", "Segoe UI", system-ui, sans-serif;
   --nx-font-display: "Space Grotesk Variable", "Inter Variable", "Segoe UI", sans-serif;
   --nx-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
@@ -15,7 +24,11 @@
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {
-  background: var(--nx-bg-0); color: var(--nx-text-1);
+  background:
+    radial-gradient(1100px 520px at -8% -12%, rgba(255, 122, 69, .11), transparent 62%),
+    radial-gradient(900px 600px at 108% 112%, rgba(255, 179, 71, .055), transparent 60%),
+    var(--nx-bg-0);
+  color: var(--nx-text-1);
   font: 15px/1.45 var(--nx-font);
   -webkit-font-smoothing: antialiased; overflow: hidden;
 }

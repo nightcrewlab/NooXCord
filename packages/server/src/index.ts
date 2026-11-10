@@ -9,7 +9,7 @@ import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import { WebSocketServer } from "ws";
 import {
-  APP_VERSION, CLOSE, LIMITS, P, PING_INTERVAL_MS, has,
+  APP_VERSION, CLOSE, LIMITS, MAX_FRAME_CHARS, P, PING_INTERVAL_MS, has,
   type ClientFrame, type HostInfo, type MethodName,
 } from "@nooxcord/shared";
 import { Api } from "./api";
@@ -100,7 +100,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   const auth = new Auth(db, store);
   const api = new Api(db, store, hub, dirs.uploads);
   const config: HostConfig = { allowRegistration: true, allowGuests: true, guestPassword: null, tunnelUrl: null, ...opts.config };
-  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: true, guestPassword: false, tunnelUrl: null };
+  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: true, guestPassword: false, tunnelUrl: null, parts: true };
   const syncInfo = () => Object.assign(info, { allowRegistration: config.allowRegistration, allowGuests: config.allowGuests, guestPassword: !!config.guestPassword, tunnelUrl: config.tunnelUrl });
   syncInfo();
 
@@ -326,12 +326,24 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     const refill = setInterval(() => (tokens = Math.min(40, tokens + 20)), 1000);
     const authTimer = setTimeout(() => ws.close(CLOSE.AUTH_TIMEOUT, "auth timeout"), 8000);
     let lastSeen = Date.now();
+    let parts: string[] = []; // a split client frame being reassembled (PART_SIZE)
+    let partChars = 0;
 
     ws.on("message", async (data) => {
       if (stopping) return;
       lastSeen = Date.now();
+      let text = String(data);
+      if (text.charCodeAt(0) === 126 /* ~ */) {
+        partChars += text.length - 2;
+        if (partChars > MAX_FRAME_CHARS) { parts = []; partChars = 0; return; }
+        parts.push(text.slice(2));
+        if (text[1] !== "1") return;
+        text = parts.join("");
+        parts = [];
+        partChars = 0;
+      }
       let f: ClientFrame;
-      try { f = JSON.parse(String(data)); } catch { return; }
+      try { f = JSON.parse(text); } catch { return; }
       if (f.t === "ping") return ws.send('{"t":"pong"}');
       if (f.t === "pong") return;
       if (f.t === "auth") {

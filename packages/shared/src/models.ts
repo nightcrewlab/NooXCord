@@ -214,4 +214,6 @@ export interface HostInfo {
   guestPassword: boolean;
   /** Public tunnel URL while the host owner has a tunnel open (only sent to signed-in clients). */
   tunnelUrl?: string | null;
+  /** The host reassembles split client frames ("~0…" / "~1…", see PART_SIZE). Absent on older hosts. */
+  parts?: boolean;
 }
