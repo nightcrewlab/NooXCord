@@ -4,7 +4,7 @@ import {
   type Channel, type DmChannel, type EventName, type Events, type GuildState, type HostInfo, type Message, type PublicUser, type SelfUser,
 } from "@nooxcord/shared";
 import { HostConnection, HostHttp, RpcError, type ConnStatus } from "../net/connection";
-import { platform } from "../platform";
+import { isEphemeralHost, platform } from "../platform";
 import { t } from "../i18n";
 
 export interface ChannelMessages {
@@ -315,8 +315,12 @@ export const useStore = create<Store>()((set, get) => {
     async openHost(url) {
       const http = new HostHttp(url);
       const info = await http.info(); // throws if unreachable
-      await platform.hosts.save({ url, name: info.name });
-      await platform.hosts.setLast(url);
+      // Quick-tunnel URLs change on every tunnel start: remembering one would make the next launch
+      // land on a dead address instead of the stable LAN/Hamachi one the user came from.
+      if (!isEphemeralHost(url)) {
+        await platform.hosts.save({ url, name: info.name });
+        await platform.hosts.setLast(url);
+      }
       const token = await platform.hosts.getToken(url);
       set({ ...initial, hostUrl: url, hostInfo: info, http, screen: token ? "app" : "auth", showMembers: get().showMembers });
       if (token) {

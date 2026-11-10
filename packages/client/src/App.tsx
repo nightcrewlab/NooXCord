@@ -3,7 +3,7 @@ import { AuthScreen } from "./features/auth/AuthScreen";
 import { HostPicker } from "./features/hosts/HostPicker";
 import { AppShell } from "./features/layout/AppShell";
 import { t } from "./i18n";
-import { platform } from "./platform";
+import { isEphemeralHost, platform } from "./platform";
 import { useStore } from "./state/store";
 import { ConfirmProvider, MenuProvider, Spinner, Toasts } from "./ui";
 import { RemoteLayer } from "./features/remote/Remote";
@@ -35,6 +35,30 @@ if (platform.app) {
   });
 }
 
+/**
+ * Desktop start-up: open the last host. If that address is dead (an old quick-tunnel URL, or Hamachi
+ * not connected yet right after Windows starts), try the other saved addresses of the same host, a
+ * few rounds apart.
+ */
+async function resumeLastHost(openHost: (url: string) => Promise<void>): Promise<boolean> {
+  const last = await platform.hosts.getLast();
+  if (!last) return false;
+  const saved = await platform.hosts.list().catch(() => []);
+  const name = saved.find((h) => h.url === last)?.name;
+  const others = name ? saved.filter((h) => h.name === name && h.url !== last && !isEphemeralHost(h.url)).map((h) => h.url) : [];
+  const candidates = [...(isEphemeralHost(last) ? [] : [last]), ...others];
+  for (let round = 0; round < 3; round++) {
+    if (round) await new Promise((r) => setTimeout(r, 3000));
+    for (const url of candidates) {
+      try {
+        await openHost(url);
+        return true;
+      } catch { /* try the next address */ }
+    }
+  }
+  return false;
+}
+
 /** Invite code from ?invite=… (web links), consumed once after login. */
 const webInvite = new URLSearchParams(location.search).get("invite");
 
@@ -53,8 +77,11 @@ export function App() {
     void (async () => {
       const join = await platform.app?.takeJoin?.().catch(() => null);
       if (join?.invite) setPendingInvite(join.invite);
-      const url = join?.url ?? platform.fixedHost ?? (await platform.hosts.getLast());
+      const url = join?.url ?? platform.fixedHost;
       if (url) await openHost(url).catch(() => toast(t("hosts.unreachable"), "error"));
+      else if (!(await resumeLastHost(openHost))) {
+        if (await platform.hosts.getLast()) toast(t("hosts.unreachable"), "error");
+      }
       setBooting(false);
     })();
   }, [openHost, toast]);

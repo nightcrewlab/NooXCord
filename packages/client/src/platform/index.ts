@@ -305,3 +305,12 @@ export function normaliseHostUrl(input: string): string | null {
     return null;
   }
 }
+
+/** Cloudflare quick-tunnel origins are new on every tunnel start, so they are never remembered. */
+export function isEphemeralHost(url: string): boolean {
+  try {
+    return new URL(url).hostname.toLowerCase().endsWith(".trycloudflare.com");
+  } catch {
+    return false;
+  }
+}
