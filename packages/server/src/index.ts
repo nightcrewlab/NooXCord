@@ -379,6 +379,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
         if (e instanceof AppError) hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: e.code, msg: e.message } });
         else {
           app.log.error(e);
+          console.error(`[rpc] ${f.m} failed:`, e); // lands in host.log
           hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: "internal", msg: "Sunucu hatası." } });
         }
       }

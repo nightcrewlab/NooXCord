@@ -32,11 +32,21 @@ const CODECS: ms.RouterRtpCodecCapability[] = [
   { kind: "video", mimeType: "video/H264", clockRate: 90000, parameters: { "packetization-mode": 1, "profile-level-id": "42e01f", "level-asymmetry-allowed": 1 } },
   { kind: "video", mimeType: "video/H264", clockRate: 90000, parameters: { "packetization-mode": 1, "profile-level-id": "4d0032", "level-asymmetry-allowed": 1 } },
   { kind: "video", mimeType: "video/VP8", clockRate: 90000 },
+  // Screen streams prefer AV1, then VP9, when the streamer's GPU encodes them (much sharper per bit). mediasoup
+  // takes these two only as SVC (one stream with layers), not simulcast. Viewers that cannot decode them
+  // get an H.264 "screen-compat" copy (Media.updateCompat).
+  { kind: "video", mimeType: "video/VP9", clockRate: 90000, parameters: { "profile-id": 0 } },
+  { kind: "video", mimeType: "video/AV1", clockRate: 90000 },
 ];
+
+/** Video codecs a client decodes when it did not say (older clients, tunnel mode): what the router had before AV1/VP9. */
+const LEGACY_DECODES: ReadonlySet<string> = new Set(["video/h264", "video/vp8"]);
 
 interface ProducerEntry { producer: ms.Producer; source: MediaSource }
 
-const isScreen = (s: MediaSource): boolean => s === "screen" || s === "screen-audio";
+const isScreen = (s: MediaSource): boolean => s === "screen" || s === "screen-audio" || s === "screen-compat";
+/** Video of a stream: the main producer or its H.264 copy. */
+const isScreenVideo = (s: MediaSource): boolean => s === "screen" || s === "screen-compat";
 
 /** Tunnel-mode (NXM-WS) state of a peer: media goes over a WebSocket instead of WebRTC. */
 interface WsLink {
@@ -88,6 +98,8 @@ interface Peer {
   consumers: Map<string, ms.Consumer>;
   /** Streamers this peer is watching. */
   watching: Set<string>;
+  /** Video codecs this peer decodes (lower-case mime types). */
+  decodes: ReadonlySet<string>;
 }
 
 interface Room {
@@ -426,7 +438,8 @@ export class Media {
   }
 
   private remote(p: Peer, e: ProducerEntry): RemoteProducer {
-    return { id: e.producer.id, userId: p.userId, source: e.source, kind: e.producer.kind, paused: e.producer.paused };
+    const codec = e.producer.kind === "video" ? e.producer.rtpParameters.codecs[0]?.mimeType.toLowerCase() : undefined;
+    return { id: e.producer.id, userId: p.userId, source: e.source, kind: e.producer.kind, paused: e.producer.paused, ...(codec ? { codec } : {}) };
   }
 
   /*
@@ -499,6 +512,7 @@ export class Media {
   private stopStream(p: Peer): void {
     this.closeSource(p, "screen");
     this.closeSource(p, "screen-audio");
+    this.closeSource(p, "screen-compat");
     this.thumbs.delete(p.userId);
     if (!p.state.stream) return;
     if (p.state.stream.controllerId) this.log(`[remote] control of ${this.name(p.userId)} ended (stream stopped)`);
@@ -533,6 +547,7 @@ export class Media {
         const controllerId = was === p.userId ? null : was;
         if (controllerId !== was) this.log(`[remote] ${this.name(p.userId)} stopped controlling ${this.name(s.userId)} (left)`);
         s.state = { ...s.state, stream: { ...s.state.stream, viewers: s.state.stream.viewers.filter((v) => v !== p.userId), controllerId } };
+        this.updateCompat(s, true);
         if (!silent) this.broadcastState(s);
       }
     }
@@ -548,7 +563,7 @@ export class Media {
 
   /** Codecs a WebCodecs client can decode from our frames: Opus, H.264, VP8; no RTX, no extensions. */
   private directCaps(router: ms.Router): ms.RtpCapabilities {
-    const codecs = (router.rtpCapabilities.codecs ?? []).filter((c) => !/rtx$/i.test(c.mimeType));
+    const codecs = (router.rtpCapabilities.codecs ?? []).filter((c) => c.kind === "audio" || LEGACY_DECODES.has(c.mimeType.toLowerCase()));
     return { codecs, headerExtensions: [] };
   }
 
@@ -616,11 +631,37 @@ export class Media {
 
   /** Re-applies the layer choice to every tunnel consumer of this streamer's screen. */
   private repickLayers(streamer: Peer): void {
-    const ids = new Set([...streamer.producers.values()].filter((e) => e.source === "screen").map((e) => e.producer.id));
+    const ids = new Set([...streamer.producers.values()].filter((e) => isScreenVideo(e.source)).map((e) => e.producer.id));
     for (const other of streamer.room.peers.values()) {
       if (!other.ws) continue;
       for (const c of other.consumers.values()) if (ids.has(c.producerId)) this.layerPickers.get(c.id)?.();
     }
+  }
+
+  /** Main video codec of a stream (lower-case mime type). */
+  private streamCodec(streamer: Peer): string | undefined {
+    const e = [...streamer.producers.values()].find((x) => x.source === "screen");
+    return e?.producer.rtpParameters.codecs[0]?.mimeType.toLowerCase();
+  }
+
+  /**
+   * Does anyone watching this stream need the H.264 copy? Recomputed when viewers come and go; the
+   * streamer's client starts or stops its "screen-compat" producer when StreamInfo.compat flips.
+   * quiet: the caller broadcasts the state itself.
+   */
+  private updateCompat(streamer: Peer, quiet = false): void {
+    const s = streamer.state.stream;
+    if (!s) return;
+    const codec = this.streamCodec(streamer);
+    let need = false;
+    if (codec && !LEGACY_DECODES.has(codec)) {
+      for (const p of streamer.room.peers.values()) if (p.watching.has(streamer.userId) && !p.decodes.has(codec)) need = true;
+    }
+    if (!!s.compat === need && s.codec === codec) return;
+    if (!!s.compat !== need) this.log(`[stream] ${this.name(streamer.userId)} ${need ? "adds" : "drops"} the H.264 copy (${codec})`);
+    streamer.state = { ...streamer.state, stream: { ...s, codec, compat: need } };
+    if (!need) this.closeSource(streamer, "screen-compat");
+    if (!quiet) this.broadcastState(streamer);
   }
 
   // ---------- RPC handlers ----------
@@ -665,7 +706,7 @@ export class Media {
           }
         });
       }
-      const peer: Peer = { userId: conn.userId, conn, room, state, send, recv, ws, producers: new Map(), consumers: new Map(), watching: new Set() };
+      const peer: Peer = { userId: conn.userId, conn, room, state, send, recv, ws, producers: new Map(), consumers: new Map(), watching: new Set(), decodes: LEGACY_DECODES };
       if (this.closed || conn.ws.readyState !== 1) {
         send.close();
         recv.close();
@@ -726,7 +767,8 @@ export class Media {
       const peer = this.peerOf(conn);
       if (!peer.ws && p.transportId !== peer.send.id) fail("bad_request", "Yanlış transport.");
       const perms = this.store.perms(peer.room.guildId, peer.userId);
-      const wantKind = p.source === "screen" || p.source === "camera" ? "video" : "audio";
+      const wantKind = isScreenVideo(p.source) || p.source === "camera" ? "video" : "audio";
+      if (p.source === "screen-compat" && (peer.ws || !peer.state.stream)) fail("bad_request", "Önce yayın açılmalı.");
       if (p.kind !== wantKind) fail("bad_request", "Kaynak türü uyuşmuyor.");
       if (p.source === "mic" && !has(perms, P.SPEAK)) fail("forbidden", "Bu kanalda konuşma yetkin yok.");
       if (p.source === "camera" && !has(perms, P.VIDEO)) fail("forbidden", "Kamera açma yetkin yok.");
@@ -802,6 +844,11 @@ export class Media {
       const consumer = await peer.recv.consume({ producerId: p.producerId, rtpCapabilities: caps, paused: true });
       peer.consumers.set(consumer.id, consumer);
       const tag = peer.ws ? this.pipeToSocket(peer, consumer) : null;
+      if (!peer.ws && isScreenVideo(entry!.source)) {
+        // Stream freezes for viewers (2026-11-21): which layer each viewer got, and when none fit their bandwidth.
+        const who = `${this.name(peer.userId)} <- ${this.name(owner!.userId)}`;
+        consumer.on("layerschange", (l) => this.log(`[stream] ${who} layer ${l ? `${l.spatialLayer}/${l.temporalLayer ?? "-"}` : "none (bandwidth)"}`));
+      }
       const gone = () => {
         if (!peer.consumers.delete(consumer.id)) return;
         this.toConn(peer.conn, "media.consumerClosed", { consumerId: consumer.id });
@@ -829,9 +876,18 @@ export class Media {
       return null;
     },
 
+    "media.keyFrame": async (conn, p) => {
+      const c = this.peerOf(conn).consumers.get(p.consumerId);
+      if (c?.kind === "video") {
+        this.log(`[stream] ${this.name(conn.userId)} asks for a key frame (picture stuck)`);
+        await c.requestKeyFrame().catch(() => {});
+      }
+      return null;
+    },
+
     "media.layers": async (conn, p) => {
       const c = this.peerOf(conn).consumers.get(p.consumerId);
-      if (c?.type === "simulcast") await c.setPreferredLayers({ spatialLayer: p.spatial });
+      if (c?.type === "simulcast" || c?.type === "svc") await c.setPreferredLayers({ spatialLayer: p.spatial });
       return null;
     },
 
@@ -849,8 +905,11 @@ export class Media {
           controllerId: peer.state.stream?.controllerId ?? null,
           controllable: this.rcStreamer(peer),
           tunnelHigh: p.tunnelHigh ?? peer.state.stream?.tunnelHigh ?? false,
+          codec: this.streamCodec(peer),
+          compat: peer.state.stream?.compat ?? false,
         },
       };
+      this.updateCompat(peer, true);
       this.broadcastState(peer);
       this.repickLayers(peer);
       return peer.state;
@@ -920,6 +979,7 @@ export class Media {
       if (target === peer) fail("bad_request", "Kendi yayınını izleyemezsin.");
       const s = target!.state.stream!;
       const viewers = s.viewers.filter((v) => v !== peer.userId);
+      if (p.codecs && !peer.ws) peer.decodes = new Set(p.codecs.map((c) => c.toLowerCase()));
       if (p.watching) {
         viewers.push(peer.userId);
         peer.watching.add(target!.userId);
@@ -936,6 +996,7 @@ export class Media {
       const controllerId = !p.watching && s.controllerId === peer.userId ? null : s.controllerId;
       if (controllerId !== s.controllerId) this.log(`[remote] ${this.name(peer.userId)} stopped controlling ${this.name(target!.userId)} (stopped watching)`);
       target!.state = { ...target!.state, stream: { ...s, viewers, controllerId } };
+      this.updateCompat(target!, true);
       this.broadcastState(target!);
       return p.watching ? [...target!.producers.values()].filter((e) => isScreen(e.source)).map((e) => this.remote(target!, e)) : [];
     },

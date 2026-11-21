@@ -3,13 +3,14 @@ import { Icon } from "@nooxcord/icons";
 import { STREAM_PRESETS, type StreamPreset } from "@nooxcord/shared";
 import { t } from "../../i18n";
 import { useVoice, voice } from "../../media/engine";
-import { useVoiceSettings } from "../../media/settings";
+import { useVoiceSettings, type StreamCodec } from "../../media/settings";
 import { platform, type ScreenSource } from "../../platform";
 import { useStore } from "../../state/store";
 import { Button, Modal, Spinner, cx } from "../../ui";
 import s from "./voice.module.css";
 
 const PRESETS = Object.keys(STREAM_PRESETS) as StreamPreset[];
+const CODECS: StreamCodec[] = ["auto", "av1", "vp9", "h264"];
 
 /** Pick a monitor/window (desktop) and a quality preset, then start streaming. */
 export function ShareModal({ onClose }: { onClose: () => void }) {
@@ -124,6 +125,18 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
           ))}
         </div>
         <div style={{ marginTop: 6, fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.tunnelQualityDesc")}</div>
+      </div>
+
+      <div>
+        <div className={s.sectionTitle}>{t("stream.codec")}</div>
+        <div className={s.presets}>
+          {CODECS.map((c) => (
+            <button key={c} className={cx(s.preset, settings.streamCodec === c && s.on)} onClick={() => settings.set({ streamCodec: c })}>
+              {c === "auto" ? t("stream.codecAuto") : c.toUpperCase().replace("H264", "H.264")}
+            </button>
+          ))}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.codecDesc")}</div>
       </div>
 
       <div>

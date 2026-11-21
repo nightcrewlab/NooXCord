@@ -2,13 +2,13 @@ import type { Device, types as msc } from "mediasoup-client";
 import { denoise, type Denoised } from "./denoise";
 import { remote, useRemote } from "./remote";
 import { create } from "zustand";
-import { STREAM_PRESETS, type EventName, type Events, type MediaSource, type RemoteProducer, type StreamPreset, type TransportParams } from "@nooxcord/shared";
+import { STREAM_PRESETS, type EventName, type Events, type MediaSource, type RemoteProducer, type StreamInfo, type StreamPreset, type TransportParams } from "@nooxcord/shared";
 import type { HostConnection } from "../net/connection";
 import { platform } from "../platform";
 import { useStore } from "../state/store";
 import { VadGate, audioContext, idleMicContext, meter, micContext, type LevelMeter } from "./level";
 import { pcmTrack, type PcmTrack } from "./pcm";
-import { voiceSettings, useVoiceSettings } from "./settings";
+import { voiceSettings, useVoiceSettings, type StreamCodec } from "./settings";
 import { WsMedia, wsMediaSupported, type WsAudio } from "./wsMedia";
 import { t } from "../i18n";
 import { startBackgroundCall, stopBackgroundCall } from "./background";
@@ -56,7 +56,7 @@ interface VoiceUi {
   selfSpeaking: boolean;
   micLevel: number; // dBFS, for the settings meter
   micError: string | null;
-  sharing: { width: number; height: number; fps: number; audio: boolean; preset: StreamPreset } | null;
+  sharing: { width: number; height: number; fps: number; audio: boolean; preset: StreamPreset; codec?: string } | null;
   watching: Record<string, WatchedStream | null>; // userId -> stream (null while connecting)
   focus: string | null;
   transport: VoiceTransport | null;
@@ -131,6 +131,10 @@ class VoiceEngine {
   private screenStream: MediaStream | null = null;
   private screenProducer: msc.Producer | null = null;
   private screenAudioProducer: msc.Producer | null = null;
+  /** H.264 copy of an AV1/VP9 stream, while the host says a viewer needs it (StreamInfo.compat). */
+  private compatProducer: msc.Producer | null = null;
+  private wantCompat = false;
+  private compatBusy = false;
   private sysAudio: PcmTrack | null = null;
   private shareOpts: ShareOptions | null = null;
   /** Tunnel mode: id of the screen producer the host made for our WebCodecs frames. */
@@ -379,6 +383,7 @@ class VoiceEngine {
         // A stream I was watching ended.
         const s = raw as Events["voice.state"];
         if (s.channelId === v.channelId && !s.stream && s.userId in v.watching) this.forgetWatch(s.userId);
+        if (s.channelId === v.channelId && s.userId === useStore.getState().me?.id) this.syncCompat(s.stream);
         break;
       }
       case "voice.leave": {
@@ -441,6 +446,7 @@ class VoiceEngine {
     }
     let track = this.micStream.getAudioTracks()[0]!;
     const stream = this.micStream;
+    if (!s.inputDeviceId) void defaultMicSig().then((sig) => { if (this.micStream === stream) this.micDefaultSig = sig; });
     this.denoised = await denoise(track, s.noiseMode).catch((e: unknown) => {
       console.warn("[voice] noise suppression unavailable", e);
       return null;
@@ -636,6 +642,31 @@ class VoiceEngine {
     await this.conn?.call("voice.update", { deafened }).catch(() => {});
   }
 
+  /** Which physical device "default" was when the microphone opened. */
+  private micDefaultSig = "";
+  private deviceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * A microphone was plugged in / out or Windows' default changed. Chromium keeps a "default" capture on
+   * the device it first opened, so with "system default" selected we reopen the microphone ourselves.
+   */
+  onDevicesChanged(): void {
+    if (this.deviceTimer) clearTimeout(this.deviceTimer);
+    this.deviceTimer = setTimeout(() => void this.followDefaultMic(), 700); // devices arrive in bursts
+  }
+
+  private async followDefaultMic(): Promise<void> {
+    const stream = this.micStream;
+    if (!useVoice.getState().channelId || !stream || voiceSettings().inputDeviceId) return;
+    const sig = await defaultMicSig();
+    const live = stream.getAudioTracks()[0]?.readyState === "live";
+    if (!sig || this.micStream !== stream || (live && sig === this.micDefaultSig)) return;
+    console.info(`[voice] default microphone changed (${this.micDefaultSig} -> ${sig}), reopening`);
+    await this.restartMic();
+    const name = sig.slice(sig.indexOf("|") + 1).replace(/^(Varsayılan|Default)\s*-\s*/i, "");
+    if (this.micStream && name) useStore.getState().toast(t("voice.micChanged", { name }), "info");
+  }
+
   /** iOS ends the microphone track while the page is in the background: reopen it on return. */
   async repairMic(): Promise<void> {
     const track = this.micStream?.getAudioTracks()[0];
@@ -681,7 +712,22 @@ class VoiceEngine {
     }
   }
 
+  /** Video codecs I can decode (lower-case mime types). */
+  private decodable(): Set<string> {
+    if (this.mode === "ws" || !this.device) return new Set(["video/h264", "video/vp8"]);
+    return new Set((this.device.recvRtpCapabilities.codecs ?? []).filter((c) => c.kind === "video").map((c) => c.mimeType.toLowerCase()));
+  }
+
+  /** A stream's main video when I can decode it (AV1/VP9), otherwise its H.264 copy: never both. */
+  private skipScreen(p: RemoteProducer): boolean {
+    if (p.source === "screen") return !!p.codec && !this.decodable().has(p.codec);
+    if (p.source !== "screen-compat") return false;
+    const main = [...this.producers.values()].find((x) => x.userId === p.userId && x.source === "screen");
+    return !!main && (!main.codec || this.decodable().has(main.codec));
+  }
+
   private async consume(p: RemoteProducer): Promise<void> {
+    if (this.skipScreen(p)) return;
     if (this.mode === "ws") return this.consumeWs(p);
     const conn = this.conn;
     const device = this.device;
@@ -715,8 +761,52 @@ class VoiceEngine {
       this.setCam(params.userId, consumer.track);
     } else {
       this.attachToWatch(params.userId, consumer.track);
+      if (params.kind === "video") this.guardFreeze(entry, consumer);
     }
     await conn.call("media.resume", { consumerId: consumer.id });
+  }
+
+  /**
+   * Stream video that stops moving while packets still arrive (a lost key frame the decoder never gets
+   * back) used to stay frozen until the viewer closed and reopened it. Ask the host for a key frame,
+   * and after a few tries re-open the consumer ourselves.
+   */
+  private guardFreeze(entry: ConsumerEntry, consumer: msc.Consumer): void {
+    let frames = -1, bytes = -1, stuckSince = 0, askedAt = 0, tries = 0;
+    const timer = setInterval(() => void check(), 1000);
+    const close = entry.close;
+    entry.close = () => { clearInterval(timer); close(); };
+    const check = async () => {
+      if (consumer.closed || this.consumers.get(entry.id) !== entry) return clearInterval(timer);
+      const st = await consumer.getStats().catch(() => null);
+      if (!st) return;
+      let f = 0, b = 0;
+      st.forEach((r: { type: string; framesDecoded?: number; bytesReceived?: number }) => {
+        if (r.type === "inbound-rtp") { f += r.framesDecoded ?? 0; b += r.bytesReceived ?? 0; }
+      });
+      // Data keeps coming but no frame decodes = stuck. (No data at all is a still screen: leave it.)
+      const stuck = frames >= 0 && f === frames && b > bytes + 4000;
+      frames = f;
+      bytes = b;
+      const now = Date.now();
+      if (!stuck) { stuckSince = 0; tries = 0; return; }
+      stuckSince ||= now;
+      if (now - stuckSince < 1500 || now - askedAt < 2000) return;
+      askedAt = now;
+      if (++tries <= 3) {
+        void this.conn?.call("media.keyFrame", { consumerId: entry.id }).catch(() => {});
+        return;
+      }
+      clearInterval(timer);
+      console.warn(`[voice] stream of ${entry.userId} stuck, reopening`);
+      const p = this.producers.get(entry.producerId);
+      if (!p || !(entry.userId in useVoice.getState().watching)) return;
+      this.consumers.delete(entry.id);
+      this.dropConsumer(entry);
+      await this.conn?.call("media.closeConsumer", { consumerId: entry.id }).catch(() => {});
+      await this.consume(p).catch(() => {});
+      this.setFocus(useVoice.getState().focus); // the new consumer gets the right layer again
+    };
   }
 
   /** Tunnel mode: frames arrive on the /media socket and are decoded with WebCodecs. */
@@ -773,7 +863,7 @@ class VoiceEngine {
     // First stream: it fills the stage. Another one: side by side (no focus) until one is clicked.
     setV((s) => ({ watching: { ...s.watching, [userId]: s.watching[userId] ?? null }, focus: Object.keys(s.watching).some((id) => id !== userId) ? null : userId }));
     try {
-      const list = await conn.call("stream.watch", { userId, watching: true });
+      const list = await conn.call("stream.watch", { userId, watching: true, codecs: [...this.decodable()] });
       for (const p of list) this.producers.set(p.id, p);
       await Promise.all(list.map((p) => this.consume(p)));
       this.ensureWatchEntry(userId);
@@ -818,7 +908,7 @@ class VoiceEngine {
 
   private forgetWatch(userId: string) {
     for (const c of [...this.consumers.values()]) {
-      if (c.userId === userId && (c.source === "screen" || c.source === "screen-audio")) {
+      if (c.userId === userId && (c.source === "screen" || c.source === "screen-audio" || c.source === "screen-compat")) {
         this.consumers.delete(c.id);
         c.close();
         this.conn?.call("media.closeConsumer", { consumerId: c.id }).catch(() => {});
@@ -838,7 +928,7 @@ class VoiceEngine {
     const v = useVoice.getState();
     const many = Object.keys(v.watching).length > 1;
     for (const c of this.consumers.values()) {
-      if (c.source !== "screen") continue;
+      if (c.source !== "screen" && c.source !== "screen-compat") continue;
       const spatial = !many || c.userId === userId ? 1 : 0;
       this.conn?.call("media.layers", { consumerId: c.id, spatial }).catch(() => {});
     }
@@ -1002,7 +1092,8 @@ class VoiceEngine {
     }
     const st = video.getSettings();
     void this.sendThumbnail(video);
-    setV({ sharing: { width: st.width ?? width, height: st.height ?? height, fps: Math.round(st.frameRate ?? fps), audio: !!audioTrack, preset: opts.preset } });
+    const codec = this.screenProducer?.rtpParameters.codecs[0]?.mimeType.toLowerCase() ?? (tunnel ? "video/h264" : undefined);
+    setV({ sharing: { width: st.width ?? width, height: st.height ?? height, fps: Math.round(st.frameRate ?? fps), audio: !!audioTrack, preset: opts.preset, codec } });
   }
 
   private async startSystemAudio(): Promise<MediaStreamTrack | null> {
@@ -1038,20 +1129,21 @@ class VoiceEngine {
     if (!send || !stream || !device) return;
     const video = stream.getVideoTracks()[0]!;
     const preset = STREAM_PRESETS[opts.preset];
-    const caps = device.rtpCapabilities.codecs ?? [];
-    const codec = caps.find((c) => c.mimeType.toLowerCase() === "video/h264") ?? caps.find((c) => c.mimeType.toLowerCase() === "video/vp8");
+    const vs = video.getSettings();
+    const { codec, mode } = await pickScreenCodec(device.rtpCapabilities.codecs ?? [], voiceSettings().streamCodec, {
+      width: vs.width ?? (preset.width || 1920), height: vs.height ?? (preset.height || 1080), fps: Math.round(vs.frameRate ?? preset.fps), bitrate: preset.bitrate,
+    });
     this.screenProducer = await send.produce({
       track: video,
       stopTracks: false,
       codec,
-      // Two simulcast layers: full quality + a quarter-size layer for small tiles and weak links.
-      encodings: [
-        { rid: "r0", scaleResolutionDownBy: 2, maxBitrate: Math.round(preset.bitrate * 0.2), maxFramerate: Math.min(30, preset.fps) },
-        { rid: "r1", scaleResolutionDownBy: 1, maxBitrate: preset.bitrate },
-      ],
+      encodings: screenEncodings(opts.preset, mode),
       codecOptions: { videoGoogleStartBitrate: 1500 },
       appData: { source: "screen" },
     });
+    const codecName = codec?.mimeType.toLowerCase();
+    console.info(`[voice] screen codec ${codecName ?? "?"} ${mode ?? "simulcast"}`);
+    setV((s) => ({ sharing: s.sharing ? { ...s.sharing, codec: codecName } : s.sharing }));
     const audio = stream.getAudioTracks()[0];
     if (audio) {
       this.screenAudioProducer = await send.produce({
@@ -1063,13 +1155,56 @@ class VoiceEngine {
       });
     }
     const st = video.getSettings();
-    await this.conn!.call("stream.start", {
+    const state = await this.conn!.call("stream.start", {
       width: Math.max(1, Math.round(st.width ?? 1280)),
       height: Math.max(1, Math.round(st.height ?? 720)),
       fps: Math.max(1, Math.round(st.frameRate ?? preset.fps)),
       audio: !!audio,
       tunnelHigh: useVoiceSettings.getState().streamTunnelHigh,
     });
+    this.syncCompat(state.stream);
+  }
+
+  /** Starts / stops the H.264 copy of my AV1/VP9 stream as the host asks (one change at a time). */
+  private syncCompat(stream: StreamInfo | null | undefined): void {
+    this.wantCompat = !!stream?.compat;
+    void this.applyCompat();
+  }
+
+  private async applyCompat(): Promise<void> {
+    if (this.compatBusy) return;
+    this.compatBusy = true;
+    try {
+      while (this.wantCompat !== !!this.compatProducer) {
+        if (!this.wantCompat) {
+          const p = this.compatProducer!;
+          this.compatProducer = null;
+          p.close();
+          await this.conn?.call("media.closeProducer", { producerId: p.id }).catch(() => {});
+          continue;
+        }
+        const send = this.send, device = this.device, video = this.screenStream?.getVideoTracks()[0];
+        const preset = this.shareOpts?.preset;
+        if (this.mode !== "rtc" || !send || !device || !video || !preset || !this.screenProducer) break;
+        const codec = (device.rtpCapabilities.codecs ?? []).find((c) => c.mimeType.toLowerCase() === "video/h264");
+        if (!codec) break;
+        // Same capture, a second encoder: same layers as the main stream so tunnel viewers' choice still applies.
+        const p = await send.produce({
+          track: video,
+          stopTracks: false,
+          codec,
+          encodings: screenEncodings(preset),
+          codecOptions: { videoGoogleStartBitrate: 1500 },
+          appData: { source: "screen-compat" },
+        }).catch((e: unknown) => { console.warn("[voice] H.264 copy failed", e); return null; });
+        if (!p) break;
+        if (send !== this.send || video !== this.screenStream?.getVideoTracks()[0]) { p.close(); break; }
+        this.compatProducer = p;
+        console.info("[voice] sending an H.264 copy of the stream");
+      }
+    } finally {
+      this.compatBusy = false;
+    }
   }
 
   /** Streamer: full or small quality for viewers who watch through a tunnel; also remembered for next time. */
@@ -1137,7 +1272,9 @@ class VoiceEngine {
   private stopScreenLocal() {
     this.screenProducer?.close();
     this.screenAudioProducer?.close();
-    this.screenProducer = this.screenAudioProducer = null;
+    this.compatProducer?.close();
+    this.screenProducer = this.screenAudioProducer = this.compatProducer = null;
+    this.wantCompat = false;
     this.screenWsId = null;
     this.wsm?.stopVideo("screen");
     this.wsm?.stopScreenAudio();
@@ -1160,6 +1297,11 @@ class VoiceEngine {
   /** Debug/test helper: what I currently receive. */
   debugConsumers(): { userId: string; source: MediaSource; live: boolean }[] {
     return [...this.consumers.values()].map((c) => ({ userId: c.userId, source: c.source, live: !!c.track && c.track.readyState === "live" || !!c.wsAudio }));
+  }
+
+  /** Debug/test helper: is the H.264 copy of my stream being sent? */
+  debugCompat(): boolean {
+    return !!this.compatProducer && !this.compatProducer.closed;
   }
 
   /** Debug/test helper: transport stats summary. */
@@ -1186,6 +1328,15 @@ class VoiceEngine {
 }
 
 export const voice = new VoiceEngine();
+navigator.mediaDevices?.addEventListener?.("devicechange", () => voice.onDevicesChanged());
+
+/** Identity of the system default microphone (its group + label); "" when unknown. */
+async function defaultMicSig(): Promise<string> {
+  const list = await navigator.mediaDevices.enumerateDevices().catch(() => [] as MediaDeviceInfo[]);
+  const inputs = list.filter((d) => d.kind === "audioinput");
+  const d = inputs.find((x) => x.deviceId === "default") ?? inputs[0];
+  return d ? `${d.groupId}|${d.label}` : "";
+}
 
 const sameOrigin = (a: string, b: string): boolean => {
   try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
@@ -1217,7 +1368,7 @@ useStore.subscribe((s, prev) => {
 });
 
 // Dev/test hook (used by the Electron voice self-test).
-(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useStore, remote, useRemote, denoise, meter };
+(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useVoiceSettings, useStore, remote, useRemote, denoise, meter };
 
 /** Voices and cameras go to everyone in the channel; screen streams only to people watching them. */
 function autoConsumed(source: MediaSource): boolean {
@@ -1243,4 +1394,58 @@ function holdJitter(receiver: RTCRtpReceiver | undefined, ms: number): void {
     if ("jitterBufferTarget" in receiver) r.jitterBufferTarget = ms;
     else r.playoutDelayHint = ms / 1000;
   } catch { /* unsupported */ }
+}
+
+/**
+ * H.264: two simulcast layers, full quality + a quarter-size layer for small tiles and weak links.
+ * AV1 / VP9 (SVC): one stream; VP9 with "L2T3_KEY" carries the same two sizes as layers.
+ */
+function screenEncodings(p: StreamPreset, svc?: string): msc.RtpEncodingParameters[] {
+  const preset = STREAM_PRESETS[p];
+  if (svc) return [{ scalabilityMode: svc, maxBitrate: Math.round(preset.bitrate * (svc.startsWith("L2") ? 1.15 : 1)), maxFramerate: preset.fps }];
+  return [
+    { rid: "r0", scaleResolutionDownBy: 2, maxBitrate: Math.round(preset.bitrate * 0.2), maxFramerate: Math.min(30, preset.fps) },
+    { rid: "r1", scaleResolutionDownBy: 1, maxBitrate: preset.bitrate },
+  ];
+}
+
+/** Does this machine encode the codec (and layer mode) in hardware at this size? (Software AV1/VP9 at 1080p60 would eat the CPU.) */
+async function hardwareEncodes(mime: string, mode: string, v: { width: number; height: number; fps: number; bitrate: number }): Promise<boolean> {
+  const mc = (navigator as Navigator & { mediaCapabilities?: MediaCapabilities }).mediaCapabilities;
+  if (!mc?.encodingInfo) return false;
+  try {
+    const r = await mc.encodingInfo({ type: "webrtc", video: { contentType: mime, width: v.width, height: v.height, framerate: v.fps, bitrate: v.bitrate, scalabilityMode: mode } } as MediaEncodingConfiguration);
+    return r.supported && r.powerEfficient;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Codec of a screen stream. Automatic: AV1, then VP9, when the GPU encodes it (clearly sharper than H.264
+ * at the same bitrate, above all for text); otherwise H.264. Only codecs the host's router offers count,
+ * so an older host keeps getting H.264. Viewers that cannot decode the choice get an H.264 copy.
+ */
+async function pickScreenCodec(caps: msc.RtpCodecCapability[], pref: StreamCodec, v: { width: number; height: number; fps: number; bitrate: number }): Promise<{ codec?: msc.RtpCodecCapability; mode?: string }> {
+  const find = (mime: string) => caps.find((c) => c.mimeType.toLowerCase() === mime && (mime !== "video/vp9" || Number(c.parameters?.["profile-id"] ?? 0) === 0));
+  const h264 = { codec: find("video/h264") ?? find("video/vp8") };
+  // VP9: two sizes as layers when the GPU does it, else time layers only ("L1T3": one size).
+  // AV1: time layers only; with two sizes ("L2T3_KEY") mediasoup 3.32 forwards packets the viewer
+  // cannot decode (frozen picture, voice self-test 2026-11-21).
+  const modes = (c: msc.RtpCodecCapability) => (c.mimeType.toLowerCase() === "video/av1" ? ["L1T3"] : ["L2T3_KEY", "L1T3"]);
+  const svcMode = async (c: msc.RtpCodecCapability): Promise<string | null> => {
+    for (const mode of modes(c)) if (await hardwareEncodes(c.mimeType, mode, v)) return mode;
+    return null;
+  };
+  if (pref === "h264") return h264;
+  if (pref !== "auto") {
+    const c = find(`video/${pref}`);
+    return c ? { codec: c, mode: (await svcMode(c)) ?? modes(c)[0] } : h264; // asked for it: software encoding if it must
+  }
+  for (const mime of ["video/av1", "video/vp9"]) {
+    const c = find(mime);
+    const mode = c ? await svcMode(c) : null;
+    if (c && mode) return { codec: c, mode };
+  }
+  return h264;
 }

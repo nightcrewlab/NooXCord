@@ -86,6 +86,7 @@ export interface MethodResults {
   "media.resume": null;
   "media.closeConsumer": null;
   "media.layers": null;
+  "media.keyFrame": null;
   "stream.start": VoiceState;
   "stream.stop": null;
   "stream.tunnelQuality": null;

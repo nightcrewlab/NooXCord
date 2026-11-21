@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type { StreamPreset } from "@nooxcord/shared";
 import type { NoiseMode } from "./denoise";
 
+export type StreamCodec = "auto" | "av1" | "vp9" | "h264";
+
 /** Per-device voice preferences, kept in localStorage. */
 export interface VoiceSettings {
   inputDeviceId: string; // "" = system default
@@ -27,6 +29,8 @@ export interface VoiceSettings {
   streamAudio: boolean;
   /** Tunnel-mode viewers of my stream get the full quality layer (else the small one). */
   streamTunnelHigh: boolean;
+  /** Screen stream codec: automatic = AV1 / VP9 when the GPU encodes it, else H.264. */
+  streamCodec: StreamCodec;
   /** Theater view (watching a stream): the participant strip under it is collapsed. */
   stripHidden: boolean;
   overlay: boolean;
@@ -52,6 +56,7 @@ const defaults: VoiceSettings = {
   contentHint: "motion",
   streamAudio: true,
   streamTunnelHigh: false,
+  streamCodec: "auto",
   stripHidden: false,
   overlay: true,
   voiceSounds: true,

@@ -271,6 +271,41 @@ export async function voiceSelfTest(): Promise<void> {
       log("screenshot", process.env.NX_SHOT);
     }
 
+    // AV1 stream (or NX_TEST_CODEC=vp9): the WebRTC viewer (B) gets AV1; the tunnel viewer (C, H.264/VP8 only) gets an H.264 copy,
+    // which stops again when C stops watching.
+    const streamOf = (uid: string) => a.webContents.executeJavaScript(`window.__nx.useStore.getState().guilds[${JSON.stringify(guildId)}].voice.find(v => v.userId === ${JSON.stringify(uid)})?.stream ?? null`);
+    await a.webContents.executeJavaScript(`window.__nx.useVoiceSettings.getState().set({ streamCodec: ${JSON.stringify(process.env.NX_TEST_CODEC ?? "av1")} })`);
+    await a.webContents.executeJavaScript(`window.__nx.voice.stopScreen()`);
+    await sleep(400);
+    const sAv1 = await shareCanvas(a, "#5a2e7a");
+    await b.webContents.executeJavaScript(`window.__nx.voice.watch(${JSON.stringify(ida)})`);
+    await c.webContents.executeJavaScript(`window.__nx.voice.watch(${JSON.stringify(ida)})`);
+    await sleep(2500);
+    const av1Info = await streamOf(ida);
+    check("AV1 stream; host asks for an H.264 copy for the tunnel viewer", sAv1?.codec === `video/${process.env.NX_TEST_CODEC ?? "av1"}` && av1Info?.codec === sAv1?.codec && av1Info?.compat === true, `${sAv1?.codec} ${JSON.stringify({ codec: av1Info?.codec, compat: av1Info?.compat })}`);
+    const consumersOf = (w: BrowserWindow) => w.webContents.executeJavaScript(`window.__nx.voice.debugConsumers().filter(x => x.userId === ${JSON.stringify(ida)} && x.source.startsWith("screen") && x.source !== "screen-audio").map(x => x.source + (x.live ? "" : ":dead"))`);
+    const playsA = (w: BrowserWindow) => w.webContents.executeJavaScript(`(async () => {
+      const s = window.__nx.useVoice.getState().watching[${JSON.stringify(ida)}]; if (!s || !s.stream) return { n: -1, w: 0 };
+      const v = document.createElement("video"); v.muted = true; v.srcObject = s.stream;
+      await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); // no frame ever = play() never settles
+      document.body.appendChild(v); v.style.cssText = "position:fixed;left:0;top:0;width:160px;height:90px";
+      await new Promise((r) => setTimeout(r, 500));
+      const q0 = v.getVideoPlaybackQuality().totalVideoFrames;
+      await new Promise((r) => setTimeout(r, 2500));
+      const n = v.getVideoPlaybackQuality().totalVideoFrames - q0;
+      v.remove(); return { n, w: v.videoWidth };
+    })()`);
+    const [bPlay, cPlay] = await Promise.all([playsA(b), playsA(c)]);
+    const bCons = await consumersOf(b), cCons = await consumersOf(c);
+    check("WebRTC viewer decodes AV1 (NX_TEST_CODEC=vp9: VP9), tunnel viewer the H.264 copy", bCons.join() === "screen" && cCons.join() === "screen-compat" && bPlay.n > 30 && cPlay.n > 15,
+      `B ${bCons.join()} ${JSON.stringify(bPlay)}, C ${cCons.join()} ${JSON.stringify(cPlay)} / 2.5 s`);
+    await c.webContents.executeJavaScript(`window.__nx.voice.unwatch(${JSON.stringify(ida)})`);
+    await sleep(800);
+    const afterUnwatch = await streamOf(ida);
+    const aProducers = await a.webContents.executeJavaScript(`window.__nx.voice.debugCompat()`);
+    check("H.264 copy stops when no viewer needs it", afterUnwatch?.compat === false && aProducers === false, `${afterUnwatch?.compat} ${aProducers}`);
+    await a.webContents.executeJavaScript(`window.__nx.useVoiceSettings.getState().set({ streamCodec: "auto" })`);
+
     // Stop + leave paths.
     await a.webContents.executeJavaScript(`window.__nx.voice.stopScreen()`);
     await sleep(600);

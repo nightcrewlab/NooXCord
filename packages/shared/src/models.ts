@@ -103,7 +103,8 @@ export interface GuildState {
 }
 
 // ---------- voice & streaming ----------
-export type MediaSource = "mic" | "screen" | "screen-audio" | "camera";
+/** "screen-compat": H.264 copy of an AV1/VP9 stream, sent only while a viewer cannot decode the main one. */
+export type MediaSource = "mic" | "screen" | "screen-audio" | "screen-compat" | "camera";
 
 export interface StreamInfo {
   startedAt: number;
@@ -120,6 +121,10 @@ export interface StreamInfo {
   controllable: boolean;
   /** Streamer's choice for tunnel-mode viewers: full simulcast layer (true) or the small one. */
   tunnelHigh: boolean;
+  /** Video codec of the main stream ("video/av1", "video/vp9", "video/h264"); older hosts leave it out. */
+  codec?: string;
+  /** A viewer cannot decode the main codec: the streamer also sends an H.264 "screen-compat" copy. */
+  compat?: boolean;
 }
 
 /**
@@ -156,6 +161,8 @@ export interface RemoteProducer {
   source: MediaSource;
   kind: "audio" | "video";
   paused: boolean;
+  /** Video codec mime type, lower case ("video/av1"). */
+  codec?: string;
 }
 
 /** WebRTC transport parameters (mediasoup shapes, opaque to shared code). */
