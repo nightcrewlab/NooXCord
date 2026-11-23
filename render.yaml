@@ -7,10 +7,11 @@ services:
     runtime: node
     plan: free
     region: frankfurt
-    # Only the server, the web client and what they need (no Electron download, no native build).
+    # Only the server, the web client and what they need. Isolated linker: the hoisted one ignores
+    # --filter and installs the whole workspace (Electron, mediasoup prototype → out of memory).
     buildCommand: >-
       corepack enable &&
-      pnpm install --frozen-lockfile --filter "@nooxcord/server..." --filter "@nooxcord/client..." &&
+      pnpm install --frozen-lockfile --config.node-linker=isolated --filter "@nooxcord/server..." --filter "@nooxcord/client..." &&
       pnpm --filter @nooxcord/client build &&
       pnpm --filter @nooxcord/server build
     startCommand: node packages/server/dist/server.mjs
