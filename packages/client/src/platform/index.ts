@@ -223,9 +223,23 @@ export function normaliseHostUrl(input: string): string | null {
 }
 
 /** Cloudflare quick-tunnel origins are new on every tunnel start, so they are never remembered. */
+/** Quick-tunnel addresses change on every start, so they are not worth retrying. */
 export function isEphemeralHost(url: string): boolean {
   try {
     return new URL(url).hostname.toLowerCase().endsWith(".trycloudflare.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Addresses from the self-hosted era (ADR 0003): quick tunnels, dev tunnels and IP/localhost hosts on
+ * someone's PC. Release builds skip them on start-up and open the default server instead.
+ */
+export function isLegacyHost(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h.endsWith(".trycloudflare.com") || h.endsWith(".devtunnels.ms") || h === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(h) || h.startsWith("[");
   } catch {
     return false;
   }

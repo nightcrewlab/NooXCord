@@ -9,7 +9,9 @@
     "dev": "tsx watch --clear-screen=false src/dev.ts",
     "start": "tsx src/dev.ts",
     "test": "tsx test/smoke.ts && tsx test/remote.ts && tsx test/mirror.ts && tsx test/unfurl.ts",
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "import:local": "tsx scripts/import-local.ts",
+    "set-password": "tsx scripts/set-password.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.8",

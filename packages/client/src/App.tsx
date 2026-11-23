@@ -3,7 +3,7 @@ import { AuthScreen } from "./features/auth/AuthScreen";
 import { HostPicker } from "./features/hosts/HostPicker";
 import { AppShell } from "./features/layout/AppShell";
 import { t } from "./i18n";
-import { isEphemeralHost, platform } from "./platform";
+import { DEFAULT_HOST, isEphemeralHost, isLegacyHost, platform } from "./platform";
 import { useStore } from "./state/store";
 import { ConfirmProvider, MenuProvider, Spinner, Toasts } from "./ui";
 import { RemoteLayer } from "./features/remote/Remote";
@@ -36,17 +36,19 @@ if (platform.app) {
 }
 
 /**
- * Desktop start-up: open the last host. If that address is dead (an old quick-tunnel URL, or Hamachi
- * not connected yet right after Windows starts), try the other saved addresses of the same host, a
- * few rounds apart.
+ * Desktop start-up: open the last host, then the other saved addresses of the same host, a few rounds
+ * apart. Release builds go to the default server when the last host is from the self-hosted era
+ * (a PC that no longer hosts) and try it last otherwise.
  */
 async function resumeLastHost(openHost: (url: string) => Promise<void>): Promise<boolean> {
   const last = await platform.hosts.getLast();
-  if (!last) return false;
   const saved = await platform.hosts.list().catch(() => []);
-  const name = saved.find((h) => h.url === last)?.name;
-  const others = name ? saved.filter((h) => h.name === name && h.url !== last && !isEphemeralHost(h.url)).map((h) => h.url) : [];
-  const candidates = [...(isEphemeralHost(last) ? [] : [last]), ...others];
+  const name = last ? saved.find((h) => h.url === last)?.name : undefined;
+  const usable = (u: string) => !(DEFAULT_HOST && isLegacyHost(u)) && !isEphemeralHost(u);
+  const others = name ? saved.filter((h) => h.name === name && h.url !== last).map((h) => h.url) : [];
+  const candidates = [...new Set([...(last ? [last] : []), ...others].filter(usable))];
+  if (DEFAULT_HOST && !candidates.includes(DEFAULT_HOST)) candidates.push(DEFAULT_HOST);
+  if (!candidates.length) return false;
   for (let round = 0; round < 3; round++) {
     if (round) await new Promise((r) => setTimeout(r, 3000));
     for (const url of candidates) {
