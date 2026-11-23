@@ -1,5 +1,6 @@
 import os from "node:os";
-import { BrowserWindow, MessageChannelMain, desktopCapturer, ipcMain, screen, session, type MessagePortMain, type WebContents } from "electron";
+import { BrowserWindow, MessageChannelMain, app, desktopCapturer, ipcMain, screen, session, type MessagePortMain, type WebContents } from "electron";
+import { logInfo } from "./services";
 import { s } from "./strings";
 
 /*
@@ -227,11 +228,60 @@ export function registerMediaIpc(getMain: () => BrowserWindow | null): void {
   ipcMain.handle("media:setInCall", (_e, active: unknown) => {
     // Keep timers and audio processing at full speed while in a call, even when minimised.
     getMain()?.webContents.setBackgroundThrottling(!active);
+    if (active) startCallBoost(getMain);
+    else stopCallBoost();
   });
+
+  // Stream health lines from the renderer (capture fps, encoded fps, what limits the encoder).
+  ipcMain.on("media:log", (_e, text: unknown) => {
+    if (typeof text === "string" && text.length) logInfo(`[renderer] ${text.slice(0, 600)}`);
+  });
+}
+
+/*
+ * While in a call, the processes that capture, encode and play media run above normal priority.
+ * With a game in front, Windows favours the foreground app: the screen capture (video capture
+ * service), the encoder (GPU process) and the renderer got starved and the stream froze until
+ * NooXCord was focused again. Re-applied periodically: the capture service starts with the share
+ * and Chromium may restart the GPU process.
+ */
+const BOOST_SERVICES = /video_capture|audio\.mojom/i;
+const boosted = new Set<number>();
+let boostTimer: ReturnType<typeof setInterval> | null = null;
+
+function applyCallBoost(getMain: () => BrowserWindow | null): void {
+  const pids = new Set<number>();
+  const win = getMain();
+  if (win && !win.isDestroyed()) pids.add(win.webContents.getOSProcessId());
+  for (const m of app.getAppMetrics()) {
+    if (m.type === "GPU" || (m.type === "Utility" && BOOST_SERVICES.test(m.serviceName ?? ""))) pids.add(m.pid);
+  }
+  for (const pid of pids) {
+    if (!pid) continue;
+    try {
+      os.setPriority(pid, os.constants.priority.PRIORITY_ABOVE_NORMAL);
+      boosted.add(pid);
+    } catch { /* process gone or not ours */ }
+  }
+}
+
+function startCallBoost(getMain: () => BrowserWindow | null): void {
+  applyCallBoost(getMain);
+  if (!boostTimer) boostTimer = setInterval(() => applyCallBoost(getMain), 15_000);
+}
+
+function stopCallBoost(): void {
+  if (boostTimer) clearInterval(boostTimer);
+  boostTimer = null;
+  for (const pid of boosted) {
+    try { os.setPriority(pid, os.constants.priority.PRIORITY_NORMAL); } catch { /* exited */ }
+  }
+  boosted.clear();
 }
 
 export function shutdownMedia(): void {
   stopAudio();
   stopPtt();
   stopHotkeys();
+  stopCallBoost();
 }

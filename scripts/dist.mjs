@@ -21,7 +21,6 @@ const need = (p, hint) => { if (!fs.existsSync(p)) fail(`${path.relative(root, p
 need(path.join(desktop, "out/main.cjs"), "run pnpm build");
 need(path.join(root, "packages/client/dist/index.html"), "run pnpm build");
 const nativeNode = need(path.join(root, "packages/native/nooxcord-native.win32-x64.node"), "run pnpm build:native");
-const cloudflared = need(path.join(root, ".tools/cloudflared.exe"), "download cloudflared.exe into .tools/");
 
 fs.rmSync(path.join(root, "release"), { recursive: true, force: true });
 fs.mkdirSync(stage, { recursive: true });
@@ -57,7 +56,6 @@ function copyPkg(name, fromDir, only) {
   for (const d of Object.keys(deps)) copyPkg(d, dir);
 }
 copyPkg("electron-updater", desktop);
-copyPkg("mediasoup", path.join(root, "packages/server"), ["package.json", "LICENSE", "node/lib", "worker/out/Release/mediasoup-worker.exe"]);
 // workspace native module: loader + prebuilt .node only
 fs.mkdirSync(path.join(nm, "@nooxcord/native"), { recursive: true });
 for (const f of ["package.json", "index.js"]) fs.copyFileSync(path.join(root, "packages/native", f), path.join(nm, "@nooxcord/native", f));
@@ -68,25 +66,22 @@ const ver = (n) => JSON.parse(fs.readFileSync(path.join(nm, n, "package.json"), 
 fs.writeFileSync(path.join(stage, "package.json"), JSON.stringify({
   name: "nooxcord", productName: "NooXCord", version: pkg.version, description: pkg.description, author: pkg.author,
   license: "UNLICENSED", main: "out/main.cjs",
-  dependencies: Object.fromEntries(["electron-updater", "mediasoup", "@nooxcord/native"].map((n) => [n, ver(n)])),
+  dependencies: Object.fromEntries(["electron-updater", "@nooxcord/native"].map((n) => [n, ver(n)])),
 }, null, 2));
 
 // ---------- extra resources ----------
 fs.cpSync(path.join(root, "packages/client/dist"), path.join(res, "web"), { recursive: true });
-fs.mkdirSync(path.join(res, "bin"), { recursive: true });
-fs.copyFileSync(cloudflared, path.join(res, "bin/cloudflared.exe"));
 fs.cpSync(path.join(root, "apps/desktop/build/licenses"), path.join(res, "licenses"), { recursive: true });
 fs.copyFileSync(path.join(desktop, "resources/icon.ico"), path.join(res, "icon.ico")); // window icon (not readable from app.asar)
 
-// Visual C++ runtime (mediasoup-worker.exe and the native module need it). Deployed app-local, so the
-// per-user installer needs no admin rights: next to NooXCord.exe and next to mediasoup-worker.exe.
+// Visual C++ runtime (the native module needs it). Deployed app-local next to NooXCord.exe, so the
+// per-user installer needs no admin rights.
 const vc = findVcRuntime();
 if (!vc) fail("Visual C++ x64 runtime DLLs not found (install Visual Studio Build Tools, or put them in .tools/vcruntime/)");
 const vcFiles = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
 fs.mkdirSync(path.join(root, "release/vcruntime"), { recursive: true });
 for (const f of vcFiles) {
   fs.copyFileSync(path.join(vc, f), path.join(root, "release/vcruntime", f));
-  fs.copyFileSync(path.join(vc, f), path.join(nm, "mediasoup/worker/out/Release", f));
 }
 console.log("staged app:", path.relative(root, stage), "· vc runtime:", vc);
 

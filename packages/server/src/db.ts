@@ -1,4 +1,7 @@
+import fs from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type { Client } from "@libsql/client";
+import { Mirror, orphanDeletes, pullFromRemote, pushToRemote, toInValue, type Stmt } from "./mirror";
 
 /**
  * SQLite through Node's built-in `node:sqlite` (no native addon to rebuild for Electron).
@@ -142,6 +145,20 @@ const MIGRATIONS: string[] = [
   /* 3 — camera permission (VIDEO = 1 << 14) for everyone's default role */ `
   UPDATE roles SET perms = perms | 16384 WHERE is_default = 1;
   `,
+  /* 4 — uploaded files live in the database (Render's disk is not kept, ADR 0003), in parts of at most
+     512 KB so every mirrored write to Turso stays small. */ `
+  CREATE TABLE blobs (
+    id TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE blob_parts (
+    blob_id TEXT NOT NULL REFERENCES blobs(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    PRIMARY KEY (blob_id, idx)
+  );
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
@@ -161,16 +178,45 @@ export type Row = Record<string, SQLInputValue>;
 export class Db {
   readonly raw: DatabaseSync;
   private cache = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
+  /** Turso copy (ADR 0003); null = local file only (development, tests). */
+  private mirror: Mirror | null = null;
+  /** Writes of the running transaction, sent to the mirror on COMMIT. */
+  private txWrites: Stmt[] | null = null;
 
-  constructor(file: string) {
+  constructor(file: string, opts: { migrate?: boolean } = {}) {
     this.raw = new DatabaseSync(file);
     this.raw.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;");
-    this.migrate();
+    if (opts.migrate !== false) this.migrate();
   }
 
-  private migrate(): void {
+  /**
+   * Database backed by Turso: the local file is rebuilt from Turso, migrated, and from then on every
+   * write is mirrored there. A fresh Turso database (or a migration) gets the whole database at once.
+   */
+  static async open(file: string, client: Client, log: (...a: unknown[]) => void): Promise<Db> {
+    for (const f of [file, `${file}-wal`, `${file}-shm`]) fs.rmSync(f, { force: true });
+    const db = new Db(file, { migrate: false });
+    try {
+      const remote = await pullFromRemote(client, db.raw, log);
+      const applied = db.migrate();
+      if (!remote || applied) await pushToRemote(client, db.raw, SCHEMA_VERSION, log);
+      db.mirror = new Mirror(client, log);
+      const orphans = orphanDeletes(db.raw);
+      if (orphans.length) {
+        log(`[db] removing ${orphans.length} rows whose parent row is gone`);
+        db.tx(() => { for (const o of orphans) db.run(o.sql, ...(o.args as SQLInputValue[])); });
+      }
+    } catch (e) {
+      db.close();
+      throw e;
+    }
+    return db;
+  }
+
+  /** Applies pending migrations; returns how many ran. */
+  private migrate(): number {
     const version = Number((this.raw.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
-    if (version >= MIGRATIONS.length) return;
+    if (version >= MIGRATIONS.length) return 0;
     // Table rebuilds must not cascade: foreign keys are off while migrating, then verified.
     this.raw.exec("PRAGMA foreign_keys = OFF");
     try {
@@ -185,6 +231,7 @@ export class Db {
     } finally {
       this.raw.exec("PRAGMA foreign_keys = ON");
     }
+    return MIGRATIONS.length - version;
   }
 
   private stmt(sql: string) {
@@ -204,9 +251,16 @@ export class Db {
     return this.stmt(sql).all(...params) as T[];
   }
 
+  /** Writes go through here (and only here) so the Turso mirror sees each one that changed something. */
   run(sql: string, ...params: SQLInputValue[]): { changes: number } {
     const r = this.stmt(sql).run(...params);
-    return { changes: Number(r.changes) };
+    const changes = Number(r.changes);
+    if (this.mirror && changes > 0) {
+      const s: Stmt = { sql, args: params.map(toInValue) };
+      if (this.txWrites) this.txWrites.push(s);
+      else this.mirror.push([s]);
+    }
+    return { changes };
   }
 
   /** Runs fn in a transaction (nested calls join the outer one). */
@@ -215,16 +269,29 @@ export class Db {
     if (this.depth > 0) return fn();
     this.depth++;
     this.raw.exec("BEGIN IMMEDIATE");
+    this.txWrites = this.mirror ? [] : null;
     try {
       const out = fn();
       this.raw.exec("COMMIT");
+      if (this.txWrites?.length) this.mirror!.push(this.txWrites);
       return out;
     } catch (e) {
       this.raw.exec("ROLLBACK");
       throw e;
     } finally {
+      this.txWrites = null;
       this.depth--;
     }
+  }
+
+  /** Writes still on their way to Turso. */
+  get pendingMirror(): number {
+    return this.mirror?.pending ?? 0;
+  }
+
+  /** Waits for queued Turso writes (shutdown). */
+  async flush(timeoutMs = 10_000): Promise<boolean> {
+    return this.mirror ? this.mirror.drain(timeoutMs) : true;
   }
 
   close(): void {

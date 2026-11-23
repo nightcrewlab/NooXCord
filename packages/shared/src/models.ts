@@ -104,7 +104,7 @@ export interface GuildState {
 
 // ---------- voice & streaming ----------
 /** "screen-compat": H.264 copy of an AV1/VP9 stream, sent only while a viewer cannot decode the main one. */
-export type MediaSource = "mic" | "screen" | "screen-audio" | "screen-compat" | "camera";
+export type MediaSource = "mic" | "screen" | "screen-audio" | "camera";
 
 export interface StreamInfo {
   startedAt: number;
@@ -119,12 +119,8 @@ export interface StreamInfo {
   controllerId: string | null;
   /** The streamer runs the desktop app (SendInput), so viewers may ask for control. */
   controllable: boolean;
-  /** Streamer's choice for tunnel-mode viewers: full simulcast layer (true) or the small one. */
-  tunnelHigh: boolean;
-  /** Video codec of the main stream ("video/av1", "video/vp9", "video/h264"); older hosts leave it out. */
+  /** Video codec the streamer sends ("video/h264"), when known. */
   codec?: string;
-  /** A viewer cannot decode the main codec: the streamer also sends an H.264 "screen-compat" copy. */
-  compat?: boolean;
 }
 
 /**
@@ -155,45 +151,18 @@ export interface VoiceState {
 }
 
 /** A producer another participant is sending. */
-export interface RemoteProducer {
-  id: string;
-  userId: string;
-  source: MediaSource;
-  kind: "audio" | "video";
-  paused: boolean;
-  /** Video codec mime type, lower case ("video/av1"). */
-  codec?: string;
-}
-
-/** WebRTC transport parameters (mediasoup shapes, opaque to shared code). */
-export interface TransportParams {
-  id: string;
-  iceParameters: unknown;
-  iceCandidates: unknown[];
-  dtlsParameters: unknown;
-  sctpParameters?: unknown;
+/** STUN / TURN server for WebRTC (RTCIceServer). */
+export interface IceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
 }
 
 export interface VoiceJoinResult {
   state: VoiceState;
-  rtpCapabilities: unknown;
-  /** WebRTC mode only. */
-  send: TransportParams | null;
-  recv: TransportParams | null;
-  producers: RemoteProducer[];
-  /** Tunnel mode (NXM-WS): one-time ticket for the /media WebSocket. */
-  wsTicket: string | null;
-}
-
-export interface ConsumerParams {
-  id: string;
-  producerId: string;
-  userId: string;
-  source: MediaSource;
-  kind: "audio" | "video";
-  rtpParameters: unknown;
-  /** Tunnel mode: tag of this consumer's frames on the /media socket. */
-  tag: number | null;
+  /** Everyone else already in the channel (the newcomer opens a peer connection to each). */
+  peers: VoiceState[];
+  iceServers: IceServer[];
 }
 
 /** Direct-message conversation between two users (not part of any guild). */
@@ -219,8 +188,6 @@ export interface HostInfo {
   allowGuests: boolean;
   /** Guests must enter the host's guest password. */
   guestPassword: boolean;
-  /** Public tunnel URL while the host owner has a tunnel open (only sent to signed-in clients). */
-  tunnelUrl?: string | null;
   /** The host reassembles split client frames ("~0…" / "~1…", see PART_SIZE). Absent on older hosts. */
   parts?: boolean;
 }

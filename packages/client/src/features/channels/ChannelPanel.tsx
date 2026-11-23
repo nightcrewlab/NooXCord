@@ -9,49 +9,15 @@ import { InviteModal } from "../guilds/InviteModal";
 import s from "../layout/layout.module.css";
 import { SettingsModal } from "../settings/SettingsModal";
 import { ChannelModal } from "./ChannelModal";
-import { switchToTunnel, useVoice, voice as engine } from "../../media/engine";
+import { useVoice, voice as engine } from "../../media/engine";
 import { openShareModal } from "../voice/common";
 import { useNotify } from "../notify/notify";
 import { VoiceBar, VoiceChannelUsers } from "../voice/VoiceSidebar";
 import { CallTimer } from "../voice/common";
 import vs from "../voice/voice.module.css";
-import { appJoinLink, isDesktop, platform } from "../../platform";
+import { appJoinLink, platform } from "../../platform";
 
-const origin = (u: string): string | null => { try { return new URL(u).origin; } catch { return null; } };
-const isLoopback = (u: string): boolean => { try { return /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(new URL(u).hostname); } catch { return false; } };
-
-/**
- * Shown while the host owner has a tunnel open and this desktop app is connected another way
- * (LAN / Hamachi): one click moves the session to the tunnel, no browser and no new sign-in.
- */
-function TunnelSwitch() {
-  const hostUrl = useStore((st) => st.hostUrl);
-  const tunnelUrl = useStore((st) => st.hostInfo?.tunnelUrl ?? null);
-  const toast = useStore((st) => st.toast);
-  const [busy, setBusy] = useState(false);
-  if (!isDesktop() || !hostUrl || !tunnelUrl || isLoopback(hostUrl) || origin(hostUrl) === origin(tunnelUrl)) return null;
-
-  async function go() {
-    if (busy || !tunnelUrl) return;
-    setBusy(true);
-    try {
-      await switchToTunnel(tunnelUrl);
-    } catch {
-      toast(t("tunnelSwitch.failed"), "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <button className={s.tunnelSwitch} onClick={() => void go()} disabled={busy} title={tunnelUrl}>
-      <Icon name="tunnel" size={18} />
-      <span className={s.chanName}>{busy ? t("tunnelSwitch.busy") : t("tunnelSwitch.label")}</span>
-    </button>
-  );
-}
-
-/** PC browser (tunnel or LAN page): jump into the installed desktop app on the same host and channel. */
+/** PC browser: jump into the installed desktop app on the same host and channel. */
 function OpenInAppButton() {
   if (platform.kind !== "web" || platform.isMobile) return null;
   return (
@@ -188,7 +154,6 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
         <Icon name="chevron-down" size={18} />
       </button>
       <div className={s.channels}>
-        <TunnelSwitch />
         <OpenInAppButton />
         {renderGroup("text", text)}
         {renderGroup("voice", voice)}

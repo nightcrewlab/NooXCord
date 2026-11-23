@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
@@ -10,19 +9,21 @@ import fastifyStatic from "@fastify/static";
 import { WebSocketServer } from "ws";
 import {
   APP_VERSION, CLOSE, LIMITS, MAX_FRAME_CHARS, P, PING_INTERVAL_MS, has,
-  type ClientFrame, type HostInfo, type MethodName,
+  type ClientFrame, type HostInfo, type IceServer, type MethodName,
 } from "@nooxcord/shared";
+import type { Client } from "@libsql/client";
 import { Api } from "./api";
 import { Auth } from "./auth";
-import { Db, SCHEMA_VERSION, fileVersion } from "./db";
-import { dailyBackup, prune, snapshot, type BackupInfo } from "./backup";
+import { Blobs, blobIdOf } from "./blobs";
+import { Db } from "./db";
 import { Hub, type Conn } from "./hub";
-import { Media } from "./media";
 import { Store, mapAttachment } from "./store";
 import { proxyImage, setProxyKey } from "./unfurl";
 import { AppError, fail, httpStatus, newId } from "./util";
+import { Voice } from "./voice";
 
 export interface HostOptions {
+  /** Local working copy of the database (with Turso: rebuilt from Turso at every start). */
   dataDir: string;
   port: number;
   /** Interface to bind; default all interfaces. */
@@ -32,23 +33,24 @@ export interface HostOptions {
   name?: string;
   logger?: boolean;
   config?: Partial<HostConfig>;
+  /** Turso database the local copy mirrors (ADR 0003); none = local file only. */
+  remote?: Client;
+  /** STUN / TURN servers for voice (ice.ts); default public STUN only. */
+  iceServers?: () => Promise<IceServer[]>;
+  log?: (...a: unknown[]) => void;
 }
 
-/** Host-owner settings (set by the desktop app, never over the network). */
+/** Host-owner settings (environment variables on the server, never over the network). */
 export interface HostConfig {
   allowRegistration: boolean;
   allowGuests: boolean;
-  /** Optional shared password for browser guests (recommended when a tunnel is open). */
+  /** Optional shared password for browser guests (the host is on the public internet). */
   guestPassword: string | null;
-  /** The owner's open tunnel (shown to signed-in members as "switch to tunnel"), null when closed. */
-  tunnelUrl: string | null;
 }
 
 export interface RunningHost {
   port: number;
   setConfig(c: Partial<HostConfig>): void;
-  /** Snapshot of the database into dataDir/backups (keeps the newest 7). */
-  backup(tag?: string): BackupInfo;
   close(): Promise<void>;
 }
 
@@ -63,45 +65,26 @@ function sniffImage(buf: Buffer): string | null {
   return null;
 }
 
-function readHead(file: string, n = 16): Buffer {
-  const fd = fs.openSync(file, "r");
-  try {
-    const b = Buffer.alloc(n);
-    const read = fs.readSync(fd, b, 0, n, 0);
-    return b.subarray(0, read);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 export async function startHost(opts: HostOptions): Promise<RunningHost> {
-  const dirs = {
-    uploads: path.join(opts.dataDir, "uploads"),
-    avatars: path.join(opts.dataDir, "avatars"),
-    icons: path.join(opts.dataDir, "guild-icons"),
-  };
-  for (const d of [opts.dataDir, ...Object.values(dirs)]) fs.mkdirSync(d, { recursive: true });
-
+  const log = opts.log ?? ((...a: unknown[]) => console.log(...a));
+  fs.mkdirSync(opts.dataDir, { recursive: true });
   const dbFile = path.join(opts.dataDir, "nooxcord.db");
-  const backupsDir = path.join(opts.dataDir, "backups");
-  // Keep a copy of the old schema before migrating (e.g. the Faz 4 channels rebuild).
-  if (fs.existsSync(dbFile)) {
-    const v = fileVersion(dbFile);
-    if (v > 0 && v < SCHEMA_VERSION) snapshot(dbFile, backupsDir, `v${v}`);
+  const db = opts.remote ? await Db.open(dbFile, opts.remote, log) : new Db(dbFile);
+  const blobs = new Blobs(db);
+  // Link-preview proxy key: in the database, so signed links survive restarts on a host without a disk.
+  let key = db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'proxy_key'")?.value;
+  if (!key || !/^[0-9a-f]{64}$/.test(key)) {
+    key = randomBytes(32).toString("hex");
+    db.run("INSERT INTO settings (key, value) VALUES ('proxy_key', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key);
   }
-  const db = new Db(dbFile);
-  const backupTimer = setInterval(() => { try { dailyBackup(db.raw, backupsDir); } catch (e) { console.error("[backup]", e); } }, 6 * 60 * 60_000);
-  try { dailyBackup(db.raw, backupsDir); } catch (e) { console.error("[backup]", e); }
-  const keyFile = path.join(opts.dataDir, "proxy.key");
-  if (!fs.existsSync(keyFile)) fs.writeFileSync(keyFile, randomBytes(32));
-  setProxyKey(fs.readFileSync(keyFile));
+  setProxyKey(Buffer.from(key, "hex"));
   const hub = new Hub();
   const store = new Store(db, hub.isOnline);
   const auth = new Auth(db, store);
-  const api = new Api(db, store, hub, dirs.uploads);
-  const config: HostConfig = { allowRegistration: true, allowGuests: true, guestPassword: null, tunnelUrl: null, ...opts.config };
-  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: true, guestPassword: false, tunnelUrl: null, parts: true };
-  const syncInfo = () => Object.assign(info, { allowRegistration: config.allowRegistration, allowGuests: config.allowGuests, guestPassword: !!config.guestPassword, tunnelUrl: config.tunnelUrl });
+  const api = new Api(db, store, hub, blobs);
+  const config: HostConfig = { allowRegistration: true, allowGuests: true, guestPassword: null, ...opts.config };
+  const info: HostInfo = { name: opts.name ?? os.hostname(), version: APP_VERSION, allowRegistration: true, allowGuests: true, guestPassword: false, parts: true };
+  const syncInfo = () => Object.assign(info, { allowRegistration: config.allowRegistration, allowGuests: config.allowGuests, guestPassword: !!config.guestPassword });
   syncInfo();
 
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 64 * 1024, trustProxy: true });
@@ -139,29 +122,22 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   };
   const requireUser = (req: FastifyRequest): string => auth.resolve(bearer(req)) ?? fail("unauthorized", "Oturum geçersiz.");
 
-  /** Saves the single multipart file to dir/name, enforcing a byte limit. */
-  async function saveUpload(req: FastifyRequest, dir: string, maxBytes: number) {
+  /** Reads the single multipart file into memory, enforcing a byte limit (files are kept in the database). */
+  async function readUpload(req: FastifyRequest, maxBytes: number) {
     const part = await req.file({ limits: { fileSize: maxBytes } });
     if (!part) fail("bad_request", "Dosya yok.");
-    const stored = newId();
-    const dest = path.join(dir, stored);
-    await pipeline(part!.file, fs.createWriteStream(dest));
-    if (part!.file.truncated) {
-      fs.rmSync(dest, { force: true });
-      fail("bad_request", "Dosya çok büyük.");
-    }
-    const size = fs.statSync(dest).size;
+    const data = await part!.toBuffer();
+    if (part!.file.truncated) fail("bad_request", "Dosya çok büyük.");
     const fields = part!.fields as Record<string, { value?: unknown } | undefined>;
     const num = (k: string) => {
       const v = Number(fields[k]?.value);
       return Number.isFinite(v) && v > 0 && v < 100_000 ? Math.round(v) : null;
     };
-    return { stored, dest, size, name: part!.filename || "dosya", mime: part!.mimetype || "application/octet-stream", width: num("width"), height: num("height") };
+    return { data, size: data.byteLength, name: part!.filename || "dosya", mime: part!.mimetype || "application/octet-stream", width: num("width"), height: num("height") };
   }
 
   // ---------- HTTP API ----------
-  // The tunnel URL is for members only (ready / host.update), not for anyone probing the port.
-  app.get("/api/info", async () => ({ ...info, tunnelUrl: null }));
+  app.get("/api/info", async () => info);
 
   const authLimit = { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } };
   app.post("/api/auth/register", authLimit, async (req) => {
@@ -182,36 +158,34 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
 
   app.post("/api/uploads", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req) => {
     const uid = requireUser(req);
-    const f = await saveUpload(req, dirs.uploads, LIMITS.uploadMaxBytes);
-    const sniffed = sniffImage(readHead(f.dest));
+    const f = await readUpload(req, LIMITS.uploadMaxBytes);
+    const sniffed = sniffImage(f.data);
     // Never trust a client-declared image type; never serve active content inline.
     const mime = sniffed ?? (f.mime.startsWith("image/") ? "application/octet-stream" : f.mime.slice(0, 100));
+    const stored = blobs.put(f.data);
     const id = newId();
     db.run(
       "INSERT INTO attachments (id, owner_id, name, mime, size, stored, width, height, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      id, uid, f.name.slice(0, 200), mime, f.size, f.stored, sniffed ? f.width : null, sniffed ? f.height : null, Date.now(),
+      id, uid, f.name.slice(0, 200), mime, f.size, stored, sniffed ? f.width : null, sniffed ? f.height : null, Date.now(),
     );
     return mapAttachment({ id, message_id: null, name: f.name.slice(0, 200), mime, size: f.size, width: sniffed ? f.width : null, height: sniffed ? f.height : null });
   });
 
-  async function saveImage(req: FastifyRequest, dir: string): Promise<string> {
-    const f = await saveUpload(req, dir, LIMITS.avatarMaxBytes);
-    const type = sniffImage(readHead(f.dest));
-    if (!type) {
-      fs.rmSync(f.dest, { force: true });
-      fail("bad_request", "Yalnızca PNG, JPEG, GIF veya WebP.");
-    }
-    const file = `${f.stored}.${type!.split("/")[1]}`;
-    fs.renameSync(f.dest, path.join(dir, file));
-    return file;
+  /** Stores an image upload; returns "<blob id>.<ext>". */
+  async function saveImage(req: FastifyRequest): Promise<string> {
+    const f = await readUpload(req, LIMITS.avatarMaxBytes);
+    const type = sniffImage(f.data);
+    if (!type) fail("bad_request", "Yalnızca PNG, JPEG, GIF veya WebP.");
+    return `${blobs.put(f.data)}.${type!.split("/")[1]}`;
   }
+  const dropImage = (url: string | null | undefined) => { const id = blobIdOf(url); if (id) blobs.delete([id]); };
 
   app.post("/api/me/avatar", async (req) => {
     const uid = requireUser(req);
-    const file = await saveImage(req, dirs.avatars);
+    const file = await saveImage(req);
     const old = store.userRow(uid)?.avatar;
     db.run("UPDATE users SET avatar = ? WHERE id = ?", `/avatars/${file}`, uid);
-    if (old) fs.rm(path.join(dirs.avatars, path.basename(old)), { force: true }, () => {});
+    dropImage(old);
     const row = store.userRow(uid)!;
     hub.toUsers(store.relatedUserIds(uid), "user.update", store.publicUser(row));
     return store.selfUser(row);
@@ -221,7 +195,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     const uid = requireUser(req);
     const old = store.userRow(uid)?.avatar;
     db.run("UPDATE users SET avatar = NULL WHERE id = ?", uid);
-    if (old) fs.rm(path.join(dirs.avatars, path.basename(old)), { force: true }, () => {});
+    dropImage(old);
     const row = store.userRow(uid)!;
     hub.toUsers(store.relatedUserIds(uid), "user.update", store.publicUser(row));
     return store.selfUser(row);
@@ -232,9 +206,9 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     const g = store.guild(req.params.id);
     if (!g || !store.isMember(g.id, uid)) fail("not_found", "Sunucu bulunamadı.");
     if (!has(store.perms(g!.id, uid), P.MANAGE_GUILD)) fail("forbidden", "Bu işlem için yetkin yok.");
-    const file = await saveImage(req, dirs.icons);
+    const file = await saveImage(req);
     db.run("UPDATE guilds SET icon = ? WHERE id = ?", `/guild-icons/${file}`, g!.id);
-    if (g!.icon) fs.rm(path.join(dirs.icons, path.basename(g!.icon)), { force: true }, () => {});
+    dropImage(g!.icon);
     const out = store.guild(g!.id)!;
     hub.toUsers(store.memberUserIds(g!.id), "guild.update", out);
     return out;
@@ -246,27 +220,27 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     const a = db.get<{ stored: string; mime: string; name: string; size: number }>(
       "SELECT stored, mime, name, size FROM attachments WHERE id = ? AND message_id IS NOT NULL", req.params.id,
     );
-    if (!a) return reply.code(404).send();
+    const body = a ? blobs.get(a.stored) : null;
+    if (!a || !body) return reply.code(404).send();
     const inline = SAFE_INLINE.test(a.mime);
     reply
       .header("content-type", inline ? a.mime : "application/octet-stream")
-      .header("content-length", a.size)
+      .header("content-length", body.byteLength)
       .header("content-security-policy", "default-src 'none'; sandbox")
       .header("cache-control", "private, max-age=31536000, immutable")
       .header("content-disposition", `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(a.name)}`);
-    return reply.send(fs.createReadStream(path.join(dirs.uploads, a.stored)));
+    return reply.send(body);
   });
 
-  const serveImageDir = (prefix: string, dir: string) =>
+  const serveImages = (prefix: string) =>
     app.get<{ Params: { file: string } }>(`${prefix}/:file`, async (req, reply: FastifyReply) => {
-      const file = path.basename(req.params.file);
-      const full = path.join(dir, file);
-      if (!/^[a-z0-9]+\.(png|jpeg|gif|webp)$/.test(file) || !fs.existsSync(full)) return reply.code(404).send();
-      reply.header("content-type", `image/${file.split(".")[1]}`).header("cache-control", "public, max-age=31536000, immutable");
-      return reply.send(fs.createReadStream(full));
+      const m = /^([a-z0-9]+)\.(png|jpeg|gif|webp)$/.exec(req.params.file);
+      const body = m ? blobs.get(m[1]!) : null;
+      if (!m || !body) return reply.code(404).send();
+      return reply.header("content-type", `image/${m[2]}`).header("cache-control", "public, max-age=31536000, immutable").send(body);
     });
-  serveImageDir("/avatars", dirs.avatars);
-  serveImageDir("/guild-icons", dirs.icons);
+  serveImages("/avatars");
+  serveImages("/guild-icons");
 
   // Link-preview images through the host (signed links only), so viewers never contact third parties.
   app.get<{ Params: { sig: string; enc: string } }>("/proxy/img/:sig/:enc", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
@@ -286,11 +260,10 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     if (!part) fail("bad_request", "Dosya yok.");
     const buf = await part!.toBuffer().catch(() => fail("bad_request", "Önizleme çok büyük."));
     if (sniffImage(buf) !== "image/jpeg") fail("bad_request", "Önizleme JPEG olmalı.");
-    if (!media) fail("internal", "Ses sunucusu hazır değil.");
-    return { url: media!.setThumbnail(uid, buf) };
+    return { url: media.setThumbnail(uid, buf) };
   });
   app.get<{ Params: { file: string } }>("/thumbs/:file", async (req, reply) => {
-    const buf = media?.thumbnail(path.basename(req.params.file));
+    const buf = media.thumbnail(path.basename(req.params.file));
     if (!buf) return reply.code(404).send();
     return reply.header("content-type", "image/jpeg").header("cache-control", "private, max-age=3600").send(buf);
   });
@@ -307,20 +280,19 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
 
   // ---------- realtime ----------
   let stopping = false;
-  let media: Media | null = null;
+  const media = new Voice(store, hub, opts.iceServers ?? (() => [{ urls: "stun:stun.l.google.com:19302" }]), log);
+  store.voiceOf = (g) => media.voiceStates(g);
+  api.media = media;
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
-  // Tunnel-mode media (NXM-WS): binary frames, authenticated by a one-time ticket from voice.join.
-  // Up to one H.264 access unit per message: screen key frames reach a few hundred KB (MAX_VIDEO_FRAME in wsMedia.ts).
-  const mediaWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   app.server.on("upgrade", (req, socket, head) => {
     const pathname = new URL(req.url ?? "/", "http://x").pathname;
-    if (pathname === "/media") return mediaWss.handleUpgrade(req, socket, head, (ws) => media?.attachSocket(ws));
     if (pathname !== "/ws") return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });
 
   wss.on("connection", (ws, req: import("node:http").IncomingMessage) => {
-    const ip = String(req.headers["cf-connecting-ip"] ?? req.socket.remoteAddress ?? "?");
+    const fwd = req.headers["x-forwarded-for"];
+    const ip = String(req.headers["cf-connecting-ip"] ?? (typeof fwd === "string" ? fwd.split(",")[0]!.trim() : null) ?? req.socket.remoteAddress ?? "?");
     let conn: Conn | null = null;
     let tokens = 40; // request budget, refilled 20/s
     const refill = setInterval(() => (tokens = Math.min(40, tokens + 20)), 1000);
@@ -369,11 +341,11 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
         if (cameOnline) hub.toUsers(store.relatedUserIds(uid), "user.update", store.publicUser(store.userRow(uid)!), uid);
         return;
       }
-      if (f.t === "rc") return void (conn && media?.remoteInput(conn, f));
+      if (f.t === "rc") return void (conn && media.remoteInput(conn, f));
       if (f.t !== "req" || !conn) return;
       if (tokens-- <= 0) return hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: "rate_limited", msg: "Çok hızlı." } });
       try {
-        const d = media && media.isMediaMethod(f.m) ? await media.call(conn, f.m as MethodName, f.d) : await api.call(conn.userId, f.m as MethodName, f.d);
+        const d = media.isMediaMethod(f.m) ? await media.call(conn, f.m as MethodName, f.d) : await api.call(conn.userId, f.m as MethodName, f.d);
         hub.send(conn, { t: "res", id: f.id, ok: true, d });
       } catch (e) {
         if (e instanceof AppError) hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: e.code, msg: e.message } });
@@ -399,7 +371,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
       clearTimeout(authTimer);
       if (stopping) return; // DB may already be closed
       if (conn) console.log(`[ws] ${store.userRow(conn.userId)?.nickname ?? conn.userId} disconnected (${code})`);
-      if (conn) media?.connClosed(conn);
+      if (conn) media.connClosed(conn);
       if (conn && hub.remove(conn)) {
         const row = store.userRow(conn.userId);
         if (row) hub.toUsers(store.relatedUserIds(conn.userId), "user.update", store.publicUser(row), conn.userId);
@@ -410,46 +382,30 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
   // ---------- housekeeping ----------
   const sweep = setInterval(() => {
     const old = db.all<{ id: string; stored: string }>("SELECT id, stored FROM attachments WHERE message_id IS NULL AND created_at < ?", Date.now() - 3600_000);
-    for (const a of old) {
-      db.run("DELETE FROM attachments WHERE id = ?", a.id);
-      fs.rm(path.join(dirs.uploads, a.stored), { force: true }, () => {});
-    }
+    for (const a of old) db.run("DELETE FROM attachments WHERE id = ?", a.id);
+    blobs.delete(old.map((a) => a.stored));
     db.run("DELETE FROM sessions WHERE expires_at < ?", Date.now());
   }, 30 * 60_000);
 
   await app.listen({ port: opts.port, host: opts.bind ?? "0.0.0.0" });
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : opts.port;
-  // Media (WebRTC) uses the next port, UDP + TCP. The worker starts on the first voice join.
-  media = new Media(store, hub, port + 1, opts.bind, (...a) => console.log(...a));
-  store.voiceOf = (g) => media!.voiceStates(g);
-  api.media = media;
 
   return {
     port,
     setConfig(c) {
-      const tunnelBefore = info.tunnelUrl;
       Object.assign(config, c);
       syncInfo();
-      if (info.tunnelUrl !== tunnelBefore) {
-        console.log(`[host] tunnel ${info.tunnelUrl ? `open: ${info.tunnelUrl}` : "closed"}`);
-        for (const conn of hub.all()) hub.send(conn, { t: "evt", e: "host.update", d: info });
-      }
-    },
-    backup(tag) {
-      const b = snapshot(db.raw, backupsDir, tag);
-      prune(backupsDir);
-      return b;
+      for (const conn of hub.all()) hub.send(conn, { t: "evt", e: "host.update", d: info });
     },
     async close() {
       stopping = true;
-      clearInterval(backupTimer);
       clearInterval(sweep);
-      await media?.close();
-      for (const ws of [...wss.clients, ...mediaWss.clients]) ws.terminate();
-      mediaWss.close();
+      await media.close();
+      for (const ws of wss.clients) ws.terminate();
       wss.close();
       await app.close();
+      if (!(await db.flush(10_000))) console.error(`[db] ${db.pendingMirror} writes did not reach Turso before shutdown`);
       db.close();
     },
   };

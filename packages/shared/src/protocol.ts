@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import type { Methods } from "./schemas";
 import type {
-  Channel, ConsumerParams, DmChannel, Guild, GuildState, HostInfo, Invite, Member, Message, PublicUser, ReadyPayload, RemoteInputEvent, RemoteProducer, Role, SelfUser,
+  Channel, DmChannel, Guild, GuildState, HostInfo, Invite, Member, Message, PublicUser, ReadyPayload, RemoteInputEvent, Role, SelfUser,
   VoiceJoinResult, VoiceState,
 } from "./models";
 
@@ -23,7 +23,8 @@ export const LIMITS = {
   topicMax: 512,
   messageMax: 4000,
   attachmentsPerMessage: 10,
-  uploadMaxBytes: 50 * 1024 * 1024,
+  /** Files live in the database (ADR 0003): kept small for Turso and the host's monthly traffic. */
+  uploadMaxBytes: 8 * 1024 * 1024,
   avatarMaxBytes: 2 * 1024 * 1024,
   messagePage: 50,
   thumbnailMaxBytes: 300 * 1024,
@@ -47,7 +48,7 @@ export interface AuthResponse { token: string; user: SelfUser }
 export type MethodName = keyof typeof Methods;
 export type MethodParams<M extends MethodName> = z.input<(typeof Methods)[M]>;
 /** Methods handled by the media (voice/stream) service instead of the chat API. */
-export type MediaMethodName = Extract<MethodName, `voice.${string}` | `media.${string}` | `stream.${string}` | `remote.${string}`>;
+export type MediaMethodName = Extract<MethodName, `voice.${string}` | `rtc.${string}` | `stream.${string}` | `remote.${string}`>;
 export type ChatMethodName = Exclude<MethodName, MediaMethodName>;
 
 export interface MethodResults {
@@ -78,19 +79,10 @@ export interface MethodResults {
   "voice.leave": null;
   "voice.update": VoiceState;
   "voice.speaking": null;
-  "media.connect": null;
-  "media.produce": { id: string };
-  "media.pauseProducer": null;
-  "media.closeProducer": null;
-  "media.consume": ConsumerParams;
-  "media.resume": null;
-  "media.closeConsumer": null;
-  "media.layers": null;
-  "media.keyFrame": null;
+  "rtc.signal": null;
   "stream.start": VoiceState;
   "stream.stop": null;
-  "stream.tunnelQuality": null;
-  "stream.watch": RemoteProducer[];
+  "stream.watch": null;
   "remote.request": null;
   "remote.respond": null;
   "remote.stop": null;
@@ -99,7 +91,7 @@ export interface MethodResults {
 // ---------- Server events ----------
 export interface Events {
   ready: ReadyPayload;
-  /** Host settings changed (e.g. the owner opened or closed a tunnel). */
+  /** Host settings changed. */
   "host.update": HostInfo;
   "guild.add": { state: GuildState; users: PublicUser[] }; // you joined / created a guild
   "guild.update": Guild;
@@ -126,10 +118,8 @@ export interface Events {
   "voice.speaking": { channelId: string; userIds: string[] };
   /** Your voice session ended on the server (other device joined, kicked, channel deleted). */
   "voice.ended": { reason: "replaced" | "removed" | "error" };
-  "media.producer": RemoteProducer & { channelId: string };
-  "media.producerClosed": { producerId: string };
-  "media.producerPaused": { producerId: string; paused: boolean };
-  "media.consumerClosed": { consumerId: string };
+  /** WebRTC signalling from another person in your voice channel (see "rtc.signal"). */
+  "rtc.signal": RtcSignal & { from: string };
   /** Someone watching your stream asks to control it. */
   "remote.request": { userId: string };
   /** The streamer answered your control request. */
@@ -138,6 +128,13 @@ export interface Events {
   "remote.input": { from: string; ev: RemoteInputEvent[] };
 }
 export type EventName = keyof Events;
+
+export interface RtcSignal {
+  /** Peer-connection generation: a new number means the sender started a fresh connection. */
+  gen: number;
+  description?: { type: "offer" | "answer"; sdp: string };
+  candidate?: { candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null } | null;
+}
 
 export type ClientFrame =
   | { t: "auth"; d: { token: string; client?: "desktop" | "web" } }

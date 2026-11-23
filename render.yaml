@@ -1,0 +1,39 @@
+# NooXCord server on Render.com (ADR 0003): Blueprint → New → this repository.
+# Data lives in Turso (Render's free disk is wiped on every restart); voice, cameras and streams are
+# peer to peer, the server only relays signalling and chat.
+services:
+  - type: web
+    name: nooxcord
+    runtime: node
+    plan: free
+    region: frankfurt
+    # Only the server, the web client and what they need (no Electron download, no native build).
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile --filter "@nooxcord/server..." --filter "@nooxcord/client..." &&
+      pnpm --filter @nooxcord/client build &&
+      pnpm --filter @nooxcord/server build
+    startCommand: node packages/server/dist/server.mjs
+    healthCheckPath: /api/info
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: ELECTRON_SKIP_BINARY_DOWNLOAD
+        value: "1"
+      # Turso: libsql://<database>-<org>.turso.io and a database token (turso db tokens create <database>).
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: NX_NAME
+        value: NooXCord
+      # Optional: a password browser guests must enter (the server is public).
+      - key: NX_GUEST_PASSWORD
+        sync: false
+      # Optional TURN relay for people whose networks block direct connections (see packages/server/src/ice.ts):
+      # Cloudflare Realtime TURN (free tier) …
+      - key: CLOUDFLARE_TURN_KEY_ID
+        sync: false
+      - key: CLOUDFLARE_TURN_API_TOKEN
+        sync: false

@@ -27,9 +27,7 @@ export interface VoiceSettings {
   streamPreset: StreamPreset;
   contentHint: "motion" | "detail";
   streamAudio: boolean;
-  /** Tunnel-mode viewers of my stream get the full quality layer (else the small one). */
-  streamTunnelHigh: boolean;
-  /** Screen stream codec: automatic = AV1 / VP9 when the GPU encodes it, else H.264. */
+  /** Screen stream codec preference (P2P: automatic = H.264). */
   streamCodec: StreamCodec;
   /** Theater view (watching a stream): the participant strip under it is collapsed. */
   stripHidden: boolean;
@@ -55,7 +53,6 @@ const defaults: VoiceSettings = {
   streamPreset: "standard",
   contentHint: "motion",
   streamAudio: true,
-  streamTunnelHigh: false,
   streamCodec: "auto",
   stripHidden: false,
   overlay: true,

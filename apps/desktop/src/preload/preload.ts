@@ -15,38 +15,6 @@ contextBridge.exposeInMainWorld("nx", {
     getLast: () => call("hosts:getLast"),
     setLast: (url: string | null) => call("hosts:setLast", url),
   },
-  localHost: {
-    status: () => call("localHost:status"),
-    start: (port: number) => call("localHost:start", port),
-    stop: () => call("localHost:stop"),
-    restart: (port: number) => call("localHost:restart", port),
-    getPrefs: () => call("hostPrefs:get"),
-    setPrefs: (p: unknown) => call("hostPrefs:set", p),
-  },
-  net: {
-    checkPort: (port: number) => call("net:checkPort", port),
-    suggestPort: () => call("net:suggestPort"),
-    addresses: () => call("net:addresses"),
-    hamachiService: (start: boolean) => call("net:hamachiService", start),
-    firewallAllow: () => call("net:firewallAllow"),
-  },
-  tunnel: {
-    get: () => call("tunnel:get"),
-    setProvider: (p: string) => call("tunnel:setProvider", p),
-    start: () => call("tunnel:start"),
-    stop: () => call("tunnel:stop"),
-    copy: () => call("tunnel:copy"),
-    devRefresh: () => call("tunnel:devRefresh"),
-    devInstall: () => call("tunnel:devInstall"),
-    devLogin: () => call("tunnel:devLogin"),
-    devLogout: () => call("tunnel:devLogout"),
-    devNewUrl: () => call("tunnel:devNewUrl"),
-    onState: (cb: (s: unknown) => void) => {
-      const fn = (_e: unknown, s: unknown) => cb(s);
-      ipcRenderer.on("tunnel:state", fn);
-      return () => ipcRenderer.removeListener("tunnel:state", fn);
-    },
-  },
   openExternal: (url: string) => call("shell:openExternal", url),
   media: {
     getSources: () => call("media:getSources"),
@@ -67,6 +35,7 @@ contextBridge.exposeInMainWorld("nx", {
       return () => ipcRenderer.removeListener("media:hotkey", fn);
     },
     setInCall: (active: boolean) => call("media:setInCall", active),
+    log: (text: string) => ipcRenderer.send("media:log", String(text)),
   },
   app: {
     getPrefs: () => call("app:getPrefs"),
@@ -96,14 +65,6 @@ contextBridge.exposeInMainWorld("nx", {
       ipcRenderer.on("updates:state", fn);
       return () => ipcRenderer.removeListener("updates:state", fn);
     },
-  },
-  backup: {
-    list: () => call("backup:list"),
-    now: () => call("backup:now"),
-    export: () => call("backup:export"),
-    import: () => call("backup:import"),
-    restore: (name: string) => call("backup:restore", name),
-    openFolder: () => call("backup:openFolder"),
   },
   remote: {
     supported: () => call("remote:supported"),

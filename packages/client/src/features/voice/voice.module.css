@@ -178,8 +178,6 @@
 }
 .callTimer { margin-left: 8px; padding: 1px 6px; border-radius: 4px; background: var(--nx-bg-3); color: var(--nx-speaking); font: 600 11px var(--nx-font); font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
 .barTimer { margin-left: auto; color: var(--nx-speaking); font-variant-numeric: tabular-nums; }
-.audioDiag { color: var(--nx-text-3); font: 500 11px var(--nx-font); margin: 1px 0 2px; }
-.tunnelTag { white-space: nowrap; margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: var(--nx-bg-3); color: var(--nx-warn); font: 700 10px var(--nx-font); letter-spacing: .04em; text-transform: uppercase; }
 
 .tileBtnOn { color: var(--nx-live); }
 .tileBtn:disabled { opacity: 0.5; cursor: default; }
@@ -204,22 +202,6 @@
 .tile.pseudoFs { position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100dvh; min-height: 0; aspect-ratio: auto; border: 0; border-radius: 0; }
 .tile.pseudoFs .tileBar { opacity: 1; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
 
-.tunnelQ {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 12px 10px;
-  padding: 6px 10px;
-  border: 1px solid var(--nx-line);
-  border-radius: var(--nx-radius-s);
-  background: var(--nx-bg-1);
-  color: var(--nx-text-2);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.tunnelQ:hover { background: var(--nx-bg-3); color: var(--nx-text-1); }
-.tunnelQ b { color: var(--nx-text-1); font-weight: 600; }
 
 /* ---------- theater: watched stream fills the stage, participants in a strip below ---------- */
 .theater { background: #050609; }

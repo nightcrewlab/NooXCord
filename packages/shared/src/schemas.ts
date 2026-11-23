@@ -16,8 +16,6 @@ const channelName = z
   .min(1)
   .max(LIMITS.channelNameMax)
   .transform((s) => s.toLocaleLowerCase("tr").replace(/\s+/g, "-"));
-/** Opaque JSON object (mediasoup parameters); size is capped by the socket's max payload. */
-const json = z.record(z.string(), z.unknown());
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable();
 
 // ---------- HTTP (auth) ----------
@@ -66,23 +64,20 @@ export const Methods = {
   "role.delete": z.object({ roleId: id }),
   "member.setRoles": z.object({ guildId: id, userId: id, roleIds: z.array(id).max(50) }),
   "member.kick": z.object({ guildId: id, userId: id }),
-  "voice.join": z.object({ channelId: id, muted: z.boolean().optional(), deafened: z.boolean().optional(), transport: z.enum(["rtc", "ws"]).optional() }),
+  "voice.join": z.object({ channelId: id, muted: z.boolean().optional(), deafened: z.boolean().optional() }),
   "voice.leave": z.object({}),
   "voice.speaking": z.object({ speaking: z.boolean() }),
-  "voice.update": z.object({ muted: z.boolean().optional(), deafened: z.boolean().optional() }),
-  "media.connect": z.object({ transportId: id, dtlsParameters: json }),
-  "media.produce": z.object({ transportId: id, kind: z.enum(["audio", "video"]), rtpParameters: json, source: z.enum(["mic", "screen", "screen-audio", "screen-compat", "camera"]) }),
-  "media.pauseProducer": z.object({ producerId: id, paused: z.boolean() }),
-  "media.closeProducer": z.object({ producerId: id }),
-  "media.consume": z.object({ producerId: id, rtpCapabilities: json }),
-  "media.resume": z.object({ consumerId: id }),
-  "media.closeConsumer": z.object({ consumerId: id }),
-  "media.layers": z.object({ consumerId: id, spatial: z.number().int().min(0).max(2) }),
-  "media.keyFrame": z.object({ consumerId: id }),
-  "stream.start": z.object({ width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192), fps: z.number().int().min(1).max(240), audio: z.boolean(), tunnelHigh: z.boolean().optional() }),
+  "voice.update": z.object({ muted: z.boolean().optional(), deafened: z.boolean().optional(), camera: z.boolean().optional() }),
+  /** WebRTC offer/answer/ICE candidate for one other person in the same voice channel (relayed as is). */
+  "rtc.signal": z.object({
+    to: id,
+    gen: z.number().int().min(0).max(1e9),
+    description: z.object({ type: z.enum(["offer", "answer"]), sdp: z.string().max(60_000) }).optional(),
+    candidate: z.object({ candidate: z.string().max(1000), sdpMid: z.string().max(64).nullable().optional(), sdpMLineIndex: z.number().int().min(0).max(64).nullable().optional() }).nullable().optional(),
+  }),
+  "stream.start": z.object({ width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192), fps: z.number().int().min(1).max(240), audio: z.boolean(), codec: z.string().max(40).optional() }),
   "stream.stop": z.object({}),
-  "stream.tunnelQuality": z.object({ high: z.boolean() }),
-  "stream.watch": z.object({ userId: id, watching: z.boolean(), codecs: z.array(z.string().max(40)).max(30).optional() }),
+  "stream.watch": z.object({ userId: id, watching: z.boolean() }),
   "member.ban": z.object({ guildId: id, userId: id }),
   "remote.request": z.object({ userId: id }),
   "remote.respond": z.object({ userId: id, allow: z.boolean() }),

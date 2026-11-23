@@ -1,8 +1,8 @@
 # NooXCord — CLAUDE.md
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
-> **Tür:** Kendi sunucunu barındırdığın, Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması
-> **Durum:** Faz 5 (paketleme) — `pnpm dist` (veya kökteki `paketle.bat`) ile `NooXCord-Setup-0.6.1.exe` üretiliyor, paketlenmiş uygulama kendi testlerini geçti (2026-11-08). Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Kalan: temiz Windows 10 VM'de kurulum testi (kullanıcıda), imza sertifikası. Prototip sonuçları `docs/adr/0002-faz0-prototip-sonuclari.md`. Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Tür:** Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması; sunucu Render.com'da, veriler Turso'da, medya P2P
+> **Durum:** Faz 6 (Render + Turso + P2P, ADR 0003, 2026-11-23) — kod tamam ve testli (`pnpm test` 4 paket, `pnpm test:voice` 29 kontrol); **kalan: Render servisi + Turso veritabanı kurulumu ve gerçek iki ağdan P2P testi (kullanıcıda)**. Eski yerel-host sürümü (Faz 0–5: mediasoup, tünel, Hamachi) kullanıcıda yedekli; aşağıdaki tarihçe notları onu anlatır. Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -20,7 +20,7 @@
 
 ## 1. Ürün özeti
 
-NooXCord; bir kullanıcının kendi PC'sinde **Host** (sunucu) çalıştırdığı, diğerlerinin masaüstü uygulamasıyla veya tarayıcıdan bağlandığı bir sohbet uygulamasıdır. Merkezi bir bulut sunucusu **yoktur**.
+NooXCord; sunucusu (**Host**) Render.com'un ücretsiz web servisinde sürekli açık duran, herkesin masaüstü uygulamasıyla veya tarayıcıdan bağlandığı bir sohbet uygulamasıdır (ADR 0003). Veriler Turso'da (libSQL) saklanır. Ses, kamera ve yayınlar sunucudan geçmez: kanaldaki kişiler birbirine doğrudan WebRTC ile bağlanır (P2P mesh); sunucu yalnızca sohbeti ve bağlantı kurma mesajlarını taşır.
 
 ### Temel özellikler
 | Alan | Özellik |
@@ -32,7 +32,7 @@ NooXCord; bir kullanıcının kendi PC'sinde **Host** (sunucu) çalıştırdığ
 | Uzaktan kontrol | İzleyici yayıncının klavye/faresini kontrol edebilir — yalnızca yayıncı izin verirse |
 | Overlay | Oyun üstü overlay: sesli kanaldaki kişiler (kendin dahil), konuşan yeşil çerçeve, "YAYINDA" rozeti |
 | Hesaplar | Masaüstü: nickname + e-posta + şifre, kalıcı oturum. Web/mobil: yalnızca nickname (misafir) |
-| Ağ | LAN, Hamachi, **Cloudflare Quick Tunnel** (varsayılan, hesapsız, URL kopyala/QR), Microsoft Dev Tunnels (isteğe bağlı, sabit URL), manuel port + port müsaitlik kontrolü |
+| Ağ | Render.com (sabit HTTPS adresi, tünel/port/Hamachi gerekmez) · medya P2P: STUN + isteğe bağlı TURN (Cloudflare veya statik, sunucu ortam değişkenleri) |
 | Dağıtım | Tek `NooXCord-Setup-x.y.z.exe`; kurulduğunda ek bir şey kurmaya gerek kalmadan çalışır |
 
 ---
@@ -45,56 +45,43 @@ NooXCord; bir kullanıcının kendi PC'sinde **Host** (sunucu) çalıştırdığ
 | Masaüstü kabuğu | **Electron** (güncel kararlı sürüm) + `electron-builder` (NSIS) | WebRTC, `desktopCapturer`, çoklu monitör, şeffaf overlay penceresi, global kısayollar ve native modül desteği tek pakette. Tauri/WebView2'de ekran yakalama ve overlay kontrolü yetersiz. |
 | Dil | **TypeScript (strict)** her yerde; native kısım **Rust + napi-rs** | Tip güvenliği; Rust ile güvenli Windows API erişimi ve prebuilt `.node` dosyaları |
 | UI | **React 19 + Vite**, **Zustand** (state), **CSS Modules + CSS değişkenleri** (tasarım token'ları), `@tanstack/react-virtual` (mesaj listesi) | Hafif, hızlı; aynı istemci hem Electron'da hem tarayıcıda çalışır |
-| Host sunucusu | **Node.js (Electron `utilityProcess` içinde)**: **Fastify** (HTTP/REST + statik web istemcisi), **ws** (gerçek zamanlı protokol), **zod** (şema doğrulama) | Ana süreçten ayrı süreçte çalışır, UI donmaz |
-| Medya (SFU) | **mediasoup** (v3) + `mediasoup-client` (ilk sese katılmada yüklenir) | Ses ve yayınları tek seferde herkese dağıtır, simulcast, ICE-TCP desteği. Kanal başına bir router, tek `WebRtcServer` (ana port + 1, UDP+TCP, tüm LAN/Hamachi IPv4 adreslerinde) |
-| Veritabanı | **SQLite**, Node'un yerleşik **`node:sqlite`** modülü (WAL) + `packages/server/src/db.ts` içinde numaralı SQL migration'ları | Native modül yok → Electron için yeniden derleme yok. Electron 45 = Node 24, yerleşik geliyor |
+| Host sunucusu | **Node.js** (Render.com web servisi, tek dosya bundle `packages/server/dist/server.mjs`): **Fastify** (HTTP/REST + statik web istemcisi), **ws** (gerçek zamanlı protokol + WebRTC sinyali), **zod** (şema doğrulama) | Sürekli açık, sabit HTTPS adresi; PC'ye bağlı değil (ADR 0003) |
+| Medya (P2P) | Tarayıcının kendi **WebRTC**'si, kanaldaki her kişi çifti arasında bir `RTCPeerConnection` (`packages/client/src/media/engine.ts`); sunucu yalnızca `rtc.signal` aktarır | Render UDP taşımaz ve medyayı taşıyacak CPU/trafiği yok; mesh küçük gruplar için yeterli |
+| Veritabanı | **SQLite**: çalışırken yerel **`node:sqlite`** dosyası (WAL), her yazma sırayla **Turso**'ya yansıtılır (`@libsql/client/web`, `mirror.ts`); açılışta yerel dosya Turso'dan kurulur. Numaralı migration'lar `db.ts` içinde. Yüklenen dosyalar da veritabanında (`blobs`, 512 KB parçalar) | Render diski kalıcı değil; senkron sorgu kodu değişmedi |
 | Şifreleme | Node yerleşik **`scrypt`** (N=2¹⁵, r=8, p=1) şifre hash'i; Electron `safeStorage` (DPAPI) ile istemci token saklama | Native modül gerektirmez |
 | Medya işleme | Avatar / sunucu simgesi **istemcide** canvas ile 256px kare WebP'ye çevrilir; sunucu magic-byte ile tür doğrular. RNNoise (WASM) Faz 2 | `sharp` gerekmedi |
-| Native modül | `packages/native` (Rust/napi-rs): WASAPI process-loopback, SendInput, pencere/monitör listeleme, Hamachi adaptör tespiti | |
-| Tünel | `TunnelProvider` arayüzü: **`cloudflared`** (varsayılan, Apache-2.0, installer'a gömülü) + **`devtunnel`** CLI (isteğe bağlı) — alt süreç olarak yönetilir | ADR 0001 |
+| Native modül | `packages/native` (Rust/napi-rs): WASAPI process-loopback, SendInput, pencere/monitör listeleme, bas-konuş tuş durumu | |
+| Tünel | ~~cloudflared / devtunnel~~ → kaldırıldı (ADR 0003; Render zaten HTTPS) | ADR 0001 geçersiz |
 | Test | **Vitest** (birim), **Playwright** (web + Electron e2e) | |
 | Paket yöneticisi | **pnpm workspaces** | |
 
-### 2.2 Süreç modeli (masaüstü)
+### 2.2 Süreç modeli
 ```
-┌──────────────────────────── NooXCord.exe ────────────────────────────┐
-│ Main process (Electron)                                              │
-│  • pencere/tray/kısayol/overlay yönetimi                             │
-│  • tunnel & hamachi yöneticisi, port kontrolü, auto-update           │
-│  • native modül çağrıları (input injection, loopback audio)          │
-│      │ IPC (typed, allowlist)                                        │
-│      ├── Renderer: Ana pencere (React istemci)                       │
-│      ├── Renderer: Overlay penceresi (şeffaf, click-through)         │
-│      └── utilityProcess: HOST SERVER (sadece "Sunucu barındır" açıkken)│
-│              ├── Fastify + ws  (REST, sinyal, sohbet)                │
-│              ├── SQLite                                              │
-│              └── mediasoup-worker.exe (alt süreç, C++)               │
-└──────────────────────────────────────────────────────────────────────┘
-          ▲ LAN / Hamachi (25.x.x.x) / Dev Tunnel (https)
-          │
-   Diğer masaüstü istemcileri  ·  Tarayıcı (PC / iPhone / Android)
+            Render.com (ücretsiz web servisi)                     Turso (libSQL)
+  ┌────────────────────────────────────────────┐            ┌──────────────┐
+  │ node server.mjs: Fastify + ws               │  her yazma │  kalıcı      │
+  │  • REST, sohbet, izinler, davet, yüklemeler │ ─────────► │  veritabanı  │
+  │  • web istemcisini sunar                    │ ◄───────── │              │
+  │  • WebRTC sinyali (rtc.signal) aktarır      │  açılışta  └──────────────┘
+  │  • yerel node:sqlite çalışma kopyası        │
+  └────────────────────────────────────────────┘
+        ▲ HTTPS / WSS (sohbet + sinyal)
+        │
+  Masaüstü (Electron)   Tarayıcı (PC / iPhone / Android)
+        ◄────── WebRTC P2P (ses, kamera, yayın) ──────►
 ```
-- Her masaüstü uygulaması **istemci**dir; isteğe bağlı olarak **host** da olabilir.
-- Bir istemci birden fazla host'a bağlanabilir (sol kenar çubuğundaki sunucu listesi = bağlantı listesi). Bir host birden fazla guild barındırabilir.
-- Host, derlenmiş web istemcisini (`packages/client` build çıktısı) aynı porttan sunar → tarayıcıdan giren kişi ek kurulum yapmaz.
+- Masaüstü uygulaması yalnızca **istemcidir** (ana süreç: pencere/tepsi/kısayol/overlay, native modül, auto-update; renderer: React istemci). Varsayılan sunucu derlemede `VITE_NX_DEFAULT_HOST` ile verilir; sunucu seçicide başka adres de girilebilir.
+- Render ücretsiz servis 15 dk trafiksiz kalınca uyur (ilk giren ~1 dk bekler) ve her yeniden başlatmada diski sıfırlanır → veriler Turso'da.
 
-### 2.3 Medya taşıma stratejisi (KRİTİK — önce bunu doğrula)
-Cloudflare Quick Tunnel ve Dev Tunnels **yalnızca HTTP(S)/WebSocket** trafiğini tarayıcıya iletir; **UDP ve ham TCP (TURN/ICE-TCP) tünelden geçmez.** Bu yüzden medya katmanlı çalışır, istemci sırayla dener:
-
-1. **WebRTC / UDP doğrudan** — LAN, Hamachi veya UPnP/manuel açılmış UDP portu (`mediasoup WebRtcServer`, tek UDP+TCP port, varsayılan `ana port + 1`).
-2. **WebRTC / ICE-TCP** — aynı portun TCP'si dışarı açıksa.
-3. **NXM-over-WebSocket (tunnel yedeği)** — tünel üzerinden `wss://.../media`:
-   - Ses: Opus paketleri (mediasoup `PlainTransport`/`DirectTransport` → WS köprüsü), istemcide WebCodecs `AudioDecoder` + AudioWorklet jitter buffer.
-   - Video: H.264 (Annex-B) parçaları → istemcide WebCodecs `VideoDecoder` → `<canvas>`.
-   - Gönderim (mikrofon): WebCodecs `AudioEncoder` (Opus). Desteklemeyen tarayıcıda yalnızca dinleme moduna düş ve kullanıcıya bildir.
-   - Gecikme hedefi < 400 ms; bu mod ayarlar ekranında "Tünel modu (yüksek gecikme)" olarak gösterilir.
-
-**Faz 0 sonucu (ADR 0002):** 3. yol Cloudflare tüneli üzerinden iPhone Safari'de çalıştı (30 fps, ~55 ms ağ gecikmesi). Zorunlu kurallar:
-- Ses oynatma AudioWorklet halka tamponu ile yapılır (hedef 60–80 ms, ±%0.5 hız ayarıyla saat kayması düzeltilir); `AudioBufferSourceNode` zamanlaması kullanılmaz (iPhone'da tampon 350 ms'ye kaydı).
-- iOS'ta `AudioContext` ve `getUserMedia` dokunma olayının içinde, ilk `await`'ten önce başlatılır.
+### 2.3 Medya taşıma (ADR 0003)
+- **Mesh:** kanaldaki her kişi çifti arasında tek `RTCPeerConnection`. Teklifi küçük `userId`'li taraf verir; her teklif yeni bir `gen` taşır ve eski bağlantının yerine geçer (kopan bağlantı böyle yeniden kurulur: artan aralıkla, en fazla 30 sn). Karşı tarafın teklifinden önce gelen ICE adayları beklenir, kendi teklifinden önce bulunan adaylar teklif gidince gönderilir.
+- Her bağlantıda sabit **4 transceiver**: 0 mikrofon · 1 kamera · 2 ekran · 3 ekran sesi. Parçalar `replaceTrack` ile değişir → yeniden müzakere yok. Kamera her zaman gider (görünürlük `VoiceState.camera` ile); ekran + ekran sesi yalnızca yayının izleyicilerine (`StreamInfo.viewers`, sunucu yayar).
+- Opus: mikrofon DTX, ekran sesi stereo 128 kbps (SDP `fmtp` ayarı, `tuneOpus`). Alınan seste `jitterBufferTarget` 80 ms (yayın sesi 120). Sunucunun susturduğu (`suppressed`) kişinin sesi alıcıda kısılır, kendi istemcisi de göndermez.
+- ICE: STUN (Google + Cloudflare) + isteğe bağlı TURN (`NX_ICE_SERVERS` JSON, `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL` veya `CLOUDFLARE_TURN_KEY_ID`/`CLOUDFLARE_TURN_API_TOKEN`; `ice.ts`), `voice.join` yanıtıyla istemciye gider.
+- iOS: `AudioContext` ve `getUserMedia` dokunma olayının içinde, ilk `await`'ten önce başlatılır (değişmedi).
 
 ### 2.4 Bant genişliği gerçeği
-SFU host'un PC'sinde çalıştığı için **her izleyici host'un upload'undan beslenir.** Ayarlarda tahmini toplam upload göster (izleyici sayısı × bitrate) ve limit aşılınca uyar. Simulcast (3 katman) ile zayıf bağlantılara düşük katman gönder.
+Mesh'te sunucu medya taşımaz ama **her izleyici yayıncının upload'undan ve kodlayıcısından ayrı beslenir** (kişi başı ayrı H.264 kodlama, simulcast yok). Pratik sınır: seste ~6 kişi, bir yayına 2–4 izleyici. Ön ayarın bitrate'i her izleyici için ayrı harcanır.
 
 ---
 
@@ -106,24 +93,24 @@ NooXCord/
 ├─ package.json / pnpm-workspace.yaml / tsconfig.base.json
 ├─ apps/
 │  └─ desktop/                 # Electron
-│     ├─ src/main/             # main process: windows, tray, ipc, overlay, tunnel, hamachi, updater, ports
+│     ├─ src/main/             # main process: windows, tray, ipc, overlay, remote control, updater, logs
 │     ├─ src/preload/          # contextBridge → window.nx (typed)
-│     ├─ src/host/             # utilityProcess giriş noktası → packages/server'ı başlatır
-│     ├─ resources/            # icon.ico, tray ikonları, devtunnel indirme betiği
+│     ├─ resources/            # icon.ico, tray ikonları
 │     └─ electron-builder.yml
 ├─ packages/
 │  ├─ client/                  # React istemci (Electron renderer + web), responsive
 │  │  ├─ src/app/              # rotalar, layout (desktop / mobile)
 │  │  ├─ src/features/         # auth, guilds, channels, chat, voice, stream, remote, overlay, settings
-│  │  ├─ src/media/            # mediasoup-client, NXM-WS taşıma, VAD, RNNoise
+│  │  ├─ src/media/            # P2P WebRTC motoru (engine.ts), VAD, RNNoise/GTCRN, sistem sesi
 │  │  ├─ src/platform/         # DesktopPlatform | WebPlatform adapter'ları
 │  │  ├─ src/styles/           # tokens.css, temalar
 │  │  └─ src/i18n/
-│  ├─ server/                  # Host: Fastify, ws, mediasoup, db, auth, uploads, link unfurl
+│  ├─ server/                  # Host: Fastify, ws, sinyal (voice.ts), db + Turso yansıtma, blobs, auth, link unfurl; build.mjs → dist/server.mjs
 │  ├─ shared/                  # protokol tipleri, sabitler, izin bitleri; zod şemaları ayrı: "@nooxcord/shared/schemas" (yalnızca sunucu import eder → istemci paketine zod girmez)
-│  ├─ native/                  # Rust napi-rs: loopback audio, input, monitors, net adapters
+│  ├─ native/                  # Rust napi-rs: loopback audio, input, monitors
 │  └─ icons/                   # Elle çizilmiş SVG ikonlar: kaynak src/icons.ts, svg/*.svg ve sheet.svg `pnpm icons` ile üretilir
 ├─ prototypes/                 # Faz 0 doğrulama prototipleri (ürün koduna import edilmez)
+├─ render.yaml                 # Render Blueprint (sunucu)
 ├─ assets/brand/               # logo.svg, icon kaynakları
 ├─ docs/adr/                   # mimari karar kayıtları (ADR)
 └─ scripts/                    # build, icon üretimi, release
@@ -137,27 +124,29 @@ Paket yöneticisi **pnpm 9** (`node-linker=hoisted`, Electron/native modüller i
 
 ```bash
 pnpm install
-pnpm dev            # Electron + Vite HMR (uygulama içinden "Bu bilgisayarda barındır" ile host başlar)
-pnpm dev:host       # yalnızca host sunucusu (tsx watch) → http://localhost:47820 (web istemcisini de sunar; önce client build)
+pnpm dev            # Electron + Vite HMR (sunucu seçicide http://localhost:47820 veya Render adresi)
+pnpm dev:host       # yalnızca sunucu (tsx watch, yerel veritabanı; TURSO_* verilirse Turso) → http://localhost:47820 (web istemcisini de sunar; önce client build)
 pnpm dev:web        # yalnızca web istemcisi (Vite :5173, VITE_NX_HOST ile host seçilir; varsayılan localhost:47820)
 pnpm typecheck      # tüm paketler
-pnpm test           # host uçtan uca (22) + uzaktan kontrol & DM kuralları (14) + yedekleme (4) + link önizleme SSRF / resim proxy
-pnpm build          # client (vite) + desktop main/preload/host (esbuild)
+pnpm test           # sunucu uçtan uca (23) + uzaktan kontrol, DM, P2P sinyal (18) + Turso yansıtma (6, yerel libSQL dosyasıyla) + link önizleme SSRF / resim proxy
+pnpm build          # client (vite) + sunucu bundle (esbuild → packages/server/dist/server.mjs) + desktop main/preload
+pnpm start          # node packages/server/dist/server.mjs (Render'daki gibi; ayarlar ortam değişkenlerinden, bkz. server/src/dev.ts)
 pnpm brand          # assets/brand/*.svg → icon.ico, favicon, PWA ikonları
 pnpm icons          # ikon tablosu → packages/icons/svg/*.svg + sheet.svg
 ```
 
 Masaüstü kendi kendine testleri (pencere göstermeden, geçici userData ile):
 ```bash
-NX_SELFTEST=1 electron apps/desktop        # host utilityProcess, safeStorage, port çakışması
+NX_SELFTEST=1 electron apps/desktop        # safeStorage (NX_UITEST_HOST ile sunucuya erişim de)
 NX_SELFTEST=ui NX_UITEST_HOST=http://127.0.0.1:47820 NX_SHOT=shot.png electron apps/desktop   # arayüz + file:// → host HTTP/WS
-# Faz 2-3: 3 kullanıcı, 2 yayın, herkes izliyor; C tünel modunda (NXM-WS). Uygulamanın kendi host'u (47850) ile
-pnpm test:voice        # = NX_SELFTEST=voice electron apps/desktop  (32 kontrol, AV1 + H.264 kopya (NX_TEST_CODEC=vp9 ile VP9), kamera + tünelden ekran yayını ve sesi + tünel kalitesi + tiyatro görünümü ve sığma + RNNoise/GTCRN dahil; NX_UITEST_HOST=... ile dış host, NX_SHOT=... ekran görüntüsü)
+# 3 kullanıcı P2P mesh, 2 yayın (biri sesli), herkes izliyor, kameralar, izlemeyi bırak/yayın bitti/ayrıl/yeniden katıl.
+# Sunucu bundle'ını Electron'un Node'uyla kendisi başlatır (47850); NX_UITEST_HOST=... ile dış sunucu
+pnpm test:voice        # = client + server build + NX_SELFTEST=voice electron apps/desktop  (29 kontrol, tiyatro görünümü ve sığma + RNNoise/GTCRN dahil; NX_SHOT=... ekran görüntüsü)
 # UI testi giriş yapıp bir betik çalıştırabilir: NX_UITEST_TOKEN=<token> NX_UITEST_JS="<js>" (ör. ayarlar sayfasını açmak)
 # Güncelleme köşe kartı: NX_UITEST_UPDATE=downloading|ready (sahte durum, sürüm 9.9.9)
 ```
 Native modül (Rust, `packages/native`): `pnpm build:native` → `nooxcord-native.win32-x64.node` (loopback ses, bas-konuş tuş durumu, özel tam ekran tespiti).
-Geliştirmede `cloudflared.exe` `.tools/` altında (gitignore); paketlenmiş uygulamada `resources/bin/`. `devtunnel.exe` ilk kullanımda `%LOCALAPPDATA%/NooXCord/bin/`'e indirilir ve Microsoft imzası doğrulanır.
+Render: `render.yaml` Blueprint (yalnızca server + client filtreli kurulum, Node 24, `/api/info` sağlık kontrolü). Ortam değişkenleri README'de.
 
 Faz 0 prototipleri:
 ```bash
@@ -171,10 +160,9 @@ Kurulum paketi (Faz 5):
 ```bash
 pnpm dist           # build + scripts/dist.mjs → release/NooXCord-Setup-<sürüm>.exe (sürüm: apps/desktop/package.json)
 pnpm dist:dir       # yalnızca release/win-unpacked (kurulum yok, hızlı deneme)
-NX_SELFTEST=voice release/win-unpacked/NooXCord.exe   # paketlenmiş uygulamada ses/yayın testi
 ```
 Tek tık: kökte `paketle.bat` (= `pnpm dist`, sonra Gezgin'de exe'yi gösterir) ve `release-yukle.bat` (dosyaları + `latest.yml` sürümünü kontrol eder, onay ister → değişiklik varsa commit (mesaj sorar, boşsa `chore(release): v<sürüm>`) → push → `gh release create v<sürüm> … --target <push edilen commit> --generate-notes`).
-`scripts/dist.mjs`: `release/app` klasörünü hazırlar (esbuild çıktıları + yalnızca dış bırakılan modüller: `electron-updater`, `mediasoup` (lib + worker exe), `@nooxcord/native` (index.js + .node)), sonra `apps/desktop/electron-builder.yml` ile NSIS üretir. Gerekenler: `.tools/cloudflared.exe`, `pnpm build:native` çıktısı, Visual Studio'nun VC++ x64 runtime DLL'leri (en yenisi otomatik bulunur; yoksa `.tools/vcruntime/`).
+`scripts/dist.mjs`: `release/app` klasörünü hazırlar (esbuild çıktıları + yalnızca dış bırakılan modüller: `electron-updater`, `@nooxcord/native` (index.js + .node)), sonra `apps/desktop/electron-builder.yml` ile NSIS üretir. Masaüstü sürümü derlerken `VITE_NX_DEFAULT_HOST=https://<servis>.onrender.com` verilmeli (varsayılan sunucu). Gerekenler: `pnpm build:native` çıktısı, Visual Studio'nun VC++ x64 runtime DLL'leri (en yenisi otomatik bulunur; yoksa `.tools/vcruntime/`).
 
 Sonradan eklenecekler: `pnpm lint`, `pnpm test:e2e` (playwright).
 
@@ -217,7 +205,7 @@ Sonradan eklenecekler: `pnpm lint`, `pnpm test:e2e` (playwright).
 | Yüksek | 1440p | 60 |
 | Kaynak | Monitör çözünürlüğü | 30 / 60 / 120 (monitör destekliyorsa) |
 - Ek: "Akıcılık / Netlik" tercihi (`contentHint: 'motion' | 'detail'`), maksimum bitrate kaydırıcısı.
-- Codec (2026-11-21): Ayarlarda **Otomatik / AV1 / VP9 / H.264** (`streamCodec`). Otomatik: `mediaCapabilities.encodingInfo` donanım (`powerEfficient`) diyorsa AV1 (yalnızca `L1T3` SVC; AV1 `L2T3_KEY` mediasoup 3.32'de izleyicide çözülmedi), yoksa VP9 (`L2T3_KEY`, yoksa `L1T3`), o da yoksa H.264 (2 katman simulcast). mediasoup VP9/AV1'i simulcast değil yalnızca SVC olarak kabul eder. AV1/VP9'u çözemeyen izleyici (tünel, iPhone, eski istemci; `stream.watch` `codecs` ile bildirir) izlemeye başlayınca host `StreamInfo.compat` açar → yayıncı aynı yakalamadan ikinci bir H.264 simulcast producer'ı (`screen-compat`) gönderir, ihtiyaç bitince kapanır. Kamera her zaman H.264.
+- Codec (P2P, ADR 0003): Ayarlarda **Otomatik / AV1 / VP9 / H.264** (`streamCodec`); Otomatik = H.264, sonra VP8. Tercih bağlantı kurulurken (`setCodecPreferences`) uygulanır, sesteyken değiştirmek yeni bağlantılara etki eder. Kişi başı ayrı kodlama, simulcast yok. *Tarihçe (mediasoup):* Otomatik: `mediaCapabilities.encodingInfo` donanım (`powerEfficient`) diyorsa AV1 (yalnızca `L1T3` SVC; AV1 `L2T3_KEY` mediasoup 3.32'de izleyicide çözülmedi), yoksa VP9 (`L2T3_KEY`, yoksa `L1T3`), o da yoksa H.264 (2 katman simulcast). mediasoup VP9/AV1'i simulcast değil yalnızca SVC olarak kabul eder. AV1/VP9'u çözemeyen izleyici (tünel, iPhone, eski istemci; `stream.watch` `codecs` ile bildirir) izlemeye başlayınca host `StreamInfo.compat` açar → yayıncı aynı yakalamadan ikinci bir H.264 simulcast producer'ı (`screen-compat`) gönderir, ihtiyaç bitince kapanır. Kamera her zaman H.264.
 
 ### 6.3 Yayın sesi — kendi sesimizi hariç tutma
 Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer kişilerin sesi) gitmez**, böylece izleyiciler kendilerini duymaz.
@@ -231,21 +219,20 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 - Sesli kanalda **kamera** düğmesi (masaüstü, tarayıcı, telefon). Kaynak `camera` (video), izin `P.VIDEO`; misafirler dahil herkes açabilir. Durum `VoiceState.camera` ile yayılır, kenar çubuğunda kamera simgesi.
 - Ekran yayınının aksine kameralar kanaldaki **herkese otomatik** gönderilir (ses gibi; "İzle" gerekmez). Katılımcı kartı videoya dönüşür, tıklayınca büyür; kendi görüntün aynalanır.
 - WebRTC: 640×480 hedef, 24 fps, tek katman, maks. 600 kbps, H.264 öncelikli.
-- **Tünel modu (telefon + Cloudflare):** tarayıcı WebCodecs `VideoEncoder` ile H.264 constrained baseline (`avc1.42e01f`, Annex-B; yoksa avcC → Annex-B dönüşümü) kodlar, kareler `<video>` → canvas üzerinden alınır (iPhone Safari'de de çalışır), 20 fps, ≤640 px, 450 kbps. WS çerçevesi `[4][key][ts90k][AU]` → host RTP'ye paketler (tek NAL / FU-A, `rtp.ts` `packetizeH264`) → DirectTransport producer. İzleyicilerden gelen PLI/FIR → `[5]` çerçevesi → tarayıcı anahtar kare üretir; ayrıca 3 sn'de bir anahtar kare.
+- *Tarihçe — tünel modu (kaldırıldı):* tarayıcı WebCodecs `VideoEncoder` ile H.264 constrained baseline (`avc1.42e01f`, Annex-B; yoksa avcC → Annex-B dönüşümü) kodlar, kareler `<video>` → canvas üzerinden alınır (iPhone Safari'de de çalışır), 20 fps, ≤640 px, 450 kbps. WS çerçevesi `[4][key][ts90k][AU]` → host RTP'ye paketler (tek NAL / FU-A, `rtp.ts` `packetizeH264`) → DirectTransport producer. İzleyicilerden gelen PLI/FIR → `[5]` çerçevesi → tarayıcı anahtar kare üretir; ayrıca 3 sn'de bir anahtar kare.
 - Telefonda birden fazla kamera varsa **ön/arka çevir** düğmesi (producer kalır, `replaceTrack`). Masaüstünde kamera seçimi Ayarlar → Ses.
 
 ### 6.6 Tarayıcıdan ekran yayını
 - Tarayıcı `getDisplayMedia` sunuyorsa (masaüstü Chrome/Edge/Firefox; Android'de tarayıcıya bağlı, iPhone Safari'de **yok**) "Yayın aç" düğmesi görünür; izin `STREAM` (misafire açık rol ile, §5.2).
-- WebRTC yolunda masaüstüyle aynı (simulcast, preset, sekme sesi tarayıcı verirse).
-- **Tünel modunda:** kameradaki gibi WebCodecs H.264 (`avc1.42e01f`), ≤1280×720, 15 fps, 1.2 Mbps; WS çerçevesi `[6][key][ts90k][AU]`. **Yayın sesi** (tarayıcının verdiği sekme/sistem sesi; masaüstünde native loopback) WebCodecs Opus stereo 96 kbps → `[7][opus]` → host `screen-audio` producer (2026-11-08) → host `rtp.ts` ile paketler → DirectTransport producer (`vid[1]` SSRC). PLI/FIR, SSRC'ye göre `[5][0|1]` (kamera/ekran) anahtar kare isteğine çevrilir. Medya WS'i mesaj başına 1 MB'a kadar kabul eder (önceden 16 KB; ekran anahtar kareleri sığmıyordu).
+- Masaüstüyle aynı yol (P2P, preset, sekme sesi tarayıcı verirse).
+- *Tarihçe — tünel modu (kaldırıldı):* kameradaki gibi WebCodecs H.264 (`avc1.42e01f`), ≤1280×720, 15 fps, 1.2 Mbps; WS çerçevesi `[6][key][ts90k][AU]`. **Yayın sesi** (tarayıcının verdiği sekme/sistem sesi; masaüstünde native loopback) WebCodecs Opus stereo 96 kbps → `[7][opus]` → host `screen-audio` producer (2026-11-08) → host `rtp.ts` ile paketler → DirectTransport producer (`vid[1]` SSRC). PLI/FIR, SSRC'ye göre `[5][0|1]` (kamera/ekran) anahtar kare isteğine çevrilir. Medya WS'i mesaj başına 1 MB'a kadar kabul eder (önceden 16 KB; ekran anahtar kareleri sığmıyordu).
 
 ### 6.4 Çoklu yayın ve izleme
 - Aynı sesli kanalda birden fazla kişi aynı anda yayın açabilir.
 - Yayın başladığında yayıncı **tek bir kare** yakalar (JPEG, 480px genişlik) ve host'a gönderir → kanal görünümünde **tek seferlik thumbnail** kartı (canlı güncellenmez; trafik tasarrufu). Kartta: yayıncı adı, kalite rozeti, izleyici sayısı, **"Yayını İzle"** butonu.
-- "Yayını İzle"ye basılmadan video consumer **oluşturulmaz** (bant genişliği).
+- "Yayını İzle"ye basılmadan yayıncı o kişiye ekran **göndermez** (`stream.watch` → `StreamInfo.viewers` → yayıncı `replaceTrack`).
 - Birden fazla yayın aynı anda izlenebilir: ızgara görünümü, odak (büyük) görünümü, her yayın için ayrı ses seviyesi, tam ekran, ayrı pencereye çıkar (pop-out, masaüstü).
-- **Tiyatro görünümü:** sesteyken bir yayın izlenmeye başlanınca üye listesi gizlenir ve yayın sahnenin tamamını kaplar. Altta izlenmeyen herkesin şeridi durur (avatar veya küçük kamera, konuşan yeşil çerçeve; izlenmeyen yayın tek seferlik önizlemesiyle durur, tıklayınca izlenir); birden fazla yayın izlenirken yan yana durur, birine tıklayınca o sahneyi kaplar ve diğerleri gizlenir, ona tekrar tıklayınca yine yan yana (tam ekran düğmesi ve uzaktan kontrol tıklamaları bunu tetiklemez); şerit küçük tutamaçla gizlenir/geri gelir (`stripHidden` ayarı). Kendisi de yayındaysa şeridin üstünde "Senin yayının" çubuğu (izleyiciler + sağ tık kontrol ver, tünel kalitesi, durdur).
-- İzlenmeyen yayınlar için mediasoup consumer'ları `pause` edilir; görünmeyen (scroll dışı) ızgara hücrelerinde düşük simulcast katmanına geçilir.
+- **Tiyatro görünümü:** sesteyken bir yayın izlenmeye başlanınca üye listesi gizlenir ve yayın sahnenin tamamını kaplar. Altta izlenmeyen herkesin şeridi durur (avatar veya küçük kamera, konuşan yeşil çerçeve; izlenmeyen yayın tek seferlik önizlemesiyle durur, tıklayınca izlenir); birden fazla yayın izlenirken yan yana durur, birine tıklayınca o sahneyi kaplar ve diğerleri gizlenir, ona tekrar tıklayınca yine yan yana (tam ekran düğmesi ve uzaktan kontrol tıklamaları bunu tetiklemez); şerit küçük tutamaçla gizlenir/geri gelir (`stripHidden` ayarı). Kendisi de yayındaysa şeridin üstünde "Senin yayının" çubuğu (izleyiciler + sağ tık kontrol ver, durdur).
 
 ---
 
@@ -331,62 +318,15 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 
 ---
 
-## 10. Ağ: LAN, Hamachi, Dev Tunnel, port
+## 10. Ağ (ADR 0003)
 
-Tümü **Ayarlar → Bağlantı** sayfasından yönetilir. Her öğenin durumu canlı gösterilir (kapalı / başlatılıyor / aktif / hata + log).
-
-### 10.1 Port
-- Kullanıcı ana portu elle girer (varsayılan **47820**; medya için `port+1` UDP/TCP).
-- **"Kontrol Et"** ve yazarken (debounce 400 ms) otomatik kontrol: ana süreçte `net.createServer().listen()` (TCP) ve `dgram.bind()` (UDP) denemesi, hem `0.0.0.0` hem `127.0.0.1` üzerinde → sonuç: ✓ Müsait / ✗ Kullanımda (mümkünse kullanan süreç adı, `GetExtendedTcpTable` ile) / ✗ Yetki gerekiyor (<1024).
-- "Boş port öner" butonu.
-- Port değişince host yeniden başlatılır, aktif tünelin portu güncellenir.
-
-### 10.2 Windows Güvenlik Duvarı
-- Kurulum yönetici istemediği için kural kurulumda eklenmez (Faz 5 kararı). **Ayarlar → Bağlantı → Windows Güvenlik Duvarı → İzin ver**: UAC onayıyla `netsh` iki kural ekler (`NooXCord.exe` + `mediasoup-worker.exe`, yalnızca Özel profil, ad `NooXCord`, öncekiler silinir). Durum `Get-NetFirewallRule` ile gösterilir. Herkese açık profil desteklenmez. Windows ilk dinlemede kendi izin penceresini de gösterebilir.
-
-### 10.3 Hamachi
-- LogMeIn Hamachi'nin Windows için resmi CLI'si **yoktur**; bu yüzden NooXCord Hamachi'yi kurmaz/yönetmez, **algılar ve kullanır**:
-  - Hamachi ağ adaptörü (`Hamachi` adlı arayüz, 25.x.x.x IPv4) native modül/`os.networkInterfaces()` ile tespit edilir.
-  - Ayar anahtarı: **"Hamachi üzerinden yayınla"** → host o arayüzde de dinler ve davet bağlantısında Hamachi IP'si gösterilir.
-  - "Hamachi servisini başlat/durdur" butonu: `Hamachi2Svc` servisi için yönetici yetkili yardımcı (UAC onayı ile, `sc start/stop`).
-  - Kurulu değilse: resmi indirme sayfasına bağlantı.
-- Hamachi'de medya UDP doğrudan çalışır (§2.3 yol 1).
-
-### 10.4 Tünel sağlayıcıları (ADR 0001)
-Ortak `TunnelProvider` arayüzü: `start(port) → url`, `stop()`, `status`, `onUrlChange`. Ayarlarda sağlayıcı seçilir, tek anahtarla açılıp kapatılır. Ortak UI: **"URL'yi kopyala"** butonu (üst çubukta da), global kısayol `Ctrl+Shift+L` (değiştirilebilir), QR kod ve URL değişince masaüstü bildirimi.
-
-#### Cloudflare Quick Tunnel (varsayılan)
-- `cloudflared.exe` (Apache-2.0) installer ile `resources/bin/` altına gömülür. Hesap veya giriş **gerekmez**.
-- Başlat: `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:<port>` → stderr'den `https://<rastgele>.trycloudflare.com` URL'si parse edilir.
-- URL **her başlatmada değişir**; bu bilinçli bir tercih (kullanıcı sabit URL'yi şart koşmadı). Yeni URL otomatik panoya kopyalanabilir (ayar).
-- Tünel açıkken host URL'yi kendi sunucusuna verir (`HostConfig.tunnelUrl` → `HostInfo.tunnelUrl`, yalnızca `ready` / `host.update` ile oturum açmış üyelere; `/api/info`'da boş). Masaüstü uygulamasında başka yoldan (LAN/Hamachi) bağlı olanlar kanal listesinin üstünde **"Tünel moduna geç"** düğmesi görür: token yeni adrese kopyalanır, aynı sunucu/kanal açık kalır, sesteyse aynı kanala yeniden katılır (`store.switchAddress`, `ChannelPanel.tsx` `TunnelSwitch`).
-- Tarayıcıda uyarı/ara sayfa çıkmaz. SSE desteklenmez → gerçek zamanlı her şey WebSocket'ten gider. Boşta kalan WS'ler kapatılır → 2 sn ping zorunlu.
-- 200 eşzamanlı istek sınırı vardır; HTTP isteklerini azaltmak için her istemci tek bir WS bağlantısı üzerinden çoğullanır.
-- `~/.cloudflared/config.yml` varsa quick tunnel çalışmaz → uygulama `--config` ile boş bir yapılandırma dosyası verir.
-- Süreç çökerse artan aralıklarla yeniden başlatılır ve yeni URL bildirilir.
-
-#### Microsoft Dev Tunnels (isteğe bağlı — sabit URL isteyenler için)
-- **CLI temini:** `devtunnel.exe` Microsoft'un resmi adresinden (`https://aka.ms/TunnelsCliDownload/win-x64`) **ilk kullanımda indirilir** ve `%LOCALAPPDATA%/NooXCord/bin/` altına konur (yeniden dağıtım lisansı belirsiz olduğu için installer'a gömülmez; indirme imza/hash ile doğrulanır). Kurulum sırasında indirme seçeneği de sunulur.
-- **GitHub girişi (bir kez):** `devtunnel user login -g -d` (device code). Kod ve URL uygulama içinde gösterilir, tarayıcı açılır. Token'ı CLI kendisi saklar; durum `devtunnel user show` ile kontrol edilir. "Çıkış yap" butonu.
-- **Sabit URL:** İlk oluşturmada tünel ID'si üretilir ve saklanır (`nooxcord-<rastgele6>`):
-  ```bash
-  devtunnel create <id> --allow-anonymous      # public
-  devtunnel port create <id> -p <port> --protocol http
-  devtunnel host <id>
-  ```
-  URL biçimi: `https://<id>-<port>.<bölge>.devtunnels.ms` — aynı ID kullanıldığı sürece değişmez.
-- **"Yeni URL oluştur":** onay sonrası eski tünel `devtunnel delete <id>` ile silinir, yeni ID ile oluşturulur (eski bağlantılar geçersiz olur — UI uyarır).
-- **Aç/kapat:** anahtar `devtunnel host` alt sürecini başlatır/durdurur; çıktı parse edilerek durum ve URL gösterilir; çökme olursa artan aralıklarla yeniden dener.
-- Kalıcı tüneller uzun süre kullanılmazsa **süresi dolar** (Microsoft varsayılanı ~30 gün) → uygulama açılışında `devtunnel show` ile kontrol edilir, süresi dolmuşsa aynı ID ile yeniden oluşturmayı dener.
-- Anonim erişimde tarayıcı ilk girişte Microsoft'un **uyarı sayfasını** gösterir; istemcinin API/WS isteklerine `X-Tunnel-Skip-AntiPhishing-Page: true` başlığı eklenir. Kullanıcıya bu sayfa hakkında bilgi gösterilir.
-- Dev Tunnels'ın **kullanım/bant genişliği limitleri** vardır; yayın trafiği bunları hızla tüketebilir → ayarlarda uyarı ve tünel modunda varsayılan yayın kalitesi "Düşük".
-- Paylaş butonu: URL'yi kopyala + **QR kod** (telefondan hızlı giriş için).
-
-### 10.5 HTTPS gerekliliği
-Tarayıcılar mikrofon/ses için **güvenli bağlam (HTTPS)** ister. Dev Tunnel zaten HTTPS. LAN'dan **tarayıcı** ile giriş için host isteğe bağlı self-signed sertifika üretir (uyarı kabul edilmeli); masaüstü istemci için bu gerekmez.
+- Sunucu Render.com'da sabit HTTPS adresinde: port, güvenlik duvarı, Hamachi, tünel **yok** (kodları kaldırıldı; eski sürüm yedekte). Tarayıcılar mikrofon/kamera için HTTPS ister → Render adresi bunu karşılar.
+- Ayarlar → Bağlantı: bağlı sunucu, sürüm, WebSocket durumu ve telefonla açmak için QR kod.
+- P2P bağlantı kurulamazsa (simetrik NAT / mobil CGNAT) istemci kişi başına artan aralıkla yeniden dener ve ikinci denemede uyarır; kalıcı çözüm sunucuya TURN ortam değişkenleri (§2.3).
+- Render ücretsiz servis: 15 dk trafiksiz uyku (sesteyken WS ping'leri trafik sayılır), aylık trafik sınırı (yalnızca sohbet + sinyal + dosyalar geçer).
 
 ### 10.6 Davet bağlantısı
-`nooxcord://join?url=<host kökeni>&invite=<davet>` (eski biçim `h=&p=&code=` de okunur; protokol NSIS ile kayıtlı) + tünel için düz HTTPS URL. Masaüstü uygulaması bağlantıyla açılınca (ilk açılış veya `second-instance`) o host'a geçer; web istemcisinin giriş ekranında (PC tarayıcısı) **"Uygulamada aç"** bu bağlantıyı açar → tünele masaüstünden bağlanmak için harici tarayıcı gerekmez (sunucu seçicide tünel URL'si de yapıştırılabilir). Davet kodları süre/kullanım limitli.
+`nooxcord://join?url=<host kökeni>&invite=<davet>` (eski biçim `h=&p=&code=` de okunur; protokol NSIS ile kayıtlı) + düz HTTPS bağlantı (`<sunucu>/?invite=<kod>`). Masaüstü uygulaması bağlantıyla açılınca (ilk açılış veya `second-instance`) o host'a geçer; web istemcisinin giriş ekranında (PC tarayıcısı) **"Uygulamada aç"** bu bağlantıyı açar → tünele masaüstünden bağlanmak için harici tarayıcı gerekmez (sunucu seçicide tünel URL'si de yapıştırılabilir). Davet kodları süre/kullanım limitli.
 
 ---
 
@@ -430,8 +370,8 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 - Durum: çevrimiçi / boşta / rahatsız etmeyin / görünmez.
 - Özel mesaj (DM) — Faz 4.
 - Otomatik güncelleme: `electron-updater` + GitHub Releases.
-- Host veritabanı otomatik yedekleme (günlük, son 7) ve dışa/içe aktarma.
-- Loglar: `%APPDATA%/NooXCord/logs` (dönen dosyalar): `main.log` (ana süreç hataları), `host.log` (host süreci çıktısı: bağlanma/kopma, sese katılma + taşıma yolu, ICE/DTLS kopması, mediasoup çökmesi), "Hata raporu klasörünü aç" butonu.
+- Veritabanı yedekleri: Turso'nun kendi zaman içinde geri dönüşü (point-in-time); uygulama içi yedekleme kaldırıldı (ADR 0003).
+- Loglar: `%APPDATA%/NooXCord/logs` (dönen dosyalar): `main.log` (ana süreç hataları), sunucu çıktısı Render panelindeki loglarda (bağlanma/kopma, sese katılma, yayın, Turso yansıtma hataları), "Hata raporu klasörünü aç" butonu.
 - Erişilebilirlik: klavye ile gezinme, odak halkaları, ARIA etiketleri, yeterli kontrast.
 - Ses/yayın bağlantı istatistikleri paneli (ping, paket kaybı, bitrate, codec, taşıma yolu).
 
@@ -447,19 +387,18 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 | **3 — Ağ & Web** | Ayarlar → Bağlantı: port + canlı kontrol (IPv4/IPv6, kullanan süreç) + boş port öner + yeniden başlat ✅, LAN/Hamachi adresleri + Hamachi servis aç/kapa (UAC) ✅, tünel: Cloudflare Quick Tunnel + Dev Tunnels (indir+imza kontrolü, GitHub girişi, sabit URL, yenile, aç/kapat), kopyala/QR/Ctrl+Shift+L/bildirim ✅, misafir girişi + misafir şifresi + misafir kısıtları ✅, mobil arayüz (alt sekmeler) ✅, NXM-WS tünel modu (ses+mikrofon+yayın izleme, WebRTC başarısızsa otomatik geçiş) ✅, overlay özel tam ekran ipucu ✅, link önizleme DNS sabitleme + resim proxy ✅ | Tünel modunda sese katılma + 2 yayın izleme ✅ (`pnpm test:voice`, C kullanıcısı) · gerçek telefon + tünel testi ✅ (NooXRii, 2026-11-07) — **Faz 3 TAMAMLANDI** |
 | **4 — Kontrol & Cila** | Uzaktan kontrol (istek/kabul/her zaman/sağ tık ver, kırmızı çerçeve + rozet — yakalamadan hariç, panik kısayolu, yerel girdi 2 sn öncelik, Win tuşu engeli, pencere paylaşımında odak şartı, 10 dk boşta bitiş, host logu) ✅, DM (migration 2, `dm.open`, yalnızca ortak sunucudakiler) ✅, bildirimler (DM + @bahsetme, kanal/DM sessize alma, rahatsız etmeyin, görev çubuğu yanıp sönme) ✅, tepsi (sustur/sağırlaştır, kapatınca tepsiye, Windows ile başlat) ✅, auto-update (`electron-updater`, yalnızca kurulu uygulama) ✅, günlük DB yedeği (son 7, migration öncesi kopya, dışa/içe aktar, geri yükle) ✅, İngilizce + ana süreç metinleri i18n'de ✅. RNNoise → Faz 5 | Sunucu tarafı §7.3 kuralları test edildi ✅ (`pnpm test`, misafir/tarayıcı reddi, yalnızca kontrolcü girdisi, bırak/geri al/izlemeyi bırak/yayın bitti) · **gerçek iki PC'de SendInput + panik + çerçeve testi ⏳ kullanıcıda** |
 | **5 — Paketleme & Deneysel** | NSIS installer (kullanıcı başına, klasör seçimi, TR/EN, Windows < 19041 uyarısı, kaldırırken veri silme sorusu, `nooxcord://`) ✅, VC++ runtime uygulama yanında ✅, uygulama içi güvenlik duvarı kuralı ✅, lisans/üçüncü taraf bildirimleri ✅, README (SmartScreen) ✅ · imzalama ⏳ (sertifika yok), auto-update beslemesi (GitHub Releases) ✅, RNNoise + GTCRN ✅, opsiyonel exclusive fullscreen overlay hook ⏳ | Paketlenmiş uygulama `NX_SELFTEST=1` + `voice` (16) ✅ · **temiz Windows 10 VM'de setup → çalıştır ⏳ kullanıcıda** |
+| **6 — Render + Turso + P2P** (ADR 0003) | Sunucu tek bundle + `render.yaml` ✅, Turso yansıtma (yazma sırası, transaction grubu, açılışta kurulum, migration sonrası tam yükleme, cascade tetikleyicileri) ✅, dosyalar veritabanında ✅, mediasoup → P2P mesh (4 sabit transceiver, `rtc.signal`, `gen` ile yeniden kurma, STUN/TURN) ✅, masaüstünden yerel host/tünel/Hamachi/port/güvenlik duvarı/yedekleme kaldırıldı ✅, varsayılan sunucu (`VITE_NX_DEFAULT_HOST`) ✅ | `pnpm test` (23 + 18 + 6 + unfurl) ✅ · `pnpm test:voice` 29 ✅ · **Render + Turso kurulumu ve iki farklı ağdan gerçek P2P testi ⏳ kullanıcıda** |
 
 ---
 
 ## 14. Paketleme ve kurulum
 
-- `electron-builder` → **NSIS** `NooXCord-Setup-<sürüm>.exe` (x64). Kullanıcı başına kurulum (yönetici gerektirmez) varsayılan; firewall kuralı adımı UAC ister.
-- Pakete dahil (Faz 5'te yapıldı, `scripts/dist.mjs`): Electron/Node çalışma zamanı, `mediasoup-worker.exe`, `cloudflared.exe` (lisans metni `resources/licenses/` altında), `native` prebuilt `.node` dosyası (ASAR dışında, `asarUnpack`), web istemcisi build'i `resources/web/` (host da LAN/tünel tarayıcılarına buradan sunar), fontlar (Inter + Space Grotesk, OFL, paket içinde). Veritabanı/şifreleme yerleşik Node modülleriyle yapıldığı için başka native modül yok.
-- **Bağımlılık:** `mediasoup-worker.exe` ve native modül VC++ runtime ister. `vc_redist.x64.exe` yönetici istediği için kullanılmadı; `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` uygulama yanına (`NooXCord.exe` ve `mediasoup-worker.exe` klasörleri) konur (Microsoft'un izin verdiği app-local dağıtım). Windows sürümü < 10.0.19041 ise NSIS uyarır (`apps/desktop/build/installer.nsh`).
-- Paketlenmiş uygulamada mediasoup worker `app.asar.unpacked` altındadır; host süreci `MEDIASOUP_WORKER_BIN` ile başlatılır (`localHost.ts` `workerBin()`).
-- Opsiyonel kurulum adımı: "Dev Tunnel aracını şimdi indir".
+- `electron-builder` → **NSIS** `NooXCord-Setup-<sürüm>.exe` (x64). Kullanıcı başına kurulum (yönetici gerektirmez).
+- Pakete dahil (`scripts/dist.mjs`): Electron çalışma zamanı, `native` prebuilt `.node` dosyası (ASAR dışında, `asarUnpack`), web istemcisi build'i `resources/web/` (pencere `file://` ile açar), fontlar (Inter + Space Grotesk, OFL, paket içinde), lisans bildirimleri. Sunucu pakette **yok** (Render'da).
+- **Bağımlılık:** native modül VC++ runtime ister. `vc_redist.x64.exe` yönetici istediği için kullanılmadı; `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` `NooXCord.exe` yanına konur (Microsoft'un izin verdiği app-local dağıtım). Windows sürümü < 10.0.19041 ise NSIS uyarır (`apps/desktop/build/installer.nsh`).
 - Kaldırıcı: kullanıcı verisini (`%APPDATA%/NooXCord`) silmeyi **sorar**.
 - **Kod imzalama:** İmzasız exe Windows SmartScreen uyarısı verir. İmza sertifikası alınana kadar README'de "Yine de çalıştır" açıklaması bulunur.
-- Kullanıcı verisi: `%APPDATA%/NooXCord/` (config, sessions, logs) ve host verisi `%APPDATA%/NooXCord/host/` (db.sqlite, uploads, backups).
+- Kullanıcı verisi: `%APPDATA%/NooXCord/` (config, sessions, logs). Sunucu verisi Turso'da.
 
 ---
 
@@ -481,17 +420,19 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 Projeyi geliştirmek için **zorunlu harici MCP yok.** Önerilenler (hepsi ücretsiz):
 | MCP | Neden | Durum |
 |---|---|---|
-| **Context7** (`@upstash/context7-mcp`) | Electron, mediasoup, Fastify, devtunnel gibi hızlı değişen kütüphanelerin güncel dokümantasyonu | **Önerilir** |
+| **Context7** (`@upstash/context7-mcp`) | Electron, Fastify, libSQL/Turso, WebRTC gibi hızlı değişen kütüphanelerin güncel dokümantasyonu | **Önerilir** |
 | **Playwright MCP** (`@playwright/mcp`) | Web/mobil arayüzü tarayıcıda gerçek viewport'larla test etme | Opsiyonel (Claude Desktop'ın yerleşik tarayıcısı da yeterli olabilir) |
 | **GitHub MCP** | Release, issue yönetimi | Opsiyonel (`gh` CLI de yeterli) |
 
-Harici, ücretli bir servis (TURN sağlayıcı, bulut sunucu vb.) **kullanılmaz.**
+Harici **ücretli** servis kullanılmaz: Render (ücretsiz web servisi), Turso (ücretsiz katman) ve isteğe bağlı Cloudflare TURN (ücretsiz kota) kartsız/ücretsiz planlarda.
 
-Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_64-pc-windows-msvc`), Visual Studio Build Tools (C++ workload, mediasoup ve native derleme için), Python 3 (mediasoup worker derlemesi için), Git.
+Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_64-pc-windows-msvc`), Visual Studio Build Tools (C++ workload, native derleme için), Git.
 
 ---
 
 ## 17. Açık sorular / riskler
+
+> **ADR 0003 (2026-11-23) sonrası:** 1, 4, 5, 10, 12, 14, 16, 19, 23, 26, 27 ve 28'in tünel / Hamachi / mediasoup / yerel host kısımları geçersiz; tarihçe olarak duruyor. Yeni riskler 30–34.
 
 1. **Tünel üzerinden medya (NXM-WS)** — Faz 0'da iPhone dahil doğrulandı; kalan iş: ses tamponu kayma düzeltmesi, telefondan mikrofon gönderimi, Android testi.
 2. **Exclusive fullscreen overlay** anti-cheat riski taşır — deneysel ve opt-in kalacak.
@@ -521,3 +462,9 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 26. **2026-11-09 tünel sesi + arama süresi:** Tünel sesi worklet'ten doğrudan hoparlöre gider (MediaStream turu yok), mikrofon kendi bağlamında (`micContext`) yakalanır. Çalma tamponu kendini ayarlar (120 → en fazla 300 ms, 20 sn sakinlikte küçülür, fazlası atlanır); kesilme sayısı + tampon ses çubuğunda gösterilir (`audioDiag`). Host tünel izleyicisinin soket birikimini süreyle sınırlar (görüntü 0,4 sn, ses 1,2 sn, ölçülen hızla). Uzun izlemede (~10 dk) telefonda kırçıllanma yine de görüldü → büyük olasılıkla Cloudflare tüneli; açık. iPhone'da arka plandan dönünce izlenen yayınlar yeniden açılır (`rewatchAll`). Sesli kanalda arama süresi sayacı: host `VoiceState.callSince` (oda boşalıp 30 sn içinde dolarsa korunur).
 27. **2026-11-10 Hamachi kopmasının nedeni (host.log ile eşleşti):** her kopma, arkadaşın istemcisinin host'a ilk büyük WS mesajını (`media.consume` içindeki ~10 KB `rtpCapabilities`) gönderdiği anda başlıyor (ör. 14:07:10 host sese katıldı → 14:07:11 son paket → 15 sn sonra düşüş; yalnız başına sesteyken sorun yok, tünel/WS medyasında bu mesaj küçük olduğu için sorun yok). Hamachi bağdaştırıcısı MTU 1404; tam boy TCP parçaları host yönünde kayboluyor, TCP aynı parçayı yeniden gönderirken ping'ler de arkasında bekliyor. **Çözüm:** istemci 900 karakterden uzun çerçeveleri `~0…`/`~1…` parçalarına böler (`PART_SIZE`, `connection.ts` `sendText`; host `index.ts`'de birleştirir, `HostInfo.parts` ile duyurur → eski host'a parçalanmadan gider). Gerçek Hamachi'de arkadaşla doğrulanmadı ⏳. Kapsam dışı: Hamachi üzerinden HTTP dosya yüklemesi ve WS medyasında görüntü gönderimi yine tam boy parça kullanır (TCP kendi kendine toparlayabilir, yavaş olabilir). Aynı gün: gizli pencerede zamanlayıcı dakikada bire düşünce `stale-up` denetimi sağlam soketi her dakika kapatıp kullanıcıyı sesten düşürüyordu (`disconnected (4000)` satırları) → artık cevapsız ping'in yaşına bakılıyor; değiştirilen bağlantının geç gelen `closed` durumu yenisinin durumunu ezmiyor; bağlantı hazır olmadan açılan kanalın mesajları hazır olunca yükleniyor.
 28. **2026-11-21 host'un kendi yayını izleyicilerde donuyordu:** host'un istemcisi medyayı kendi makinesine gönderiyor (`25.x <-> 25.x`), yani yayıncı tarafında bant sınırı yok → hep tam bitrate; Hamachi'deki izleyiciye katman geçişinde gereken büyük anahtar kare kaybolunca görüntü kalıyordu (izleyici kendi yayınını açınca upload'u bitrate'i sınırladığı için donmuyordu). Kesin değil. Önlem: izleyicide donma bekçisi (`guardFreeze`, paket gelip kare çözülmüyorsa `media.keyFrame`, 3 denemeden sonra consumer'ı yeniden açar); host her izleyicinin aldığı katmanı (`[stream] X <- Y layer …`, `none (bandwidth)`) ve beklenmeyen RPC hatalarını (`[rpc] … failed`) `host.log`'a yazar. Gerçek Hamachi'de doğrulanmadı ⏳. Aynı gün: "Sistem varsayılanı" mikrofon seçiliyken Windows varsayılanı değişince (yeni mikrofon takıldı) mikrofon `devicechange` ile yeniden açılır (`followDefaultMic`).
+29. **2026-11-23 yayıncı NooXCord odakta değilken yayın donuyor, odaklanınca geliyor + boşta ~2 GB bellek:** kök neden kesin değil (arka plan kısıtlaması seste zaten kapalı, `media:setInCall`). Önlem: seste iken renderer, GPU süreci ve Chromium'un ekran yakalama / ses servisleri `ABOVE_NORMAL` öncelikte (`media.ts` `startCallBoost`, 15 sn'de bir yeniden uygulanır, sesten çıkınca `NORMAL`). Teşhis: yayın sırasında `main.log`'a `[share]` satırları (yakalama fps, katman başına kodlanan fps, kodlayıcı, `qualityLimitationReason`, anahtar kare isteği, odak/görünürlük; durum değişince veya dakikada bir; `STALLED` = tüm katmanlar < 2 fps) ve `[memory]` satırları (`services.ts` `startMemoryWatch`: 30 dk'da bir süreç türü başına özel bellek, her 512 MB eşiğinde tam döküm; mediasoup-worker dahil değil). Bir sonraki donma/şişmede bu satırlara bakılacak ⏳.
+30. **P2P mesh sınırı:** yayıncı her izleyici için ayrı kodlar ve gönderir (upload × izleyici). ~6 kişiden kalabalık ses veya 4'ten fazla izleyicili yayın zorlanır; gerekirse ileride bir SFU (ör. kendi PC'de isteğe bağlı) geri eklenebilir.
+31. **NAT:** simetrik NAT / mobil CGNAT'ta STUN yetmez → TURN gerekir (`CLOUDFLARE_TURN_*` veya `TURN_*`). Ayarlanmadıysa o kişiyle bağlantı "failed" kalır ve uyarı çıkar. Gerçek iki ağ testi ⏳.
+32. **Turso yansıtma:** yazmalar asenkron gider; sunucu çökerse son birkaç yüz ms kaybolabilir. Ağ hatasında artan aralıkla yeniden dener; SQL hatası veren grup atlanıp loglanır (yerel ile Turso ayrışabilir → bir sonraki açılışta Turso esas alınır). Turso'da NooXCord şeması olmayan dolu bir veritabanı reddedilir.
+33. **Render uykusu:** 15 dk trafiksiz kalınca uyur; ilk bağlanan ~1 dk bekler. Uyanırken yerel dosya Turso'dan yeniden kurulur (veri büyüdükçe açılış uzar; dosyalar dahil).
+34. **IP görünürlüğü:** P2P'de kanaldaki kişiler birbirinin IP adresini görür. İstenirse yalnızca TURN (`iceTransportPolicy: "relay"`) seçeneği eklenebilir.

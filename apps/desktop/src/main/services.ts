@@ -1,14 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
-import { isHostDb, listBackups, prune, restoreInto, snapshot, type BackupInfo } from "../../../../packages/server/src/backup";
-import * as localHost from "./localHost";
-import { s } from "./strings";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { markQuitting } from "./tray";
 
 /*
  * Background services of the desktop app (CLAUDE.md §12.3):
- *  - host database backups: list / now / export / import / restore (daily ones are made by the host)
  *  - auto-update with electron-updater (installed app only; the feed comes from electron-builder, Faz 5)
  *  - log folder (%APPDATA%/NooXCord/logs): main-process errors, rotated at 1 MB
  */
@@ -16,83 +12,26 @@ import { markQuitting } from "./tray";
 // ---------- logs ----------
 const logDir = () => path.join(app.getPath("userData"), "logs");
 
-export function initLogs(): void {
+function write(level: string, a: unknown[]): void {
   const file = path.join(logDir(), "main.log");
-  const write = (level: string, a: unknown[]) => {
-    try {
-      fs.mkdirSync(logDir(), { recursive: true });
-      if (fs.existsSync(file) && fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + ".1");
-      const text = a.map((x) => (x instanceof Error ? x.stack ?? x.message : typeof x === "string" ? x : JSON.stringify(x))).join(" ");
-      fs.appendFileSync(file, `${new Date().toISOString()} ${level} ${text}\n`);
-    } catch { /* never fail because of logging */ }
-  };
+  try {
+    fs.mkdirSync(logDir(), { recursive: true });
+    if (fs.existsSync(file) && fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + ".1");
+    const text = a.map((x) => (x instanceof Error ? x.stack ?? x.message : typeof x === "string" ? x : JSON.stringify(x))).join(" ");
+    fs.appendFileSync(file, `${new Date().toISOString()} ${level} ${text}\n`);
+  } catch { /* never fail because of logging */ }
+}
+
+/** Diagnostic line in main.log (stream health, memory use). */
+export function logInfo(text: string): void {
+  write("INFO", [text]);
+}
+
+export function initLogs(): void {
   process.on("uncaughtException", (e) => write("ERROR", [e]));
   process.on("unhandledRejection", (e) => write("ERROR", [e]));
   const origErr = console.error.bind(console);
   console.error = (...a: unknown[]) => { write("ERROR", a); origErr(...a); };
-}
-
-// ---------- backups ----------
-const backupsDir = () => path.join(localHost.hostDataDir(), "backups");
-const dbFile = () => path.join(localHost.hostDataDir(), "nooxcord.db");
-
-async function backupNow(tag?: string): Promise<BackupInfo> {
-  const viaHost = await localHost.requestBackup(tag);
-  if (viaHost) return viaHost;
-  if (!fs.existsSync(dbFile())) throw new Error(s("backup.none"));
-  const b = snapshot(dbFile(), backupsDir(), tag);
-  prune(backupsDir());
-  return b;
-}
-
-/** Stops the host, keeps a copy of the current data, swaps the database, starts the host again. */
-async function restoreFrom(file: string): Promise<void> {
-  if (!isHostDb(file)) throw new Error(s("backup.invalid"));
-  const st = localHost.status();
-  const port = st.running ? st.port : null;
-  if (fs.existsSync(dbFile())) await backupNow("prerestore");
-  // Copy first: restoring one of our own backups must survive the pruning above.
-  const tmp = path.join(app.getPath("temp"), `nooxcord-restore-${Date.now()}.db`);
-  fs.copyFileSync(file, tmp);
-  try {
-    if (port) await localHost.stop();
-    restoreInto(dbFile(), tmp);
-  } finally {
-    fs.rmSync(tmp, { force: true });
-    if (port) await localHost.start(port);
-  }
-}
-
-function registerBackupIpc(win: () => BrowserWindow | null): void {
-  ipcMain.handle("backup:list", () => listBackups(backupsDir()));
-  ipcMain.handle("backup:now", () => backupNow());
-  ipcMain.handle("backup:openFolder", () => {
-    fs.mkdirSync(backupsDir(), { recursive: true });
-    return shell.openPath(backupsDir());
-  });
-  ipcMain.handle("backup:restore", (_e, name: unknown) => {
-    const b = listBackups(backupsDir()).find((x) => x.name === name);
-    if (!b) throw new Error(s("backup.invalid"));
-    return restoreFrom(path.join(backupsDir(), b.name));
-  });
-  ipcMain.handle("backup:export", async () => {
-    const w = win();
-    const opts = { title: s("main.backup.dialogExport"), defaultPath: `nooxcord-backup-${new Date().toISOString().slice(0, 10)}.db`, filters: [{ name: s("main.backup.filter"), extensions: ["db"] }] };
-    const r = w ? await dialog.showSaveDialog(w, opts) : await dialog.showSaveDialog(opts);
-    if (r.canceled || !r.filePath) return false;
-    const b = await backupNow();
-    fs.copyFileSync(path.join(backupsDir(), b.name), r.filePath);
-    return true;
-  });
-  ipcMain.handle("backup:import", async () => {
-    const w = win();
-    const opts = { title: s("main.backup.dialogImport"), properties: ["openFile" as const], filters: [{ name: s("main.backup.filter"), extensions: ["db", "sqlite"] }] };
-    const r = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts);
-    const file = r.filePaths[0];
-    if (r.canceled || !file) return false;
-    await restoreFrom(file);
-    return true;
-  });
 }
 
 // ---------- updates ----------
@@ -156,11 +95,44 @@ function registerUpdateIpc(): void {
   }
 }
 
-export function registerServices(win: () => BrowserWindow | null): void {
-  registerBackupIpc(win);
+export function registerServices(): void {
   registerUpdateIpc();
   ipcMain.handle("app:openLogs", () => {
     fs.mkdirSync(logDir(), { recursive: true });
     return shell.openPath(logDir());
   });
+  if (!process.env.NX_SELFTEST) startMemoryWatch();
+}
+
+// ---------- memory ----------
+/*
+ * Memory per Chromium process (renderer, GPU, host utility process...), sampled every 5 min:
+ * a short line every 30 min, the full breakdown whenever the total passes another 512 MB.
+ * mediasoup-worker.exe (a child of the host process) is not in getAppMetrics.
+ */
+function startMemoryWatch(): void {
+  let lastLine = 0;
+  let level = 1; // 512 MB steps already reported
+  const sample = () => {
+    const ms = app.getAppMetrics();
+    const mb = (kb: number | undefined) => Math.round((kb ?? 0) / 1024);
+    const rows = ms.map((m) => ({ what: m.serviceName ?? m.name ?? m.type, type: m.type, priv: mb(m.memory.privateBytes), ws: mb(m.memory.workingSetSize) }));
+    const total = rows.reduce((a, r) => a + r.priv, 0);
+    const now = Date.now();
+    const step = Math.floor(total / 512);
+    if (step > level) {
+      level = step;
+      rows.sort((a, b) => b.priv - a.priv);
+      logInfo(`[memory] total ${total} MB private: ${rows.map((r) => `${r.type}${r.what !== r.type ? `(${r.what})` : ""} ${r.priv}/${r.ws}`).join(", ")}`);
+      lastLine = now;
+    } else if (now - lastLine >= 30 * 60_000) {
+      const byType = new Map<string, number>();
+      for (const r of rows) byType.set(r.type, (byType.get(r.type) ?? 0) + r.priv);
+      logInfo(`[memory] total ${total} MB private (${[...byType].map(([k, v]) => `${k} ${v}`).join(", ")})`);
+      lastLine = now;
+    }
+    if (step < level - 1) level = Math.max(1, step); // dropped back: report the next climb again
+  };
+  setTimeout(sample, 60_000).unref();
+  setInterval(sample, 5 * 60_000).unref();
 }

@@ -1,31 +1,28 @@
-import type { Device, types as msc } from "mediasoup-client";
 import { denoise, type Denoised } from "./denoise";
 import { remote, useRemote } from "./remote";
 import { create } from "zustand";
-import { STREAM_PRESETS, type EventName, type Events, type MediaSource, type RemoteProducer, type StreamInfo, type StreamPreset, type TransportParams } from "@nooxcord/shared";
+import { STREAM_PRESETS, type EventName, type Events, type IceServer, type MediaSource, type StreamPreset, type VoiceState } from "@nooxcord/shared";
 import type { HostConnection } from "../net/connection";
 import { platform } from "../platform";
 import { useStore } from "../state/store";
 import { VadGate, audioContext, idleMicContext, meter, micContext, type LevelMeter } from "./level";
 import { pcmTrack, type PcmTrack } from "./pcm";
 import { voiceSettings, useVoiceSettings, type StreamCodec } from "./settings";
-import { WsMedia, wsMediaSupported, type WsAudio } from "./wsMedia";
 import { t } from "../i18n";
 import { startBackgroundCall, stopBackgroundCall } from "./background";
 
 /*
- * Voice & stream engine (mediasoup-client). Owns the WebRTC transports, the microphone, the outgoing
- * screen share and every consumer. React reads its state through useVoice().
+ * Voice & stream engine, peer to peer (ADR 0003). Everyone in a voice channel has one
+ * RTCPeerConnection to everyone else; the host only relays the offer / answer / ICE candidates
+ * ("rtc.signal"). Each connection carries four fixed transceivers in this order:
+ *   0 microphone · 1 camera · 2 screen · 3 screen audio
+ * Tracks are switched with replaceTrack, so a connection is negotiated once. A screen goes only to
+ * the people watching it (my StreamInfo.viewers). The smaller user id makes the offer; a new offer
+ * (another "gen") replaces the whole connection, which is also how a failed one is rebuilt.
  */
 
 export type VoiceStatus = "idle" | "connecting" | "connected" | "reconnecting";
-/** rtc = WebRTC (LAN / Hamachi / open port); ws = tunnel mode over WebSocket (higher latency). */
-export type VoiceTransport = "rtc" | "ws";
-
-/** Hosts reached through a tunnel can only carry WebSocket media. */
-const isTunnelHost = (base: string): boolean => {
-  try { return /\.(trycloudflare\.com|devtunnels\.ms)$/i.test(new URL(base).hostname); } catch { return false; }
-};
+export type LinkState = "connecting" | "connected" | "failed";
 
 export interface WatchedStream {
   stream: MediaStream; // video + optional stream audio
@@ -59,13 +56,12 @@ interface VoiceUi {
   sharing: { width: number; height: number; fps: number; audio: boolean; preset: StreamPreset; codec?: string } | null;
   watching: Record<string, WatchedStream | null>; // userId -> stream (null while connecting)
   focus: string | null;
-  transport: VoiceTransport | null;
   /** My camera, while it is on. */
   camera: { facing: "user" | "environment"; canFlip: boolean } | null;
   /** Other people's cameras (userId -> video). */
   cams: Record<string, MediaStream>;
-  /** Tunnel mode: audio dropouts so far and the playback buffer size (diagnostics, shown in the voice bar). */
-  audioDiag: { dropouts: number; holdMs: number } | null;
+  /** Direct connection to each other person in the channel. */
+  links: Record<string, LinkState>;
 }
 
 export const useVoice = create<VoiceUi>()(() => ({
@@ -80,47 +76,54 @@ export const useVoice = create<VoiceUi>()(() => ({
   sharing: null,
   watching: {},
   focus: null,
-  transport: null,
   camera: null,
   cams: {},
-  audioDiag: null,
+  links: {},
 }));
 
 const setV = (p: Partial<VoiceUi> | ((s: VoiceUi) => Partial<VoiceUi>)) => useVoice.setState(p);
 
-interface ConsumerEntry {
-  id: string;
-  producerId: string;
+const MIC = 0, CAM = 1, SCREEN = 2, SCREEN_AUDIO = 3;
+const KINDS = ["audio", "video", "video", "audio"] as const;
+
+interface Link {
   userId: string;
-  source: MediaSource;
-  track: MediaStreamTrack | null;
-  close(): void;
-  audioEl?: HTMLAudioElement;
-  wsAudio?: WsAudio;
+  offerer: boolean;
+  gen: number;
+  pc: RTCPeerConnection;
+  /** [mic, camera, screen, screen audio] once known (offerer: at once; answerer: after the offer). */
+  tx: RTCRtpTransceiver[];
+  /** Remote description set: candidates can be added. */
+  ready: boolean;
+  pending: RTCIceCandidateInit[];
+  /** My candidates found before my offer went out (the other side must get the offer first). */
+  outbox: RTCIceCandidateInit[] | null;
+  audioEl: HTMLAudioElement | null;
+  sendsScreen: boolean;
+  lostTimer: ReturnType<typeof setTimeout> | null;
 }
+
+type Signal = Events["rtc.signal"];
 
 class VoiceEngine {
   private conn: HostConnection | null = null;
   private offConn: (() => void) | null = null;
-  private device: Device | null = null;
-  private send: msc.Transport | null = null;
-  private recv: msc.Transport | null = null;
   private seq = 0;
-  private mode: VoiceTransport = "rtc";
-  private wsm: WsMedia | null = null;
-  /** Always use tunnel mode (tests). */
-  private forceWs = false;
-  /** WebRTC failed during this call: stay on tunnel mode until the user joins again. */
-  private fallbackWs = false;
-  private micWsId: string | null = null;
   private errRejoinAt = 0;
-  /** When the current WebRTC session started, and how many times the socket died soon after one. */
-  private rtcSince = 0;
-  private rtcDrops = 0;
+
+  /** voice.join answered: links can be made. Signals that arrive earlier wait in `early`. */
+  private joined = false;
+  private early: Signal[] = [];
+  private iceServers: IceServer[] = [];
+  private myState: VoiceState | null = null;
+  /** Everyone else in my channel. */
+  private states = new Map<string, VoiceState>();
+  private links = new Map<string, Link>();
+  private retries = new Map<string, number>();
+  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   private micStream: MediaStream | null = null;
   private micSendTrack: MediaStreamTrack | null = null;
-  private micProducer: msc.Producer | null = null;
   private micMeter: LevelMeter | null = null;
   private denoised: Denoised | null = null;
   private gate = new VadGate();
@@ -129,24 +132,12 @@ class VoiceEngine {
   private offHotkeys: (() => void) | null = null;
 
   private screenStream: MediaStream | null = null;
-  private screenProducer: msc.Producer | null = null;
-  private screenAudioProducer: msc.Producer | null = null;
-  /** H.264 copy of an AV1/VP9 stream, while the host says a viewer needs it (StreamInfo.compat). */
-  private compatProducer: msc.Producer | null = null;
-  private wantCompat = false;
-  private compatBusy = false;
   private sysAudio: PcmTrack | null = null;
   private shareOpts: ShareOptions | null = null;
-  /** Tunnel mode: id of the screen producer the host made for our WebCodecs frames. */
-  private screenWsId: string | null = null;
+  private shareHealth: ReturnType<typeof setInterval> | null = null;
 
   private camStream: MediaStream | null = null;
-  private camProducer: msc.Producer | null = null;
-  private camWsId: string | null = null;
   private camFacing: "user" | "environment" = "user";
-
-  private consumers = new Map<string, ConsumerEntry>();
-  private producers = new Map<string, RemoteProducer>();
 
   // ---------- lifecycle ----------
 
@@ -166,17 +157,14 @@ class VoiceEngine {
       refreshVideo: () => void this.rewatchAll(),
     });
     const seq = ++this.seq;
-    // A new join tries WebRTC again: an earlier failure (a dropped connection) must not pin tunnel mode forever.
-    this.fallbackWs = false;
-    this.rtcDrops = 0;
     if (useVoice.getState().channelId) await this.teardown(true);
-    setV({ status: "connecting", guildId, channelId, watching: {}, focus: null, sharing: null, audioDiag: null });
+    setV({ status: "connecting", guildId, channelId, watching: {}, focus: null, sharing: null, links: {} });
     this.bindConn(conn);
     try {
       await this.connect(conn, channelId, seq);
       await micPromise;
       if (seq !== this.seq) return;
-      await this.produceMic();
+      this.applyMic();
     } catch (e) {
       if (seq !== this.seq) return;
       await this.teardown(true);
@@ -197,116 +185,56 @@ class VoiceEngine {
     remote.bind(conn);
   }
 
-  /** Signalling + transports; producers/consumers are (re)created afterwards. */
+  /** Joins on the host, then connects to everyone already there. */
   private async connect(conn: HostConnection, channelId: string, seq: number): Promise<void> {
     const { muted, deafened } = useVoice.getState();
-    const base = useStore.getState().http?.base ?? location.origin;
-    const mode: VoiceTransport = wsMediaSupported() && (this.forceWs || this.fallbackWs || isTunnelHost(base)) ? "ws" : "rtc";
-    const res = await conn.call("voice.join", { channelId, muted, deafened, transport: mode });
+    this.joined = false;
+    this.early = [];
+    const res = await conn.call("voice.join", { channelId, muted, deafened });
     if (seq !== this.seq) {
       conn.call("voice.leave", {}).catch(() => {});
       return;
     }
-    this.mode = mode;
-    this.producers.clear();
-    for (const p of res.producers) this.producers.set(p.id, p);
-    if (mode === "ws") {
-      const wsm = new WsMedia(base.replace(/^http/, "ws") + "/media", res.wsTicket ?? "", () => {
-        const v = useVoice.getState();
-        if (seq === this.seq && v.guildId && v.channelId) void this.rejoin(v.guildId, v.channelId);
-      });
-      wsm.onAudioDiag = (d) => { if (this.wsm === wsm) setV({ audioDiag: d }); };
-      await wsm.open();
-      if (seq !== this.seq) return wsm.close();
-      this.wsm = wsm;
-      setV({ status: "connected", transport: "ws" });
-      platform.media?.setInCall(true).catch(() => {});
-      await Promise.all(res.producers.filter((p) => autoConsumed(p.source)).map((p) => this.consume(p).catch(() => {})));
-      return;
-    }
-    // mediasoup-client is loaded on the first join (keeps the chat bundle small).
-    const { Device: DeviceCtor } = await import("mediasoup-client");
-    const device = new DeviceCtor();
-    await device.load({ routerRtpCapabilities: res.rtpCapabilities as msc.RtpCapabilities });
-    this.device = device;
-    this.send = device.createSendTransport(this.transportOptions(res.send!));
-    this.recv = device.createRecvTransport(this.transportOptions(res.recv!));
-    for (const tr of [this.send, this.recv]) {
-      const transport = tr;
-      transport.on("connect", ({ dtlsParameters }, ok, fail) => {
-        conn.call("media.connect", { transportId: transport.id, dtlsParameters: dtlsParameters as unknown as Record<string, unknown> }).then(() => ok(), fail);
-      });
-      transport.on("connectionstatechange", (st) => {
-        if (st !== "failed" || seq !== this.seq) return;
-        const v = useVoice.getState();
-        if (wsMediaSupported() && !this.forceWs && !this.fallbackWs && v.guildId && v.channelId) {
-          // UDP/TCP media port unreachable: fall back to WebSocket media through the main port.
-          this.fallbackWs = true;
-          useStore.getState().toast(t("err.voiceFallbackWs"), "info");
-          void this.rejoin(v.guildId, v.channelId);
-          return;
-        }
-        useStore.getState().toast(t("err.voiceMediaPort"), "error");
-        void this.leave();
-      });
-    }
-    this.send.on("produce", ({ kind, rtpParameters, appData }, ok, fail) => {
-      conn
-        .call("media.produce", { transportId: this.send!.id, kind, rtpParameters: rtpParameters as unknown as Record<string, unknown>, source: (appData as { source: MediaSource }).source })
-        .then(({ id }) => ok({ id }), fail);
-    });
-    setV({ status: "connected", transport: "rtc" });
-    this.rtcSince = Date.now();
+    this.iceServers = res.iceServers;
+    this.myState = res.state;
+    this.states.clear();
+    for (const p of res.peers) this.states.set(p.userId, p);
+    this.joined = true;
+    setV({ status: "connected", links: Object.fromEntries(res.peers.map((p) => [p.userId, "connecting" as LinkState])) });
     platform.media?.setInCall(true).catch(() => {});
-    await Promise.all(res.producers.filter((p) => autoConsumed(p.source)).map((p) => this.consume(p).catch(() => {})));
-  }
-
-  private transportOptions(p: TransportParams): msc.TransportOptions {
-    return {
-      id: p.id,
-      iceParameters: p.iceParameters as msc.IceParameters,
-      iceCandidates: p.iceCandidates as msc.IceCandidate[],
-      dtlsParameters: p.dtlsParameters as msc.DtlsParameters,
-      sctpParameters: p.sctpParameters as msc.SctpParameters | undefined,
-      iceServers: [],
-    };
+    for (const p of res.peers) this.meet(p.userId);
+    const early = this.early;
+    this.early = [];
+    for (const d of early) void this.onSignal(d);
   }
 
   /** Close everything local; tell the server unless the session is already gone. */
   private async teardown(notifyServer: boolean): Promise<void> {
     const wasIn = !!useVoice.getState().channelId;
     if (notifyServer && wasIn) await this.conn?.call("voice.leave", {}).catch(() => {});
-    this.closeTransports();
+    this.closeLinks();
     this.stopScreenLocal();
     this.stopCameraLocal();
     this.closeMic();
+    this.myState = null;
     // Out of voice for good (not a channel switch): the mic context's audio thread can sleep.
     setTimeout(() => {
       if (useVoice.getState().channelId) return;
       if (!this.micStream) idleMicContext();
       stopBackgroundCall();
     }, 1000);
-    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, transport: null, camera: null, cams: {}, audioDiag: null });
+    setV({ status: "idle", guildId: null, channelId: null, watching: {}, focus: null, sharing: null, selfSpeaking: false, camera: null, cams: {}, links: {} });
     platform.media?.setInCall(false).catch(() => {});
   }
 
-  private closeTransports() {
-    for (const c of this.consumers.values()) this.dropConsumer(c);
-    this.consumers.clear();
-    this.producers.clear();
-    this.micProducer = null;
-    this.screenProducer = null;
-    this.screenAudioProducer = null;
-    this.camProducer = null;
-    this.camWsId = null;
-    this.screenWsId = null;
-    this.send?.close();
-    this.recv?.close();
-    this.send = this.recv = null;
-    this.device = null;
-    this.wsm?.close();
-    this.wsm = null;
-    this.micWsId = null;
+  private closeLinks() {
+    for (const id of [...this.links.keys()]) this.closeLink(id);
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
+    this.retries.clear();
+    this.states.clear();
+    this.joined = false;
+    this.early = [];
   }
 
   // ---------- server events ----------
@@ -316,37 +244,15 @@ class VoiceEngine {
     switch (e) {
       case "ready": {
         // Socket reconnected: the old session died with the old socket. Rejoin.
-        if (v.channelId && v.guildId) {
-          // Seen over Hamachi: the connection stalls ~15 s after WebRTC media starts, again and again
-          // (host.log, 2026-11-07/08). The first such drop already moves this call off WebRTC: to the
-          // host's tunnel when one is open (desktop app), else media over this same WebSocket.
-          if (this.mode === "rtc" && this.rtcSince && Date.now() - this.rtcSince < 60_000) this.rtcDrops++;
-          this.rtcSince = 0;
-          if (this.rtcDrops >= 1 && !this.fallbackWs) {
-            this.fallbackWs = true;
-            const st = useStore.getState();
-            const tunnelUrl = st.hostInfo?.tunnelUrl ?? null;
-            if (tunnelUrl && platform.kind === "desktop" && st.hostUrl && !sameOrigin(st.hostUrl, tunnelUrl)) {
-              st.toast(t("err.voiceUnstableMoved"), "info");
-              void switchToTunnel(tunnelUrl).catch(() => {
-                st.toast(t("tunnelSwitch.failed"), "error");
-                void this.rejoin(v.guildId!, v.channelId!);
-              });
-              break;
-            }
-            if (wsMediaSupported()) st.toast(t("err.voiceUnstable"), "info");
-          }
-          void this.rejoin(v.guildId, v.channelId);
-        }
+        if (v.channelId && v.guildId) void this.rejoin(v.channelId);
         break;
       }
       case "voice.ended": {
         if (!v.channelId) break;
         const { reason } = raw as Events["voice.ended"];
-        if (reason === "error" && v.guildId && Date.now() - this.errRejoinAt > 10_000) {
+        if (reason === "error" && Date.now() - this.errRejoinAt > 10_000) {
           this.errRejoinAt = Date.now();
-          // The host's media server restarted: our session is gone, join again.
-          void this.rejoin(v.guildId, v.channelId);
+          void this.rejoin(v.channelId);
           break;
         }
         this.seq++;
@@ -354,61 +260,62 @@ class VoiceEngine {
         useStore.getState().toast(reason === "replaced" ? t("err.voiceReplaced") : t("err.voiceRemoved"), "info");
         break;
       }
-      case "media.producer": {
-        const p = raw as Events["media.producer"];
-        if (p.channelId !== v.channelId) break;
-        this.producers.set(p.id, p);
-        if (autoConsumed(p.source) || p.userId in v.watching) void this.consume(p).catch(() => {});
-        break;
-      }
-      case "media.producerClosed": {
-        this.producers.delete((raw as Events["media.producerClosed"]).producerId);
-        break;
-      }
-      case "media.producerPaused": {
-        const d = raw as Events["media.producerPaused"];
-        const p = this.producers.get(d.producerId);
-        if (p) p.paused = d.paused;
-        break;
-      }
-      case "media.consumerClosed": {
-        const c = this.consumers.get((raw as Events["media.consumerClosed"]).consumerId);
-        if (c) {
-          this.consumers.delete(c.id);
-          this.dropConsumer(c);
-        }
+      case "rtc.signal": {
+        if (v.channelId) void this.onSignal(raw as Signal);
         break;
       }
       case "voice.state": {
-        // A stream I was watching ended.
         const s = raw as Events["voice.state"];
-        if (s.channelId === v.channelId && !s.stream && s.userId in v.watching) this.forgetWatch(s.userId);
-        if (s.channelId === v.channelId && s.userId === useStore.getState().me?.id) this.syncCompat(s.stream);
+        if (!v.channelId || !this.joined) break;
+        if (s.userId === useStore.getState().me?.id) {
+          if (s.channelId !== v.channelId) break;
+          this.myState = s;
+          this.syncScreenSenders();
+          break;
+        }
+        if (s.channelId !== v.channelId) {
+          if (this.states.has(s.userId)) this.dropPeer(s.userId); // moved to another channel
+          break;
+        }
+        const old = this.states.get(s.userId);
+        this.states.set(s.userId, s);
+        if (!old || old.joinedAt !== s.joinedAt) {
+          // Joined (or rejoined after a dropped socket): a fresh connection.
+          setV((x) => ({ links: { ...x.links, [s.userId]: "connecting" } }));
+          this.meet(s.userId, true);
+          break;
+        }
+        this.syncCam(s.userId);
+        this.applyDeafen();
+        if (s.userId in v.watching) {
+          if (!s.stream) this.forgetWatch(s.userId); // the stream I watched ended
+          else this.refreshWatch(s.userId);
+        }
         break;
       }
       case "voice.leave": {
         const d = raw as Events["voice.leave"];
-        if (d.userId in v.watching) this.forgetWatch(d.userId);
+        if (this.states.has(d.userId)) this.dropPeer(d.userId);
         break;
       }
     }
   }
 
-  private async rejoin(guildId: string, channelId: string) {
+  private async rejoin(channelId: string) {
     const conn = this.conn;
     if (!conn) return;
     const watching = Object.keys(useVoice.getState().watching);
-    const share = this.shareOpts && this.screenStream ? this.shareOpts : null;
+    const share = this.screenStream && this.shareOpts ? this.shareOpts : null;
     const cam = !!this.camStream;
     const seq = ++this.seq;
     setV({ status: "reconnecting" });
-    this.closeTransports();
+    this.closeLinks();
     try {
       await this.connect(conn, channelId, seq);
       if (seq !== this.seq) return;
-      await this.produceMic();
-      if (share) await this.publishScreen(share).catch(() => this.stopScreenLocal());
-      if (cam) await this.publishCamera().catch(() => this.stopCameraLocal());
+      this.applyMic();
+      if (share) await this.announceStream(share.preset).catch(() => this.stopScreenLocal());
+      if (cam) await conn.call("voice.update", { camera: true }).catch(() => this.stopCameraLocal());
       for (const uid of watching) await this.watch(uid).catch(() => this.forgetWatch(uid));
     } catch {
       if (seq === this.seq) {
@@ -416,7 +323,228 @@ class VoiceEngine {
         useStore.getState().toast(t("err.voiceRejoin"), "error");
       }
     }
-    void guildId;
+  }
+
+  // ---------- peer connections ----------
+
+  private isOfferer(userId: string): boolean {
+    const me = useStore.getState().me?.id ?? "";
+    return me < userId;
+  }
+
+  /** Someone is (newly) in the channel with me: the offerer connects, the other side waits for the offer. */
+  private meet(userId: string, fresh = false) {
+    if (this.isOfferer(userId)) void this.offer(userId);
+    else if (fresh) this.closeLink(userId); // their old connection died with their old session
+  }
+
+  private makeLink(userId: string, offerer: boolean, gen: number): Link {
+    this.closeLink(userId);
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers as RTCIceServer[], bundlePolicy: "max-bundle" });
+    const link: Link = { userId, offerer, gen, pc, tx: [], ready: false, pending: [], outbox: offerer ? [] : null, audioEl: null, sendsScreen: false, lostTimer: null };
+    pc.onicecandidate = (e) => {
+      if (this.links.get(userId) !== link || !e.candidate) return;
+      const c: RTCIceCandidateInit = { candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex };
+      if (link.outbox) link.outbox.push(c);
+      else this.signal(userId, gen, { candidate: c });
+    };
+    pc.onconnectionstatechange = () => this.onLinkState(link);
+    this.links.set(userId, link);
+    if (offerer) {
+      for (const kind of KINDS) pc.addTransceiver(kind, { direction: "sendrecv" });
+      link.tx = pc.getTransceivers();
+      this.prepare(link);
+    }
+    return link;
+  }
+
+  private closeLink(userId: string) {
+    const link = this.links.get(userId);
+    if (!link) return;
+    this.links.delete(userId);
+    if (link.lostTimer) clearTimeout(link.lostTimer);
+    if (link.audioEl) {
+      link.audioEl.pause();
+      link.audioEl.srcObject = null;
+    }
+    link.pc.onicecandidate = null;
+    link.pc.onconnectionstatechange = null;
+    link.pc.close();
+  }
+
+  /** Someone left the channel. */
+  private dropPeer(userId: string) {
+    this.states.delete(userId);
+    this.closeLink(userId);
+    const timer = this.retryTimers.get(userId);
+    if (timer) clearTimeout(timer);
+    this.retryTimers.delete(userId);
+    this.retries.delete(userId);
+    if (userId in useVoice.getState().watching) this.forgetWatch(userId);
+    setV((s) => {
+      const cams = { ...s.cams };
+      const links = { ...s.links };
+      delete cams[userId];
+      delete links[userId];
+      return { cams, links };
+    });
+  }
+
+  private signal(to: string, gen: number, d: { description?: { type: "offer" | "answer"; sdp: string }; candidate?: RTCIceCandidateInit | null }) {
+    this.conn?.call("rtc.signal", { to, gen, ...d } as never).catch((e: Error) => console.warn("[voice] signal failed", e.message));
+  }
+
+  private async offer(userId: string): Promise<void> {
+    const timer = this.retryTimers.get(userId);
+    if (timer) clearTimeout(timer);
+    this.retryTimers.delete(userId);
+    const gen = Math.floor(Math.random() * 1e9);
+    const link = this.makeLink(userId, true, gen);
+    try {
+      const offer = await link.pc.createOffer();
+      if (this.links.get(userId) !== link) return;
+      const sdp = tuneOpus(offer.sdp ?? "");
+      await link.pc.setLocalDescription({ type: "offer", sdp });
+      this.signal(userId, gen, { description: { type: "offer", sdp } });
+      const early = link.outbox ?? [];
+      link.outbox = null;
+      for (const c of early) this.signal(userId, gen, { candidate: c });
+    } catch (e) {
+      console.warn("[voice] offer failed", e);
+      this.linkFailed(link);
+    }
+  }
+
+  private async onSignal(d: Signal): Promise<void> {
+    if (!this.joined) {
+      this.early.push(d);
+      return;
+    }
+    let link = this.links.get(d.from);
+    try {
+      if (d.description?.type === "offer") {
+        if (link && link.gen === d.gen) return; // already handled
+        link = this.makeLink(d.from, false, d.gen);
+        await link.pc.setRemoteDescription(d.description);
+        if (this.links.get(d.from) !== link) return;
+        link.tx = link.pc.getTransceivers();
+        this.prepare(link);
+        await this.flushCandidates(link);
+        const answer = await link.pc.createAnswer();
+        if (this.links.get(d.from) !== link) return;
+        const sdp = tuneOpus(answer.sdp ?? "");
+        await link.pc.setLocalDescription({ type: "answer", sdp });
+        this.signal(d.from, d.gen, { description: { type: "answer", sdp } });
+        this.tune(link);
+        return;
+      }
+      if (!link || link.gen !== d.gen) return; // an older connection's leftovers
+      if (d.description?.type === "answer") {
+        if (!link.offerer || link.ready) return;
+        await link.pc.setRemoteDescription(d.description);
+        await this.flushCandidates(link);
+        this.tune(link);
+        return;
+      }
+      if (d.candidate) {
+        if (link.ready) await link.pc.addIceCandidate(d.candidate).catch(() => {});
+        else link.pending.push(d.candidate);
+      }
+    } catch (e) {
+      console.warn("[voice] signalling with", d.from, "failed", e);
+      if (link && this.links.get(d.from) === link) this.linkFailed(link);
+    }
+  }
+
+  private async flushCandidates(link: Link) {
+    link.ready = true;
+    const list = link.pending;
+    link.pending = [];
+    for (const c of list) await link.pc.addIceCandidate(c).catch(() => {});
+  }
+
+  /** Transceivers known: directions, codecs, my current tracks, and playback of theirs. */
+  private prepare(link: Link) {
+    const [mic, cam, screen, screenAudio] = link.tx;
+    if (!mic || !cam || !screen || !screenAudio) return;
+    for (const tr of link.tx) tr.direction = "sendrecv";
+    prefer(cam, ["video/h264", "video/vp8"]);
+    prefer(screen, screenCodecOrder(voiceSettings().streamCodec));
+    void mic.sender.replaceTrack(this.micSendTrack).catch(() => {});
+    void cam.sender.replaceTrack(this.camStream?.getVideoTracks()[0] ?? null).catch(() => {});
+    link.sendsScreen = false;
+    this.syncScreenSenders();
+    // Their side: voice, camera, the stream when I watch it.
+    holdJitter(mic.receiver, 80);
+    holdJitter(screenAudio.receiver, 120);
+    const el = new Audio();
+    el.autoplay = true;
+    el.srcObject = new MediaStream([mic.receiver.track]);
+    el.volume = Math.min(1, voiceSettings().volumes[link.userId] ?? 1);
+    const sink = voiceSettings().outputDeviceId;
+    const withSink = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+    if (sink && withSink.setSinkId) void withSink.setSinkId(sink).catch(() => {});
+    link.audioEl = el;
+    this.applyDeafen();
+    void el.play().catch(() => {});
+    this.syncCam(link.userId);
+    if (link.userId in useVoice.getState().watching) this.refreshWatch(link.userId);
+  }
+
+  /** Sending limits once negotiated (the encodings exist only then). */
+  private tune(link: Link) {
+    const [mic, cam, screen, screenAudio] = link.tx;
+    // Voice first when the uplink is busy (a stream or a game download).
+    void setEncoding(mic?.sender, { priority: "high", networkPriority: "high" });
+    void setEncoding(cam?.sender, { maxBitrate: 600_000, maxFramerate: 24 });
+    void setEncoding(screenAudio?.sender, { priority: "high", networkPriority: "high", maxBitrate: 128_000 });
+    if (link.sendsScreen) void this.tuneScreen(screen?.sender);
+  }
+
+  private async tuneScreen(sender: RTCRtpSender | undefined) {
+    const opts = this.shareOpts;
+    if (!sender || !opts) return;
+    const preset = STREAM_PRESETS[opts.preset];
+    const fps = this.sharingFps();
+    await setEncoding(sender, { maxBitrate: preset.bitrate, maxFramerate: fps }, opts.contentHint === "detail" ? "maintain-resolution" : "maintain-framerate");
+  }
+
+  private sharingFps(): number {
+    const opts = this.shareOpts;
+    if (!opts) return 30;
+    const preset = STREAM_PRESETS[opts.preset];
+    return opts.preset === "source" ? Math.min(opts.sourceSize?.refreshRate ?? 60, 120) : preset.fps;
+  }
+
+  private onLinkState(link: Link) {
+    if (this.links.get(link.userId) !== link) return;
+    const st = link.pc.connectionState;
+    const ui: LinkState = st === "connected" ? "connected" : st === "failed" ? "failed" : "connecting";
+    if (useVoice.getState().links[link.userId] !== ui) setV((s) => ({ links: { ...s.links, [link.userId]: ui } }));
+    if (link.lostTimer) clearTimeout(link.lostTimer);
+    link.lostTimer = null;
+    if (st === "connected") {
+      this.retries.delete(link.userId);
+      console.info(`[voice] connected to ${nameOf(link.userId)}`);
+    } else if (st === "disconnected") {
+      // Often comes back by itself (a Wi-Fi hiccup); if not, rebuild.
+      link.lostTimer = setTimeout(() => { if (link.pc.connectionState !== "connected") this.linkFailed(link); }, 8000);
+    } else if (st === "failed") this.linkFailed(link);
+  }
+
+  /** The connection is dead. The offerer builds a new one (backing off); the other side waits for it. */
+  private linkFailed(link: Link) {
+    if (this.links.get(link.userId) !== link) return;
+    setV((s) => ({ links: { ...s.links, [link.userId]: "failed" } }));
+    if (!link.offerer) return;
+    const n = this.retries.get(link.userId) ?? 0;
+    this.retries.set(link.userId, n + 1);
+    if (n === 1) useStore.getState().toast(t("err.voicePeerFailed", { name: nameOf(link.userId) }), "error");
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(link.userId);
+      if (this.links.get(link.userId) === link && this.states.has(link.userId)) void this.offer(link.userId);
+    }, Math.min(30_000, 1000 * 3 ** n));
+    this.retryTimers.set(link.userId, timer);
   }
 
   // ---------- microphone ----------
@@ -438,7 +566,7 @@ class VoiceEngine {
       setV({ micError: null });
     } catch (e) {
       const name = (e as DOMException).name;
-      // Browsers give no microphone on plain http:// (a LAN / Hamachi address): only https or localhost.
+      // Browsers give no microphone on plain http:// (only https or localhost).
       const msg = !window.isSecureContext ? t("err.micInsecure") : name === "NotAllowedError" ? t("err.micDenied") : name === "NotFoundError" ? t("err.micMissing") : t("err.micFailed");
       setV({ micError: msg });
       useStore.getState().toast(msg, "error");
@@ -453,12 +581,17 @@ class VoiceEngine {
     });
     if (this.micStream !== stream) { this.denoised?.stop(); this.denoised = null; return; } // closed meanwhile
     if (this.denoised) track = this.denoised.track; // the gate also hears the cleaned sound: fewer false opens
-    // The producer gets a clone so the gate can silence it while the meter still hears the original.
+    // The senders get a clone so the gate can silence it while the meter still hears the original.
     this.micSendTrack = track.clone();
     this.micSendTrack.enabled = false;
     this.micMeter = await meter(track, (db) => this.onMicLevel(db), (n) => this.onMicHoles(n)).catch(() => null);
     this.watchPtt();
     this.watchHotkeys();
+  }
+
+  /** The (new) microphone track on every connection. */
+  private applyMic() {
+    for (const link of this.links.values()) void link.tx[MIC]?.sender.replaceTrack(this.micSendTrack).catch(() => {});
   }
 
   /**
@@ -484,13 +617,10 @@ class VoiceEngine {
     this.micMeter = null;
     this.denoised?.stop();
     this.denoised = null;
-    this.micStream?.getTracks().forEach((t) => t.stop());
+    this.micStream?.getTracks().forEach((x) => x.stop());
     this.micSendTrack?.stop();
     this.micStream = null;
     this.micSendTrack = null;
-    this.micProducer = null;
-    this.wsm?.stopMic();
-    this.micWsId = null;
     this.offPtt?.();
     this.offPtt = null;
     this.pttDown = false;
@@ -498,42 +628,12 @@ class VoiceEngine {
     this.offHotkeys = null;
   }
 
-  private async produceMic(): Promise<void> {
-    const { muted } = useVoice.getState();
-    if (this.mode === "ws") {
-      const wsm = this.wsm, track = this.micSendTrack;
-      if (!wsm || !track || this.micWsId) return;
-      try {
-        await wsm.startMic(track);
-      } catch (e) {
-        setV({ micError: (e as Error).message });
-        useStore.getState().toast((e as Error).message, "error");
-        return;
-      }
-      const { id } = await this.conn!.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "mic" });
-      this.micWsId = id;
-      if (muted) await this.pauseMic(true);
-      return;
-    }
-    if (!this.send || !this.micSendTrack || this.micProducer) return;
-    this.micProducer = await this.send.produce({
-      track: this.micSendTrack,
-      stopTracks: false,
-      // Voice first when the uplink is busy (a stream or a game download): bandwidth and DSCP priority.
-      encodings: [{ priority: "high", networkPriority: "high" }],
-      codecOptions: { opusStereo: false, opusDtx: true, opusFec: true },
-      appData: { source: "mic" },
-    });
-    if (muted) await this.pauseMic(true);
-  }
-
   private onMicLevel(db: number) {
     const s = voiceSettings();
     const v = useVoice.getState();
     const open = s.mode === "ptt" ? this.pttDown : this.gate.update(db, s.vadThreshold);
-    const speaking = open && !v.muted && !v.deafened && (!!this.micProducer || !!this.micWsId);
+    const speaking = open && !v.muted && !v.deafened && v.status === "connected" && !!this.micSendTrack && !this.myState?.suppressed;
     if (this.micSendTrack) this.micSendTrack.enabled = speaking;
-    this.wsm?.setMicOpen(speaking);
     if (speaking !== v.selfSpeaking) {
       setV({ selfSpeaking: speaking });
       // Everyone else's speaking ring comes from this report (the hang time keeps it to a few per second).
@@ -611,25 +711,14 @@ class VoiceEngine {
     };
   }
 
-  private async pauseMic(paused: boolean) {
-    const p = this.micProducer;
-    const id = p?.id ?? this.micWsId;
-    if (!id) return;
-    if (p) {
-      if (paused) p.pause();
-      else p.resume();
-    }
-    await this.conn?.call("media.pauseProducer", { producerId: id, paused }).catch(() => {});
-  }
-
   async setMuted(muted: boolean): Promise<void> {
     const v = useVoice.getState();
     // Unmuting while deafened also undeafens (as people expect).
     const deafened = !muted && v.deafened ? false : v.deafened;
     setV({ muted, deafened });
     this.applyDeafen();
+    if (this.micSendTrack && (muted || deafened)) this.micSendTrack.enabled = false;
     if (!v.channelId) return;
-    await this.pauseMic(muted || deafened);
     await this.conn?.call("voice.update", { muted, deafened }).catch(() => {});
   }
 
@@ -637,8 +726,8 @@ class VoiceEngine {
     const v = useVoice.getState();
     setV({ deafened });
     this.applyDeafen();
+    if (this.micSendTrack && deafened) this.micSendTrack.enabled = false;
     if (!v.channelId) return;
-    await this.pauseMic(deafened || v.muted);
     await this.conn?.call("voice.update", { deafened }).catch(() => {});
   }
 
@@ -677,182 +766,32 @@ class VoiceEngine {
   /** Re-open the microphone after a device/processing change. */
   async restartMic(): Promise<void> {
     if (!useVoice.getState().channelId) return;
-    const old = this.micProducer;
-    const oldId = old?.id ?? this.micWsId;
     this.closeMic();
-    old?.close();
-    if (oldId) await this.conn?.call("media.closeProducer", { producerId: oldId }).catch(() => {});
     await this.openMic();
-    await this.produceMic().catch(() => {});
+    this.applyMic();
   }
 
   // ---------- playback ----------
 
+  /** Deafened: nobody. People the server muted (no SPEAK permission) stay silent too. */
   private applyDeafen() {
     const { deafened } = useVoice.getState();
-    for (const c of this.consumers.values()) {
-      if (c.audioEl) c.audioEl.muted = deafened;
-      c.wsAudio?.setMuted(deafened);
+    for (const link of this.links.values()) {
+      if (link.audioEl) link.audioEl.muted = deafened || !!this.states.get(link.userId)?.suppressed;
     }
   }
 
   setUserVolume(userId: string, volume: number) {
     useVoiceSettings.getState().set({ volumes: { ...voiceSettings().volumes, [userId]: volume } });
-    for (const c of this.consumers.values()) {
-      if (c.userId !== userId || c.source !== "mic") continue;
-      if (c.audioEl) c.audioEl.volume = Math.min(1, volume);
-      c.wsAudio?.setVolume(volume);
-    }
+    const el = this.links.get(userId)?.audioEl;
+    if (el) el.volume = Math.min(1, volume);
   }
 
   async setOutputDevice(id: string) {
-    for (const c of this.consumers.values()) {
-      const el = c.audioEl as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | undefined;
+    for (const link of this.links.values()) {
+      const el = link.audioEl as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
       await el?.setSinkId?.(id).catch(() => {});
     }
-  }
-
-  /** Video codecs I can decode (lower-case mime types). */
-  private decodable(): Set<string> {
-    if (this.mode === "ws" || !this.device) return new Set(["video/h264", "video/vp8"]);
-    return new Set((this.device.recvRtpCapabilities.codecs ?? []).filter((c) => c.kind === "video").map((c) => c.mimeType.toLowerCase()));
-  }
-
-  /** A stream's main video when I can decode it (AV1/VP9), otherwise its H.264 copy: never both. */
-  private skipScreen(p: RemoteProducer): boolean {
-    if (p.source === "screen") return !!p.codec && !this.decodable().has(p.codec);
-    if (p.source !== "screen-compat") return false;
-    const main = [...this.producers.values()].find((x) => x.userId === p.userId && x.source === "screen");
-    return !!main && (!main.codec || this.decodable().has(main.codec));
-  }
-
-  private async consume(p: RemoteProducer): Promise<void> {
-    if (this.skipScreen(p)) return;
-    if (this.mode === "ws") return this.consumeWs(p);
-    const conn = this.conn;
-    const device = this.device;
-    const recv = this.recv;
-    if (!conn || !device || !recv) return;
-    for (const c of this.consumers.values()) if (c.producerId === p.id) return;
-    const params = await conn.call("media.consume", { producerId: p.id, rtpCapabilities: device.recvRtpCapabilities as unknown as Record<string, unknown> });
-    if (recv !== this.recv) return;
-    const consumer = await recv.consume({
-      id: params.id,
-      producerId: params.producerId,
-      kind: params.kind,
-      rtpParameters: params.rtpParameters as msc.RtpParameters,
-      appData: { userId: params.userId, source: params.source },
-    });
-    if (params.kind === "audio") holdJitter(consumer.rtpReceiver, params.source === "mic" ? 80 : 120);
-    const entry: ConsumerEntry = { id: consumer.id, producerId: p.id, userId: params.userId, source: params.source, track: consumer.track, close: () => consumer.close() };
-    this.consumers.set(consumer.id, entry);
-    if (params.source === "mic") {
-      const el = new Audio();
-      el.autoplay = true;
-      el.srcObject = new MediaStream([consumer.track]);
-      el.volume = Math.min(1, voiceSettings().volumes[params.userId] ?? 1);
-      el.muted = useVoice.getState().deafened;
-      const sink = voiceSettings().outputDeviceId;
-      const withSink = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
-      if (sink && withSink.setSinkId) await withSink.setSinkId(sink).catch(() => {});
-      void el.play().catch(() => {});
-      entry.audioEl = el;
-    } else if (params.source === "camera") {
-      this.setCam(params.userId, consumer.track);
-    } else {
-      this.attachToWatch(params.userId, consumer.track);
-      if (params.kind === "video") this.guardFreeze(entry, consumer);
-    }
-    await conn.call("media.resume", { consumerId: consumer.id });
-  }
-
-  /**
-   * Stream video that stops moving while packets still arrive (a lost key frame the decoder never gets
-   * back) used to stay frozen until the viewer closed and reopened it. Ask the host for a key frame,
-   * and after a few tries re-open the consumer ourselves.
-   */
-  private guardFreeze(entry: ConsumerEntry, consumer: msc.Consumer): void {
-    let frames = -1, bytes = -1, stuckSince = 0, askedAt = 0, tries = 0;
-    const timer = setInterval(() => void check(), 1000);
-    const close = entry.close;
-    entry.close = () => { clearInterval(timer); close(); };
-    const check = async () => {
-      if (consumer.closed || this.consumers.get(entry.id) !== entry) return clearInterval(timer);
-      const st = await consumer.getStats().catch(() => null);
-      if (!st) return;
-      let f = 0, b = 0;
-      st.forEach((r: { type: string; framesDecoded?: number; bytesReceived?: number }) => {
-        if (r.type === "inbound-rtp") { f += r.framesDecoded ?? 0; b += r.bytesReceived ?? 0; }
-      });
-      // Data keeps coming but no frame decodes = stuck. (No data at all is a still screen: leave it.)
-      const stuck = frames >= 0 && f === frames && b > bytes + 4000;
-      frames = f;
-      bytes = b;
-      const now = Date.now();
-      if (!stuck) { stuckSince = 0; tries = 0; return; }
-      stuckSince ||= now;
-      if (now - stuckSince < 1500 || now - askedAt < 2000) return;
-      askedAt = now;
-      if (++tries <= 3) {
-        void this.conn?.call("media.keyFrame", { consumerId: entry.id }).catch(() => {});
-        return;
-      }
-      clearInterval(timer);
-      console.warn(`[voice] stream of ${entry.userId} stuck, reopening`);
-      const p = this.producers.get(entry.producerId);
-      if (!p || !(entry.userId in useVoice.getState().watching)) return;
-      this.consumers.delete(entry.id);
-      this.dropConsumer(entry);
-      await this.conn?.call("media.closeConsumer", { consumerId: entry.id }).catch(() => {});
-      await this.consume(p).catch(() => {});
-      this.setFocus(useVoice.getState().focus); // the new consumer gets the right layer again
-    };
-  }
-
-  /** Tunnel mode: frames arrive on the /media socket and are decoded with WebCodecs. */
-  private async consumeWs(p: RemoteProducer): Promise<void> {
-    const conn = this.conn;
-    const wsm = this.wsm;
-    if (!conn || !wsm) return;
-    for (const c of this.consumers.values()) if (c.producerId === p.id) return;
-    const params = await conn.call("media.consume", { producerId: p.id, rtpCapabilities: {} });
-    if (wsm !== this.wsm || params.tag === null) return;
-    const tag = params.tag;
-    const entry: ConsumerEntry = { id: params.id, producerId: p.id, userId: params.userId, source: params.source, track: null, close: () => wsm.remove(tag) };
-    this.consumers.set(params.id, entry);
-    if (params.kind === "audio") {
-      const vols = voiceSettings().volumes;
-      const vol = params.source === "mic" ? vols[params.userId] ?? 1 : vols[`stream:${params.userId}`] ?? 1;
-      entry.wsAudio = await wsm.addAudio(tag, params.source === "mic" ? 1 : 2, vol, useVoice.getState().deafened);
-    } else {
-      const track = wsm.addVideo(tag);
-      entry.track = track;
-      entry.close = () => { wsm.remove(tag); track.stop(); };
-      if (params.source === "camera") this.setCam(params.userId, track);
-      else this.attachToWatch(params.userId, track);
-    }
-    await conn.call("media.resume", { consumerId: params.id });
-  }
-
-  private dropConsumer(c: ConsumerEntry) {
-    if (c.audioEl) {
-      c.audioEl.pause();
-      c.audioEl.srcObject = null;
-    }
-    if (c.source === "camera") {
-      setV((s) => {
-        const cams = { ...s.cams };
-        delete cams[c.userId];
-        return { cams };
-      });
-    } else if (c.source !== "mic" && c.track) {
-      const w = useVoice.getState().watching[c.userId];
-      if (w) {
-        w.stream.removeTrack(c.track);
-        setV((s) => ({ watching: { ...s.watching, [c.userId]: { ...w, hasVideo: w.stream.getVideoTracks().length > 0, hasAudio: w.stream.getAudioTracks().length > 0 } } }));
-      }
-    }
-    c.close();
   }
 
   // ---------- watching streams ----------
@@ -863,10 +802,8 @@ class VoiceEngine {
     // First stream: it fills the stage. Another one: side by side (no focus) until one is clicked.
     setV((s) => ({ watching: { ...s.watching, [userId]: s.watching[userId] ?? null }, focus: Object.keys(s.watching).some((id) => id !== userId) ? null : userId }));
     try {
-      const list = await conn.call("stream.watch", { userId, watching: true, codecs: [...this.decodable()] });
-      for (const p of list) this.producers.set(p.id, p);
-      await Promise.all(list.map((p) => this.consume(p)));
-      this.ensureWatchEntry(userId);
+      await conn.call("stream.watch", { userId, watching: true });
+      this.refreshWatch(userId);
     } catch (e) {
       this.forgetWatch(userId);
       useStore.getState().toast((e as Error).message, "error");
@@ -891,29 +828,26 @@ class VoiceEngine {
     if (focus && focus in useVoice.getState().watching) this.setFocus(focus);
   }
 
-  private ensureWatchEntry(userId: string): WatchedStream {
-    const cur = useVoice.getState().watching[userId];
-    if (cur) return cur;
-    const w: WatchedStream = { stream: new MediaStream(), hasVideo: false, hasAudio: false };
-    setV((s) => ({ watching: { ...s.watching, [userId]: w } }));
-    return w;
-  }
-
-  private attachToWatch(userId: string, track: MediaStreamTrack) {
-    if (!(userId in useVoice.getState().watching)) return;
-    const w = this.ensureWatchEntry(userId);
-    w.stream.addTrack(track);
-    setV((s) => ({ watching: { ...s.watching, [userId]: { stream: w.stream, hasVideo: w.stream.getVideoTracks().length > 0, hasAudio: w.stream.getAudioTracks().length > 0 } } }));
+  /** The watched stream's tracks from the current connection to that person (null while there is none). */
+  private refreshWatch(userId: string) {
+    const v = useVoice.getState();
+    if (!(userId in v.watching)) return;
+    const link = this.links.get(userId);
+    const video = link?.tx[SCREEN]?.receiver.track;
+    const audio = link?.tx[SCREEN_AUDIO]?.receiver.track;
+    if (!video || !audio) {
+      if (v.watching[userId]) setV((s) => ({ watching: { ...s.watching, [userId]: null } }));
+      return;
+    }
+    const hasAudio = !!this.states.get(userId)?.stream?.audio;
+    const cur = v.watching[userId];
+    const tracks = cur?.stream.getTracks() ?? [];
+    if (cur && tracks.includes(video) && cur.hasAudio === hasAudio && (!hasAudio || tracks.includes(audio))) return;
+    const stream = new MediaStream(hasAudio ? [video, audio] : [video]);
+    setV((s) => ({ watching: { ...s.watching, [userId]: { stream, hasVideo: true, hasAudio } } }));
   }
 
   private forgetWatch(userId: string) {
-    for (const c of [...this.consumers.values()]) {
-      if (c.userId === userId && (c.source === "screen" || c.source === "screen-audio" || c.source === "screen-compat")) {
-        this.consumers.delete(c.id);
-        c.close();
-        this.conn?.call("media.closeConsumer", { consumerId: c.id }).catch(() => {});
-      }
-    }
     setV((s) => {
       const watching = { ...s.watching };
       delete watching[userId];
@@ -923,21 +857,28 @@ class VoiceEngine {
 
   setFocus(userId: string | null) {
     setV({ focus: userId });
-    if (this.mode === "ws") return; // tunnel: always the small layer
-    // Big tile gets the high simulcast layer, small tiles the low one (host upload, CLAUDE.md §2.4).
-    const v = useVoice.getState();
-    const many = Object.keys(v.watching).length > 1;
-    for (const c of this.consumers.values()) {
-      if (c.source !== "screen" && c.source !== "screen-compat") continue;
-      const spatial = !many || c.userId === userId ? 1 : 0;
-      this.conn?.call("media.layers", { consumerId: c.id, spatial }).catch(() => {});
-    }
   }
 
   // ---------- camera ----------
 
-  private setCam(userId: string, track: MediaStreamTrack) {
-    setV((s) => ({ cams: { ...s.cams, [userId]: new MediaStream([track]) } }));
+  /** Their camera tile follows their VoiceState.camera (the receiving track always exists). */
+  private syncCam(userId: string) {
+    const track = this.links.get(userId)?.tx[CAM]?.receiver.track;
+    const on = !!this.states.get(userId)?.camera && !!track;
+    const cur = useVoice.getState().cams[userId];
+    if (on && cur?.getVideoTracks()[0] === track) return;
+    if (!on && !cur) return;
+    setV((s) => {
+      const cams = { ...s.cams };
+      if (on) cams[userId] = new MediaStream([track!]);
+      else delete cams[userId];
+      return { cams };
+    });
+  }
+
+  private applyCam() {
+    const track = this.camStream?.getVideoTracks()[0] ?? null;
+    for (const link of this.links.values()) void link.tx[CAM]?.sender.replaceTrack(track).catch(() => {});
   }
 
   /** Opens the camera. Call straight from a click (iOS wants getUserMedia inside the gesture). */
@@ -948,9 +889,11 @@ class VoiceEngine {
     if (!useVoice.getState().channelId) { stream.getTracks().forEach((x) => x.stop()); return; }
     this.camStream = stream;
     const track = stream.getVideoTracks()[0]!;
+    track.contentHint = "motion";
     track.addEventListener("ended", () => { if (this.camStream === stream) void this.stopCamera(); });
+    this.applyCam();
     try {
-      await this.publishCamera();
+      await this.conn.call("voice.update", { camera: true });
     } catch (e) {
       this.stopCameraLocal();
       throw e;
@@ -974,51 +917,20 @@ class VoiceEngine {
     });
   }
 
-  private async publishCamera(): Promise<void> {
-    const track = this.camStream?.getVideoTracks()[0];
-    const conn = this.conn;
-    if (!track || !conn) return;
-    if (this.mode === "ws") {
-      const wsm = this.wsm;
-      if (!wsm) return;
-      await wsm.startVideo("camera", track);
-      const { id } = await conn.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "camera" });
-      this.camWsId = id;
-      return;
-    }
-    const send = this.send, device = this.device;
-    if (!send || !device) return;
-    const caps = device.rtpCapabilities.codecs ?? [];
-    // H.264 first: tunnel viewers and iPhones decode it in hardware.
-    const codec = caps.find((c) => c.mimeType.toLowerCase() === "video/h264") ?? caps.find((c) => c.mimeType.toLowerCase() === "video/vp8");
-    track.contentHint = "motion";
-    this.camProducer = await send.produce({
-      track,
-      stopTracks: false,
-      codec,
-      encodings: [{ maxBitrate: 600_000, maxFramerate: 24 }],
-      codecOptions: { videoGoogleStartBitrate: 400 },
-      appData: { source: "camera" },
-    });
-  }
-
   async stopCamera(): Promise<void> {
-    const id = this.camProducer?.id ?? this.camWsId;
+    const had = !!this.camStream;
     this.stopCameraLocal();
-    if (id) await this.conn?.call("media.closeProducer", { producerId: id }).catch(() => {});
+    if (had) await this.conn?.call("voice.update", { camera: false }).catch(() => {});
   }
 
   private stopCameraLocal() {
-    this.camProducer?.close();
-    this.camProducer = null;
-    this.camWsId = null;
-    this.wsm?.stopVideo("camera");
     this.camStream?.getTracks().forEach((x) => x.stop());
     this.camStream = null;
+    this.applyCam();
     if (useVoice.getState().camera) setV({ camera: null });
   }
 
-  /** Front <-> back camera (phones). The producer stays; only its track changes. */
+  /** Front <-> back camera (phones). Only the track changes. */
   async flipCamera(): Promise<void> {
     const old = this.camStream;
     if (!old) return;
@@ -1035,10 +947,10 @@ class VoiceEngine {
     }
     if (this.camStream !== old) { stream.getTracks().forEach((x) => x.stop()); return; }
     const track = stream.getVideoTracks()[0]!;
+    track.contentHint = "motion";
     track.addEventListener("ended", () => { if (this.camStream === stream) void this.stopCamera(); });
-    if (this.camProducer) await this.camProducer.replaceTrack({ track });
-    this.wsm?.setVideoTrack("camera", track);
     this.camStream = stream;
+    this.applyCam();
     this.camFacing = (track.getSettings().facingMode as "user" | "environment" | undefined) ?? got;
     setV((s) => ({ camera: s.camera ? { ...s.camera, facing: this.camFacing } : null }));
   }
@@ -1051,9 +963,7 @@ class VoiceEngine {
   // ---------- screen share ----------
 
   async startScreen(opts: ShareOptions): Promise<void> {
-    const tunnel = this.mode === "ws";
-    if (!this.send && !(tunnel && this.wsm)) throw new Error(t("err.joinVoiceFirst"));
-    if (tunnel && (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined")) throw new Error(t("err.screenNoEncoder"));
+    if (!this.conn || useVoice.getState().status !== "connected") throw new Error(t("err.joinVoiceFirst"));
     const preset = STREAM_PRESETS[opts.preset];
     const width = preset.width || opts.sourceSize?.width || 1920;
     const height = preset.height || opts.sourceSize?.height || 1080;
@@ -1075,25 +985,63 @@ class VoiceEngine {
     this.screenStream = stream;
     this.shareOpts = { ...opts, testTrack: undefined, testAudio: undefined };
     const video = stream.getVideoTracks()[0];
-    if (!video) throw new Error(t("err.noVideo"));
+    if (!video) {
+      this.stopScreenLocal();
+      throw new Error(t("err.noVideo"));
+    }
     video.contentHint = opts.contentHint;
     video.addEventListener("ended", () => void this.stopScreen());
 
     // Desktop system audio, NooXCord's own sound excluded (CLAUDE.md §6.3).
     let audioTrack = stream.getAudioTracks()[0] ?? null;
     if (!audioTrack && opts.audio && platform.media) audioTrack = await this.startSystemAudio();
-    if (audioTrack) stream.addTrack(audioTrack);
+    if (audioTrack && !stream.getAudioTracks().includes(audioTrack)) stream.addTrack(audioTrack);
 
+    let codec: string;
     try {
-      await this.publishScreen({ ...opts, testTrack: undefined, testAudio: undefined });
+      codec = await this.announceStream(opts.preset);
     } catch (e) {
       this.stopScreenLocal();
       throw e;
     }
     const st = video.getSettings();
     void this.sendThumbnail(video);
-    const codec = this.screenProducer?.rtpParameters.codecs[0]?.mimeType.toLowerCase() ?? (tunnel ? "video/h264" : undefined);
+    this.watchShareHealth();
     setV({ sharing: { width: st.width ?? width, height: st.height ?? height, fps: Math.round(st.frameRate ?? fps), audio: !!audioTrack, preset: opts.preset, codec } });
+  }
+
+  /** Tells the host I stream; viewers then appear in my StreamInfo and get the tracks. Returns the codec. */
+  private async announceStream(preset: StreamPreset): Promise<string> {
+    const video = this.screenStream?.getVideoTracks()[0];
+    if (!video || !this.conn) throw new Error(t("err.noVideo"));
+    const st = video.getSettings();
+    const codec = screenCodecOrder(voiceSettings().streamCodec)[0]!;
+    const state = await this.conn.call("stream.start", {
+      width: Math.max(1, Math.round(st.width ?? 1280)),
+      height: Math.max(1, Math.round(st.height ?? 720)),
+      fps: Math.max(1, Math.round(st.frameRate ?? STREAM_PRESETS[preset].fps)),
+      audio: this.screenStream!.getAudioTracks().length > 0,
+      codec,
+    });
+    this.myState = state;
+    this.syncScreenSenders();
+    return codec;
+  }
+
+  /** My screen goes to exactly the people watching it. */
+  private syncScreenSenders() {
+    const video = this.screenStream?.getVideoTracks()[0] ?? null;
+    const audio = this.screenStream?.getAudioTracks()[0] ?? null;
+    const viewers = this.myState?.stream?.viewers ?? [];
+    for (const link of this.links.values()) {
+      const want = !!video && viewers.includes(link.userId);
+      if (want === link.sendsScreen) continue;
+      const screen = link.tx[SCREEN], screenAudio = link.tx[SCREEN_AUDIO];
+      if (!screen || !screenAudio) continue;
+      link.sendsScreen = want;
+      void screen.sender.replaceTrack(want ? video : null).then(() => { if (want) void this.tuneScreen(screen.sender); }).catch(() => {});
+      void screenAudio.sender.replaceTrack(want ? audio : null).catch(() => {});
+    }
   }
 
   private async startSystemAudio(): Promise<MediaStreamTrack | null> {
@@ -1119,123 +1067,6 @@ class VoiceEngine {
     const port = await portPromise;
     this.sysAudio = await pcmTrack(port, res.sampleRate, res.channels);
     return this.sysAudio.track;
-  }
-
-  private async publishScreen(opts: ShareOptions): Promise<void> {
-    const stream = this.screenStream;
-    if (this.mode === "ws") return this.publishScreenWs(stream);
-    const send = this.send;
-    const device = this.device;
-    if (!send || !stream || !device) return;
-    const video = stream.getVideoTracks()[0]!;
-    const preset = STREAM_PRESETS[opts.preset];
-    const vs = video.getSettings();
-    const { codec, mode } = await pickScreenCodec(device.rtpCapabilities.codecs ?? [], voiceSettings().streamCodec, {
-      width: vs.width ?? (preset.width || 1920), height: vs.height ?? (preset.height || 1080), fps: Math.round(vs.frameRate ?? preset.fps), bitrate: preset.bitrate,
-    });
-    this.screenProducer = await send.produce({
-      track: video,
-      stopTracks: false,
-      codec,
-      encodings: screenEncodings(opts.preset, mode),
-      codecOptions: { videoGoogleStartBitrate: 1500 },
-      appData: { source: "screen" },
-    });
-    const codecName = codec?.mimeType.toLowerCase();
-    console.info(`[voice] screen codec ${codecName ?? "?"} ${mode ?? "simulcast"}`);
-    setV((s) => ({ sharing: s.sharing ? { ...s.sharing, codec: codecName } : s.sharing }));
-    const audio = stream.getAudioTracks()[0];
-    if (audio) {
-      this.screenAudioProducer = await send.produce({
-        track: audio,
-        stopTracks: false,
-        encodings: [{ priority: "high", networkPriority: "high" }],
-        codecOptions: { opusStereo: true, opusDtx: false, opusFec: true, opusMaxAverageBitrate: 128_000 },
-        appData: { source: "screen-audio" },
-      });
-    }
-    const st = video.getSettings();
-    const state = await this.conn!.call("stream.start", {
-      width: Math.max(1, Math.round(st.width ?? 1280)),
-      height: Math.max(1, Math.round(st.height ?? 720)),
-      fps: Math.max(1, Math.round(st.frameRate ?? preset.fps)),
-      audio: !!audio,
-      tunnelHigh: useVoiceSettings.getState().streamTunnelHigh,
-    });
-    this.syncCompat(state.stream);
-  }
-
-  /** Starts / stops the H.264 copy of my AV1/VP9 stream as the host asks (one change at a time). */
-  private syncCompat(stream: StreamInfo | null | undefined): void {
-    this.wantCompat = !!stream?.compat;
-    void this.applyCompat();
-  }
-
-  private async applyCompat(): Promise<void> {
-    if (this.compatBusy) return;
-    this.compatBusy = true;
-    try {
-      while (this.wantCompat !== !!this.compatProducer) {
-        if (!this.wantCompat) {
-          const p = this.compatProducer!;
-          this.compatProducer = null;
-          p.close();
-          await this.conn?.call("media.closeProducer", { producerId: p.id }).catch(() => {});
-          continue;
-        }
-        const send = this.send, device = this.device, video = this.screenStream?.getVideoTracks()[0];
-        const preset = this.shareOpts?.preset;
-        if (this.mode !== "rtc" || !send || !device || !video || !preset || !this.screenProducer) break;
-        const codec = (device.rtpCapabilities.codecs ?? []).find((c) => c.mimeType.toLowerCase() === "video/h264");
-        if (!codec) break;
-        // Same capture, a second encoder: same layers as the main stream so tunnel viewers' choice still applies.
-        const p = await send.produce({
-          track: video,
-          stopTracks: false,
-          codec,
-          encodings: screenEncodings(preset),
-          codecOptions: { videoGoogleStartBitrate: 1500 },
-          appData: { source: "screen-compat" },
-        }).catch((e: unknown) => { console.warn("[voice] H.264 copy failed", e); return null; });
-        if (!p) break;
-        if (send !== this.send || video !== this.screenStream?.getVideoTracks()[0]) { p.close(); break; }
-        this.compatProducer = p;
-        console.info("[voice] sending an H.264 copy of the stream");
-      }
-    } finally {
-      this.compatBusy = false;
-    }
-  }
-
-  /** Streamer: full or small quality for viewers who watch through a tunnel; also remembered for next time. */
-  async setTunnelQuality(high: boolean): Promise<void> {
-    useVoiceSettings.getState().set({ streamTunnelHigh: high });
-    if (useVoice.getState().sharing) await this.conn?.call("stream.tunnelQuality", { high });
-  }
-
-  /** Tunnel mode: the client encodes H.264 itself (≤1280x720, 15 fps); stream audio goes as stereo Opus. */
-  private async publishScreenWs(stream: MediaStream | null): Promise<void> {
-    const wsm = this.wsm, conn = this.conn;
-    const video = stream?.getVideoTracks()[0];
-    if (!wsm || !conn || !video) return;
-    await wsm.startVideo("screen", video);
-    const { id } = await conn.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen" });
-    this.screenWsId = id;
-    let audio = stream!.getAudioTracks()[0] ?? null;
-    if (audio) {
-      try {
-        await wsm.startScreenAudio(audio);
-        await conn.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "screen-audio" });
-      } catch (e) {
-        // An older host or no Opus encoder: share without sound rather than fail.
-        wsm.stopScreenAudio();
-        audio = null;
-        useStore.getState().toast(t("err.streamAudioTunnel", { msg: (e as Error).message }), "info");
-      }
-    }
-    const st = video.getSettings();
-    const w = st.width ?? 1280, h = st.height ?? 720, k = Math.min(1, 1280 / w, 720 / h);
-    await conn.call("stream.start", { width: Math.max(1, Math.round(w * k)), height: Math.max(1, Math.round(h * k)), fps: 15, audio: !!audio });
   }
 
   /** One-off 480px JPEG preview (CLAUDE.md §6.4). */
@@ -1269,16 +1100,71 @@ class VoiceEngine {
     if (had) await this.conn?.call("stream.stop", {}).catch(() => {});
   }
 
+  /**
+   * Stream health in the desktop app's main.log while I share: capture fps, encoded fps per viewer,
+   * what limits the encoder (cpu / bandwidth), key frame requests, and whether NooXCord is focused /
+   * visible. A line on every change of state, otherwise once a minute.
+   */
+  private watchShareHealth(): void {
+    if (this.shareHealth) clearInterval(this.shareHealth);
+    this.shareHealth = null;
+    const log = platform.media?.log;
+    if (!log) return;
+    const prev = new Map<string, { frames: number; at: number }>();
+    let lastSig = "", lastAt = 0, busy = false;
+    type Stat = {
+      type: string; kind?: string; timestamp: number; framesPerSecond?: number; framesEncoded?: number;
+      frameHeight?: number; qualityLimitationReason?: string; encoderImplementation?: string; pliCount?: number; firCount?: number;
+    };
+    const tick = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        let cap = -1, maxFps = -1, pli = 0;
+        const limits = new Set<string>(), parts: string[] = [];
+        for (const link of this.links.values()) {
+          const sender = link.tx[SCREEN]?.sender;
+          if (!link.sendsScreen || !sender) continue;
+          const report = await sender.getStats().catch(() => null);
+          if (!report) continue;
+          let layer = "-", impl = "";
+          report.forEach((s: Stat) => {
+            if (s.type === "media-source" && s.kind === "video") cap = Math.max(cap, Math.round(s.framesPerSecond ?? 0));
+            if (s.type !== "outbound-rtp" || s.kind !== "video") return;
+            const before = prev.get(link.userId);
+            const frames = s.framesEncoded ?? 0;
+            const fps = before && s.timestamp > before.at ? Math.round(((frames - before.frames) * 1000) / (s.timestamp - before.at)) : Math.round(s.framesPerSecond ?? 0);
+            prev.set(link.userId, { frames, at: s.timestamp });
+            layer = `${s.frameHeight ?? 0}p${fps}`;
+            maxFps = Math.max(maxFps, fps);
+            if (s.qualityLimitationReason && s.qualityLimitationReason !== "none") limits.add(s.qualityLimitationReason);
+            pli += (s.pliCount ?? 0) + (s.firCount ?? 0);
+            impl ||= s.encoderImplementation ?? "";
+          });
+          parts.push(`${nameOf(link.userId)}${impl ? `[${impl}]` : ""} ${layer}`);
+        }
+        if (!parts.length) return;
+        const focus = document.hasFocus() ? "focus" : "nofocus";
+        const vis = document.visibilityState;
+        const stalled = maxFps >= 0 && maxFps < 2; // every viewer's encoder below 2 fps
+        const limit = [...limits].join("+") || "none";
+        const sig = `${stalled}|${limit}|${focus}|${vis}|${cap < 2}|${parts.length}`;
+        const now = Date.now();
+        if (sig === lastSig && now - lastAt < 60_000) return;
+        lastSig = sig;
+        lastAt = now;
+        log(`[share] ${stalled ? "STALLED " : ""}capture ${cap}fps | ${parts.join(" | ")} | limit ${limit} | keyframe req ${pli} | ${focus} ${vis}`);
+      } finally {
+        busy = false;
+      }
+    };
+    this.shareHealth = setInterval(() => void tick(), 2000);
+  }
+
   private stopScreenLocal() {
-    this.screenProducer?.close();
-    this.screenAudioProducer?.close();
-    this.compatProducer?.close();
-    this.screenProducer = this.screenAudioProducer = this.compatProducer = null;
-    this.wantCompat = false;
-    this.screenWsId = null;
-    this.wsm?.stopVideo("screen");
-    this.wsm?.stopScreenAudio();
-    this.screenStream?.getTracks().forEach((t) => t.stop());
+    if (this.shareHealth) clearInterval(this.shareHealth);
+    this.shareHealth = null;
+    this.screenStream?.getTracks().forEach((x) => x.stop());
     this.screenStream = null;
     this.shareOpts = null;
     if (this.sysAudio) {
@@ -1286,7 +1172,8 @@ class VoiceEngine {
       this.sysAudio = null;
       void platform.media?.stopSystemAudio();
     }
-    setV({ sharing: null });
+    this.syncScreenSenders();
+    if (useVoice.getState().sharing) setV({ sharing: null });
   }
 
   /** My own outgoing screen (for the local preview tile). */
@@ -1296,32 +1183,37 @@ class VoiceEngine {
 
   /** Debug/test helper: what I currently receive. */
   debugConsumers(): { userId: string; source: MediaSource; live: boolean }[] {
-    return [...this.consumers.values()].map((c) => ({ userId: c.userId, source: c.source, live: !!c.track && c.track.readyState === "live" || !!c.wsAudio }));
+    const out: { userId: string; source: MediaSource; live: boolean }[] = [];
+    const v = useVoice.getState();
+    for (const link of this.links.values()) {
+      const live = (i: number) => link.pc.connectionState === "connected" && link.tx[i]?.receiver.track.readyState === "live";
+      out.push({ userId: link.userId, source: "mic", live: live(MIC) });
+      if (this.states.get(link.userId)?.camera) out.push({ userId: link.userId, source: "camera", live: live(CAM) });
+      if (link.userId in v.watching) {
+        out.push({ userId: link.userId, source: "screen", live: live(SCREEN) });
+        if (this.states.get(link.userId)?.stream?.audio) out.push({ userId: link.userId, source: "screen-audio", live: live(SCREEN_AUDIO) });
+      }
+    }
+    return out;
   }
 
-  /** Debug/test helper: is the H.264 copy of my stream being sent? */
-  debugCompat(): boolean {
-    return !!this.compatProducer && !this.compatProducer.closed;
+  /** Debug/test helper: connection state per person, and whether my screen goes to them. */
+  debugLinks(): Record<string, { state: RTCPeerConnectionState; screen: boolean }> {
+    return Object.fromEntries([...this.links.values()].map((l) => [l.userId, { state: l.pc.connectionState, screen: l.sendsScreen }]));
   }
 
-  /** Debug/test helper: transport stats summary. */
+  /** Debug/test helper: byte and frame counters over every connection. */
   async stats(): Promise<{ sendBytes: number; recvBytes: number; framesDecoded: number; audioRecvBytes: number }> {
     let sendBytes = 0, recvBytes = 0, framesDecoded = 0, audioRecvBytes = 0;
-    const s = await this.send?.getStats();
-    s?.forEach((r: { type: string; bytesSent?: number }) => { if (r.type === "outbound-rtp") sendBytes += r.bytesSent ?? 0; });
-    const rs = await this.recv?.getStats();
-    rs?.forEach((r: { type: string; kind?: string; bytesReceived?: number; framesDecoded?: number }) => {
-      if (r.type !== "inbound-rtp") return;
-      recvBytes += r.bytesReceived ?? 0;
-      if (r.kind === "video") framesDecoded += r.framesDecoded ?? 0;
-      else audioRecvBytes += r.bytesReceived ?? 0;
-    });
-    if (this.wsm) {
-      const w = this.wsm.stats;
-      sendBytes += w.sentBytes;
-      recvBytes += w.bytes;
-      framesDecoded += w.framesDecoded;
-      audioRecvBytes += w.audioBytes;
+    for (const link of this.links.values()) {
+      const report = await link.pc.getStats().catch(() => null);
+      report?.forEach((r: { type: string; kind?: string; bytesSent?: number; bytesReceived?: number; framesDecoded?: number }) => {
+        if (r.type === "outbound-rtp") sendBytes += r.bytesSent ?? 0;
+        if (r.type !== "inbound-rtp") return;
+        recvBytes += r.bytesReceived ?? 0;
+        if (r.kind === "video") framesDecoded += r.framesDecoded ?? 0;
+        else audioRecvBytes += r.bytesReceived ?? 0;
+      });
     }
     return { sendBytes, recvBytes, framesDecoded, audioRecvBytes };
   }
@@ -1338,28 +1230,7 @@ async function defaultMicSig(): Promise<string> {
   return d ? `${d.groupId}|${d.label}` : "";
 }
 
-const sameOrigin = (a: string, b: string): boolean => {
-  try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
-};
-
-/**
- * Moves this desktop session to the host's tunnel URL (same account, server and channel) and, if in
- * voice, back into the same voice channel once connected (CLAUDE.md §10.4).
- */
-export async function switchToTunnel(tunnelUrl: string): Promise<void> {
-  const v = useVoice.getState();
-  const rejoin = v.guildId && v.channelId ? { guildId: v.guildId, channelId: v.channelId } : null;
-  if (rejoin) await voice.leave();
-  await useStore.getState().switchAddress(tunnelUrl);
-  useStore.getState().toast(t("tunnelSwitch.done"));
-  if (rejoin) {
-    const off = useStore.subscribe((st) => {
-      if (st.connStatus !== "ready") return;
-      off();
-      void voice.join(rejoin.guildId, rejoin.channelId);
-    });
-  }
-}
+const nameOf = (userId: string): string => useStore.getState().users[userId]?.nickname ?? userId.slice(0, 6);
 
 // Leave voice when the host connection goes away for good (logout / switch host).
 useStore.subscribe((s, prev) => {
@@ -1370,11 +1241,6 @@ useStore.subscribe((s, prev) => {
 // Dev/test hook (used by the Electron voice self-test).
 (window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useVoiceSettings, useStore, remote, useRemote, denoise, meter };
 
-/** Voices and cameras go to everyone in the channel; screen streams only to people watching them. */
-function autoConsumed(source: MediaSource): boolean {
-  return source === "mic" || source === "camera";
-}
-
 const MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"]);
 /** Shortcut string of a key press ("Ctrl+Shift+KeyM"); null while only modifiers are held. */
 export function comboOf(e: { code: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): string | null {
@@ -1383,7 +1249,7 @@ export function comboOf(e: { code: string; ctrlKey: boolean; shiftKey: boolean; 
 }
 
 /*
- * Minimum playout buffer for a received audio track. Over jittery paths (Wi-Fi, Hamachi, a busy host)
+ * Minimum playout buffer for a received audio track. Over jittery paths (Wi-Fi, a TURN relay)
  * WebRTC's adaptive buffer ran near-empty and stretched / squeezed speech to catch up (robotic voice);
  * a small floor absorbs that for ~50 ms extra latency.
  */
@@ -1397,55 +1263,50 @@ function holdJitter(receiver: RTCRtpReceiver | undefined, ms: number): void {
 }
 
 /**
- * H.264: two simulcast layers, full quality + a quarter-size layer for small tiles and weak links.
- * AV1 / VP9 (SVC): one stream; VP9 with "L2T3_KEY" carries the same two sizes as layers.
+ * Screen codec order. Automatic: H.264 (hardware encoders and decoders nearly everywhere, iPhone
+ * included), then VP8. A codec picked in settings goes first when the other side has it too.
  */
-function screenEncodings(p: StreamPreset, svc?: string): msc.RtpEncodingParameters[] {
-  const preset = STREAM_PRESETS[p];
-  if (svc) return [{ scalabilityMode: svc, maxBitrate: Math.round(preset.bitrate * (svc.startsWith("L2") ? 1.15 : 1)), maxFramerate: preset.fps }];
-  return [
-    { rid: "r0", scaleResolutionDownBy: 2, maxBitrate: Math.round(preset.bitrate * 0.2), maxFramerate: Math.min(30, preset.fps) },
-    { rid: "r1", scaleResolutionDownBy: 1, maxBitrate: preset.bitrate },
-  ];
+function screenCodecOrder(pref: StreamCodec): string[] {
+  return pref === "auto" || pref === "h264" ? ["video/h264", "video/vp8", "video/vp9"] : [`video/${pref}`, "video/h264", "video/vp8"];
 }
 
-/** Does this machine encode the codec (and layer mode) in hardware at this size? (Software AV1/VP9 at 1080p60 would eat the CPU.) */
-async function hardwareEncodes(mime: string, mode: string, v: { width: number; height: number; fps: number; bitrate: number }): Promise<boolean> {
-  const mc = (navigator as Navigator & { mediaCapabilities?: MediaCapabilities }).mediaCapabilities;
-  if (!mc?.encodingInfo) return false;
+/** Puts these codecs first for a video transceiver (the rest, rtx / red included, stay as fallbacks). */
+function prefer(tr: RTCRtpTransceiver, order: string[]) {
+  const caps = RTCRtpReceiver.getCapabilities?.("video")?.codecs;
+  if (!caps || !tr.setCodecPreferences) return;
+  const rank = (c: RTCRtpCodec) => {
+    const i = order.indexOf(c.mimeType.toLowerCase());
+    return i < 0 ? order.length : i;
+  };
   try {
-    const r = await mc.encodingInfo({ type: "webrtc", video: { contentType: mime, width: v.width, height: v.height, framerate: v.fps, bitrate: v.bitrate, scalabilityMode: mode } } as MediaEncodingConfiguration);
-    return r.supported && r.powerEfficient;
-  } catch {
-    return false;
+    tr.setCodecPreferences([...caps].sort((a, b) => rank(a) - rank(b)));
+  } catch (e) {
+    console.warn("[voice] codec preference refused", e);
   }
+}
+
+async function setEncoding(sender: RTCRtpSender | undefined, enc: Partial<RTCRtpEncodingParameters> & { networkPriority?: RTCPriorityType }, degradation?: RTCDegradationPreference): Promise<void> {
+  if (!sender) return;
+  try {
+    const p = sender.getParameters();
+    if (!p.encodings?.length) return;
+    p.encodings[0] = { ...p.encodings[0], ...enc };
+    if (degradation) (p as RTCRtpSendParameters & { degradationPreference?: RTCDegradationPreference }).degradationPreference = degradation;
+    await sender.setParameters(p);
+  } catch { /* not negotiated yet / unsupported: defaults */ }
 }
 
 /**
- * Codec of a screen stream. Automatic: AV1, then VP9, when the GPU encodes it (clearly sharper than H.264
- * at the same bitrate, above all for text); otherwise H.264. Only codecs the host's router offers count,
- * so an older host keeps getting H.264. Viewers that cannot decode the choice get an H.264 copy.
+ * Opus settings the browser API does not expose: voice with DTX (silence costs ~nothing), stream
+ * audio in stereo at up to 128 kbps. Sections follow the transceiver order (1 mic, 4 stream audio).
  */
-async function pickScreenCodec(caps: msc.RtpCodecCapability[], pref: StreamCodec, v: { width: number; height: number; fps: number; bitrate: number }): Promise<{ codec?: msc.RtpCodecCapability; mode?: string }> {
-  const find = (mime: string) => caps.find((c) => c.mimeType.toLowerCase() === mime && (mime !== "video/vp9" || Number(c.parameters?.["profile-id"] ?? 0) === 0));
-  const h264 = { codec: find("video/h264") ?? find("video/vp8") };
-  // VP9: two sizes as layers when the GPU does it, else time layers only ("L1T3": one size).
-  // AV1: time layers only; with two sizes ("L2T3_KEY") mediasoup 3.32 forwards packets the viewer
-  // cannot decode (frozen picture, voice self-test 2026-11-21).
-  const modes = (c: msc.RtpCodecCapability) => (c.mimeType.toLowerCase() === "video/av1" ? ["L1T3"] : ["L2T3_KEY", "L1T3"]);
-  const svcMode = async (c: msc.RtpCodecCapability): Promise<string | null> => {
-    for (const mode of modes(c)) if (await hardwareEncodes(c.mimeType, mode, v)) return mode;
-    return null;
-  };
-  if (pref === "h264") return h264;
-  if (pref !== "auto") {
-    const c = find(`video/${pref}`);
-    return c ? { codec: c, mode: (await svcMode(c)) ?? modes(c)[0] } : h264; // asked for it: software encoding if it must
-  }
-  for (const mime of ["video/av1", "video/vp9"]) {
-    const c = find(mime);
-    const mode = c ? await svcMode(c) : null;
-    if (c && mode) return { codec: c, mode };
-  }
-  return h264;
+function tuneOpus(sdp: string): string {
+  const parts = sdp.split(/(?=\r\nm=)/);
+  return parts.map((sec, i) => {
+    if (i !== MIC + 1 && i !== SCREEN_AUDIO + 1) return sec;
+    const pt = /a=rtpmap:(\d+) opus\/48000/i.exec(sec)?.[1];
+    if (!pt) return sec;
+    const extra = i === MIC + 1 ? "usedtx=1" : "stereo=1;sprop-stereo=1;maxaveragebitrate=128000";
+    return sec.replace(new RegExp(`(a=fmtp:${pt} [^\\r\\n]*)`), (line) => (line.includes(extra.split("=")[0]!) ? line : `${line};${extra}`));
+  }).join("");
 }

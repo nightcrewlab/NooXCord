@@ -11,7 +11,6 @@ interface FileShape {
   hosts: SavedHost[];
   tokens: Record<string, string>; // url -> base64 encrypted token
   last: string | null;
-  localHost: LocalHostPrefs;
   app: AppPrefs;
 }
 
@@ -22,22 +21,6 @@ export interface AppPrefs {
 }
 const DEFAULT_APP: AppPrefs = { closeToTray: true, lang: "tr" };
 
-export interface LocalHostPrefs {
-  autoStart: boolean;
-  port: number;
-  allowGuests: boolean;
-  guestPassword: string | null;
-  tunnelProvider: "cloudflare" | "devtunnel";
-  devTunnelId: string | null;
-  /** Copy a new tunnel URL to the clipboard automatically. */
-  copyTunnelUrl: boolean;
-}
-
-const DEFAULT_LOCAL: LocalHostPrefs = {
-  autoStart: false, port: 47820, allowGuests: true, guestPassword: null,
-  tunnelProvider: "cloudflare", devTunnelId: null, copyTunnelUrl: true,
-};
-
 const file = () => path.join(app.getPath("userData"), "hosts.json");
 let cache: FileShape | null = null;
 
@@ -45,9 +28,10 @@ function load(): FileShape {
   if (cache) return cache;
   try {
     const raw = JSON.parse(fs.readFileSync(file(), "utf8")) as Partial<FileShape>;
-    cache = { hosts: [], tokens: {}, last: null, ...raw, localHost: { ...DEFAULT_LOCAL, ...raw.localHost }, app: { ...DEFAULT_APP, ...raw.app } };
+    const { hosts = [], tokens = {}, last = null } = raw;
+    cache = { hosts, tokens, last, app: { ...DEFAULT_APP, ...raw.app } };
   } catch {
-    cache = { hosts: [], tokens: {}, last: null, localHost: { ...DEFAULT_LOCAL }, app: { ...DEFAULT_APP } };
+    cache = { hosts: [], tokens: {}, last: null, app: { ...DEFAULT_APP } };
   }
   return cache!;
 }
@@ -113,12 +97,6 @@ export const hosts = {
   setAppPrefs(p: Partial<AppPrefs>): void {
     const d = load();
     d.app = { ...d.app, ...p };
-    save();
-  },
-  localHostPrefs: () => load().localHost,
-  setLocalHostPrefs(p: Partial<LocalHostPrefs>): void {
-    const d = load();
-    d.localHost = { ...d.localHost, ...p };
     save();
   },
 };

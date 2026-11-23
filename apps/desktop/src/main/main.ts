@@ -4,13 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { hosts } from "./hosts";
-import * as localHost from "./localHost";
 import { destroyOverlay, registerOverlay } from "./overlay";
 import { registerMediaIpc, shutdownMedia } from "./media";
 import { endRemote, registerRemoteIpc } from "./remote";
 import { initLogs, registerServices } from "./services";
 import { createTray, destroyTray, isQuitting, markQuitting, registerTray, showMain, startHidden } from "./tray";
-import { hostStopped, registerNetIpc, registerNetShortcuts, shutdownNet } from "./netIpc";
 import { prepareVoiceTest, voiceSelfTest } from "./voiceTest";
 
 // User data lives in %APPDATA%/NooXCord; self-tests use a throwaway folder.
@@ -31,8 +29,8 @@ initLogs();
 let mainWindow: BrowserWindow | null = null;
 
 /*
- * nooxcord://join?url=<host origin>[&invite=<code>] (CLAUDE.md §10.6): opens a host, a tunnel URL
- * included, straight in the app. The installer registers the scheme; Windows passes the link in argv.
+ * nooxcord://join?url=<host origin>[&invite=<code>] (CLAUDE.md §10.6): opens a host straight in
+ * the app. The installer registers the scheme; Windows passes the link in argv.
  */
 interface JoinLink { url: string; invite: string | null }
 function parseJoin(argv: readonly string[]): JoinLink | null {
@@ -72,12 +70,6 @@ function registerIpc(): void {
   ipcMain.handle("hosts:setToken", (_e, url, token) => hosts.setToken(url, token));
   ipcMain.handle("hosts:getLast", () => hosts.getLast());
   ipcMain.handle("hosts:setLast", (_e, url) => hosts.setLast(url));
-  ipcMain.handle("localHost:status", () => ({ ...localHost.status(), port: localHost.status().port ?? hosts.localHostPrefs().port }));
-  ipcMain.handle("localHost:start", (_e, port) => localHost.start(port));
-  ipcMain.handle("localHost:stop", async () => {
-    hostStopped();
-    return localHost.stop();
-  });
   ipcMain.handle("app:takeJoin", () => {
     const j = pendingJoin;
     pendingJoin = null;
@@ -85,10 +77,9 @@ function registerIpc(): void {
   });
   ipcMain.handle("shell:openExternal", (_e, url) => (isSafeExternal(url) ? shell.openExternal(url) : undefined));
   registerMediaIpc(() => mainWindow);
-  registerNetIpc();
   registerRemoteIpc();
   registerTray(() => mainWindow);
-  registerServices(() => mainWindow);
+  registerServices();
 }
 
 /*
@@ -175,41 +166,20 @@ app.on("second-instance", (_e, argv) => {
   if (join) mainWindow?.webContents.send("app:join", join);
 });
 
-/** Headless check used during development: NX_SELFTEST=1 electron . */
+/** Headless check used during development: NX_SELFTEST=1 electron . (NX_UITEST_HOST: also reach a server). */
 async function selfTest(): Promise<void> {
   const log = (...a: unknown[]) => console.log("[selftest]", ...a);
-  const port = Number(process.env.NX_SELFTEST_PORT ?? 47831);
-  const st = await localHost.start(port);
-  log("localHost.start", JSON.stringify(st));
-  const info = await fetch(`http://127.0.0.1:${port}/api/info`).then((r) => r.json());
-  log("api/info", JSON.stringify(info));
-  const web = await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
-  log("web client served", web.includes('<div id="root">'));
-  const url = `http://127.0.0.1:${port}`;
+  const url = "https://selftest.invalid";
   hosts.setToken(url, "secret-token-123");
   log("safeStorage roundtrip", hosts.getToken(url) === "secret-token-123");
   hosts.remove(url);
-  const busy = await new Promise<string>((res) => {
-    void localHost.stop().then(async () => {
-      const net = await import("node:net");
-      const srv = net.createServer().listen(port, "0.0.0.0", () => {
-        void localHost.start(port).then((s) => { srv.close(); res(s.error ?? "no error"); });
-      });
-    });
-  });
-  log("port-in-use error", busy);
-  // Faz 3: port check (all of 0.0.0.0, ::, 127.0.0.1), suggestion, addresses. Opens no tunnel.
-  const { checkPort, suggestPort, addresses } = await import("./network");
-  const net2 = await import("node:net");
-  const held = net2.createServer().listen(port, "::");
-  await new Promise((r) => held.once("listening", r));
-  log("checkPort busy (IPv6 holder)", JSON.stringify(await checkPort(port, null)));
-  held.close();
-  log("checkPort free", JSON.stringify(await checkPort(port + 10, null)));
-  log("checkPort privileged", (await checkPort(80, null)).status);
-  log("suggestPort", await suggestPort());
-  log("addresses", JSON.stringify(await addresses()));
-  await localHost.stop();
+  const host = process.env.NX_UITEST_HOST;
+  if (host) {
+    const info = await fetch(`${host}/api/info`).then((r) => r.json()).catch((e: Error) => `FAIL ${e.message}`);
+    log("api/info", JSON.stringify(info));
+    const web = await fetch(`${host}/`).then((r) => r.text()).catch(() => "");
+    log("web client served", web.includes('<div id="root">'));
+  }
   log("done");
   app.exit(0);
 }
@@ -261,12 +231,9 @@ void app.whenReady().then(async () => {
   if (process.env.NX_SELFTEST === "1") return void selfTest();
   if (process.env.NX_SELFTEST === "ui") return void uiSelfTest();
   if (process.env.NX_SELFTEST === "voice") return void voiceSelfTest();
-  const prefs = hosts.localHostPrefs();
-  if (prefs.autoStart) await localHost.start(prefs.port); // resume hosting before the UI reconnects
   createMainWindow();
   createTray();
   registerOverlay();
-  registerNetShortcuts();
 });
 
 app.on("before-quit", () => {
@@ -274,8 +241,6 @@ app.on("before-quit", () => {
   destroyTray();
   endRemote();
   shutdownMedia();
-  shutdownNet();
   destroyOverlay();
-  localHost.shutdown();
 });
 app.on("window-all-closed", () => app.quit());

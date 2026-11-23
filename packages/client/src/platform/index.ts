@@ -7,13 +7,6 @@ export interface SavedHost {
   name: string;
 }
 
-export interface LocalHostStatus {
-  running: boolean;
-  port: number | null;
-  lanAddresses: string[];
-  error?: string;
-}
-
 export interface ScreenSource {
   id: string; // desktopCapturer id, e.g. "screen:0:0" / "window:1234:0"
   name: string;
@@ -43,39 +36,7 @@ export interface UpdateState {
   error?: string;
 }
 
-export interface BackupInfo { name: string; size: number; at: number }
-
 export interface TrayState { inVoice: boolean; muted: boolean; deafened: boolean; live: boolean }
-
-export interface HostPrefs {
-  allowGuests: boolean;
-  guestPassword: string;
-  copyTunnelUrl: boolean;
-}
-
-export type PortStatus = "free" | "in_use" | "own" | "privileged" | "invalid";
-export interface PortCheck {
-  port: number;
-  status: PortStatus;
-  process: string | null;
-  mediaFree: boolean;
-}
-
-export interface NetAddresses {
-  lan: { name: string; ip: string }[];
-  hamachi: { ip: string | null; service: "running" | "stopped" | "missing" | "unknown" };
-  firewall: "allowed" | "missing" | "unknown";
-}
-
-export type TunnelProviderId = "cloudflare" | "devtunnel";
-export interface TunnelState {
-  provider: TunnelProviderId;
-  status: "off" | "starting" | "on" | "error";
-  url: string | null;
-  error: string | null;
-  log: string[];
-  dev: { installed: boolean; user: string | null; login: { code: string; url: string } | null; busy: boolean };
-}
 
 /** What the in-game overlay shows (desktop). */
 export interface OverlayMember {
@@ -110,34 +71,6 @@ export interface NxBridge {
     getLast(): Promise<string | null>;
     setLast(url: string | null): Promise<void>;
   };
-  localHost: {
-    status(): Promise<LocalHostStatus>;
-    start(port: number): Promise<LocalHostStatus>;
-    stop(): Promise<LocalHostStatus>;
-    restart(port: number): Promise<LocalHostStatus>;
-    getPrefs(): Promise<HostPrefs>;
-    setPrefs(p: Partial<HostPrefs>): Promise<void>;
-  };
-  net: {
-    checkPort(port: number): Promise<PortCheck>;
-    suggestPort(): Promise<number>;
-    addresses(): Promise<NetAddresses>;
-    hamachiService(start: boolean): Promise<NetAddresses>;
-    firewallAllow(): Promise<NetAddresses>;
-  };
-  tunnel: {
-    get(): Promise<TunnelState>;
-    setProvider(p: TunnelProviderId): Promise<void>;
-    start(): Promise<void>;
-    stop(): Promise<void>;
-    copy(): Promise<boolean>;
-    devRefresh(): Promise<TunnelState["dev"]>;
-    devInstall(): Promise<void>;
-    devLogin(): Promise<void>;
-    devLogout(): Promise<void>;
-    devNewUrl(): Promise<void>;
-    onState(cb: (s: TunnelState) => void): () => void;
-  };
   openExternal(url: string): Promise<void>;
   media: {
     getSources(): Promise<ScreenSource[]>;
@@ -156,6 +89,8 @@ export interface NxBridge {
     onHotkey(cb: (id: string) => void): () => void;
     /** Keep timers/rendering alive while in voice. */
     setInCall(active: boolean): Promise<void>;
+    /** Diagnostic line in the desktop app's main.log. Optional: older preloads lack it. */
+    log?(text: string): void;
   };
   overlay: {
     update(members: OverlayMember[] | null): void;
@@ -181,17 +116,6 @@ export interface NxBridge {
     install(): Promise<void>;
     onState(cb: (s: UpdateState) => void): () => void;
   };
-  /** Backups of the host database on this computer. */
-  backup: {
-    list(): Promise<BackupInfo[]>;
-    now(): Promise<BackupInfo>;
-    /** Save dialog; false when cancelled. */
-    export(): Promise<boolean>;
-    /** Open dialog + restore (host restarts); false when cancelled. */
-    import(): Promise<boolean>;
-    restore(name: string): Promise<void>;
-    openFolder(): Promise<void>;
-  };
   /** Remote control, streamer side: SendInput onto the shared monitor/window (main process). */
   remote: {
     supported(): Promise<boolean>;
@@ -215,10 +139,6 @@ export interface Platform {
   /** Web: the page's own host is the only host. Desktop: user picks. */
   fixedHost: string | null;
   hosts: NxBridge["hosts"];
-  localHost: NxBridge["localHost"] | null;
-  /** Desktop only: ports, Hamachi, tunnels. */
-  net: NxBridge["net"] | null;
-  tunnel: NxBridge["tunnel"] | null;
   openExternal(url: string): void;
   /** Desktop-only media helpers; null in the browser. */
   media: NxBridge["media"] | null;
@@ -226,11 +146,13 @@ export interface Platform {
   remote: NxBridge["remote"] | null;
   app: NxBridge["app"] | null;
   updates: NxBridge["updates"] | null;
-  backup: NxBridge["backup"] | null;
   /** Can this client start a screen share at all? */
   canShareScreen: boolean;
   isMobile: boolean;
 }
+
+/** The server the desktop app opens by default (set at build time: VITE_NX_DEFAULT_HOST). */
+export const DEFAULT_HOST: string | null = normaliseHostUrl((import.meta.env.VITE_NX_DEFAULT_HOST as string | undefined) ?? "");
 
 const mobile = typeof navigator !== "undefined" && (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)));
 
@@ -253,16 +175,12 @@ function webPlatform(): Platform {
       getLast: async () => fixed,
       setLast: async () => {},
     },
-    localHost: null,
-    net: null,
-    tunnel: null,
     openExternal: (url) => window.open(url, "_blank", "noopener,noreferrer"),
     media: null,
     overlay: null,
     remote: null,
     app: null,
     updates: null,
-    backup: null,
     // Phones too where the browser offers it (Android Chrome may; iPhone Safari does not).
     canShareScreen: typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function",
     isMobile: mobile,
@@ -273,17 +191,14 @@ function desktopPlatform(nx: NxBridge): Platform {
   return {
     kind: "desktop",
     fixedHost: null,
-    hosts: nx.hosts,
-    localHost: nx.localHost,
-    net: nx.net,
-    tunnel: nx.tunnel,
+    // Nothing chosen yet: the built-in server.
+    hosts: { ...nx.hosts, getLast: async () => (await nx.hosts.getLast()) ?? DEFAULT_HOST },
     openExternal: (url) => void nx.openExternal(url),
     media: nx.media,
     overlay: nx.overlay,
     remote: nx.remote ?? null,
     app: nx.app ?? null,
     updates: nx.updates ?? null,
-    backup: nx.backup ?? null,
     canShareScreen: true,
     isMobile: false,
   };
@@ -296,7 +211,8 @@ export const isDesktop = (): boolean => platform.kind === "desktop";
 export function normaliseHostUrl(input: string): string | null {
   let s = input.trim();
   if (!s) return null;
-  if (!/^https?:\/\//i.test(s)) s = (/(trycloudflare\.com|devtunnels\.ms)/i.test(s) ? "https://" : "http://") + s;
+  // A bare name is a hosted server (https); an IP address or localhost is a test server (http).
+  if (!/^https?:\/\//i.test(s)) s = (/^(localhost|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?(\/|$)/i.test(s) ? "http://" : "https://") + s;
   try {
     const u = new URL(s);
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;

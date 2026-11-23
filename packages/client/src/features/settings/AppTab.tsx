@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "@nooxcord/icons";
 import { getLang, setLang, t, type Lang } from "../../i18n";
 import { formatBytes } from "../../lib/format";
-import { platform, type AppPrefs, type BackupInfo, type UpdateState } from "../../platform";
+import { platform, type AppPrefs, type UpdateState } from "../../platform";
 import { useStore } from "../../state/store";
 import { Button, cx, useConfirm } from "../../ui";
 import { ensurePermission, notificationsSupported, useNotify } from "../notify/notify";
@@ -18,7 +18,6 @@ export function AppTab() {
       <Notifications />
       {platform.app && <DesktopPrefs />}
       {platform.updates && <Updates />}
-      {platform.backup && <Backups />}
     </div>
   );
 }
@@ -127,49 +126,3 @@ function Updates() {
   );
 }
 
-function Backups() {
-  const [list, setList] = useState<BackupInfo[] | null>(null);
-  const [busy, setBusy] = useState(false);
-  const toast = useStore((st) => st.toast);
-  const confirm = useConfirm();
-  const b = platform.backup!;
-  const reload = () => void b.list().then(setList);
-  useEffect(reload, [b]);
-  const run = async (fn: () => Promise<unknown>, ok: string) => {
-    setBusy(true);
-    try {
-      const r = await fn();
-      if (r !== false) toast(ok);
-    } catch (e) {
-      toast((e as Error).message, "error");
-    } finally {
-      setBusy(false);
-      reload();
-    }
-  };
-  const restore = async (fn: () => Promise<boolean>) => {
-    if (!(await confirm({ title: t("backup.restore"), body: t("backup.importConfirm"), confirm: t("backup.restore"), danger: true }))) return;
-    await run(fn, t("backup.imported"));
-  };
-  return (
-    <section className={s.section}>
-      <h3 className={s.h3}><Icon name="server" size={18} />{t("backup.title")}</h3>
-      <div className={s.hintText}>{t("backup.desc")}</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "10px 0" }}>
-        <Button size="small" variant="primary" loading={busy} onClick={() => void run(() => b.now(), t("backup.done"))}>{t("backup.now")}</Button>
-        <Button size="small" variant="secondary" disabled={busy} onClick={() => void run(() => b.export(), t("backup.exported"))}>{t("backup.export")}</Button>
-        <Button size="small" variant="secondary" disabled={busy} onClick={() => void restore(() => b.import())}>{t("backup.import")}</Button>
-        <Button size="small" variant="ghost" icon="external" onClick={() => void b.openFolder()}>{t("backup.openFolder")}</Button>
-      </div>
-      <div className={s.perms}>
-        {list && list.length === 0 && <div className={s.perm}><span className={s.hintText}>{t("backup.none")}</span></div>}
-        {list?.map((x) => (
-          <div key={x.name} className={s.perm}>
-            <span><div className={s.mono}>{new Date(x.at).toLocaleString(getLang() === "tr" ? "tr-TR" : "en-GB")}</div><div className={s.hintText}>{x.name} · {formatBytes(x.size)}</div></span>
-            <Button size="small" variant="ghost" disabled={busy} onClick={() => void restore(() => b.restore(x.name).then(() => true))}>{t("backup.restore")}</Button>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}

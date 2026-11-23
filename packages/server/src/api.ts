@@ -1,13 +1,12 @@
-import fs from "node:fs";
-import path from "node:path";
 import {
   DEFAULT_ROLE_PERMS, LIMITS, P, has,
   type ChatMethodName, type GuildState, type MethodName, type MethodResults, type Embed,
 } from "@nooxcord/shared";
 import { Methods } from "@nooxcord/shared/schemas";
+import { blobIdOf, type Blobs } from "./blobs";
 import type { Db } from "./db";
 import type { Hub } from "./hub";
-import type { Media } from "./media";
+import type { Voice } from "./voice";
 import type { Store } from "./store";
 import { extractUrls, unfurl } from "./unfurl";
 import { fail, inviteCode, newId } from "./util";
@@ -18,10 +17,10 @@ type Handler = (userId: string, p: never) => unknown;
 export class Api {
   private typingAt = new Map<string, number>();
 
-  /** Set by the host once the media service exists; used to drop people from voice. */
-  media: Media | null = null;
+  /** Set by the host once the voice service exists; used to drop people from voice. */
+  media: Voice | null = null;
 
-  constructor(private db: Db, private store: Store, private hub: Hub, private uploadsDir: string) {}
+  constructor(private db: Db, private store: Store, private hub: Hub, private blobs: Blobs) {}
 
   async call<M extends MethodName>(userId: string, method: M, raw: unknown): Promise<MethodResults[M]> {
     const schema = Methods[method];
@@ -79,8 +78,8 @@ export class Api {
     this.media?.refreshPerms(guildId);
   }
 
-  private deleteFiles(stored: string[]): void {
-    for (const s of stored) fs.rm(path.join(this.uploadsDir, s), { force: true }, () => {});
+  private deleteFiles(stored: (string | null)[]): void {
+    this.blobs.delete(stored.filter((s): s is string => !!s));
   }
 
   private sendGuildAdd(guildId: string, userId: string): GuildState {
@@ -148,7 +147,7 @@ export class Api {
       ).map((r) => r.stored);
       this.media?.closeWhere((r) => r.guildId === p.guildId);
       this.db.run("DELETE FROM guilds WHERE id = ?", p.guildId);
-      this.deleteFiles(files);
+      this.deleteFiles([...files, blobIdOf(g!.icon)]);
       this.hub.toUsers(members, "guild.remove", { guildId: p.guildId });
       return null;
     },

@@ -99,7 +99,7 @@ export function VoiceStage({ guildId, channel, onShare }: { guildId: string; cha
   );
 }
 
-/** Theater view while I stream too: my viewers (right-click: remote control) and the tunnel quality. */
+/** Theater view while I stream too: my viewers (right-click: remote control). */
 function OwnStreamBar({ state }: { state: VoiceState | undefined }) {
   const st = state?.stream;
   if (!st) return null;
@@ -109,10 +109,6 @@ function OwnStreamBar({ state }: { state: VoiceState | undefined }) {
       <span className={s.ownBarText}>{t("stream.yours")} · {t("stream.viewers", { n: st.viewers.length })}</span>
       {st.viewers.length > 0 && <ViewerList viewers={st.viewers} controllerId={st.controllerId} />}
       <span style={{ flex: 1 }} />
-      <button className={s.tunnelQ} style={{ margin: 0 }} title={t("stream.tunnelQualityDesc")} onClick={() => void voice.setTunnelQuality(!st.tunnelHigh).catch((e: Error) => useStore.getState().toast(e.message, "error"))}>
-        <Icon name="tunnel" size={14} />
-        {t("stream.tunnelQuality")}: <b>{st.tunnelHigh ? t("stream.tunnelHigh") : t("stream.tunnelLow")}</b>
-      </button>
       <Button variant="danger" size="small" icon="screen-stop" onClick={() => void voice.stopScreen()}>{t("stream.stop")}</Button>
     </div>
   );
@@ -275,12 +271,6 @@ function OwnStreamCard({ state }: { state: VoiceState | undefined }) {
         </div>
         <Button variant="danger" size="small" icon="screen-stop" onClick={() => void voice.stopScreen()}>{t("stream.stop")}</Button>
       </div>
-      {state?.stream && (
-        <button className={s.tunnelQ} title={t("stream.tunnelQualityDesc")} onClick={() => void voice.setTunnelQuality(!state.stream!.tunnelHigh).catch((e: Error) => useStore.getState().toast(e.message, "error"))}>
-          <Icon name="tunnel" size={14} />
-          {t("stream.tunnelQuality")}: <b>{state.stream.tunnelHigh ? t("stream.tunnelHigh") : t("stream.tunnelLow")}</b>
-        </button>
-      )}
       {!!state?.stream?.viewers.length && <ViewerList viewers={state.stream.viewers} controllerId={state.stream.controllerId} />}
     </div>
   );
@@ -440,7 +430,7 @@ export function toggleCamera(on: boolean) {
 export const cameraSupported = (): boolean => typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
 
 function CallControls({ guildId, onShare }: { guildId: string; onShare: () => void }) {
-  const v = useVoice(useShallow((x) => ({ muted: x.muted, deafened: x.deafened, sharing: !!x.sharing, status: x.status, transport: x.transport, camera: x.camera })));
+  const v = useVoice(useShallow((x) => ({ muted: x.muted, deafened: x.deafened, sharing: !!x.sharing, status: x.status, camera: x.camera })));
   const myPerms = useStore((st) => st.guilds[guildId]?.myPerms ?? 0);
   const canStream = has(myPerms, P.STREAM) && platform.canShareScreen;
   const canCam = has(myPerms, P.VIDEO) && cameraSupported();

@@ -1,5 +1,5 @@
 // Remote-control rules on the host (CLAUDE.md §7.3): request/grant/input/stop; viewers by role (browsers too),
-// only desktop streamers controllable; tunnel-mode browser screen share.
+// only desktop streamers controllable; browser screen share; P2P signalling relay.
 // Run: pnpm --filter @nooxcord/server test
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -77,14 +77,38 @@ try {
   const inv = await A.call<{ code: string }>("invite.create", { guildId: gs.guild.id });
   for (const c of [B, W, G]) await c.call("invite.join", { code: inv.code });
   const joined = await A.call<VoiceJoinResult>("voice.join", { channelId: vc });
-  for (const c of [B, W, G]) await c.call("voice.join", { channelId: vc, transport: "ws" });
+  assert.equal(joined.peers.length, 0);
+  assert.ok(joined.iceServers.length > 0);
+  const joinedB = await B.call<VoiceJoinResult>("voice.join", { channelId: vc });
+  assert.deepEqual(joinedB.peers.map((p) => p.userId), [A.id]);
+  for (const c of [W, G]) await c.call("voice.join", { channelId: vc });
+  ok("voice.join lists who is already there and the ICE servers");
 
-  // A streams (a VP8 screen producer is enough for the host).
-  await A.call("media.produce", {
-    transportId: joined.send!.id, kind: "video", source: "screen",
-    rtpParameters: { codecs: [{ mimeType: "video/VP8", payloadType: 101, clockRate: 90000 }], encodings: [{ ssrc: 22222 }] },
-  });
-  const live = await A.call<VoiceState>("stream.start", { width: 1280, height: 720, fps: 30, audio: false });
+  // --- P2P signalling: relayed only between two people in the same channel ---
+  await A.call("rtc.signal", { to: B.id, gen: 1, description: { type: "offer", sdp: "v=0 test" } });
+  const sig = await B.waitFor<Events["rtc.signal"]>("rtc.signal", (d) => d.from === A.id);
+  assert.equal(sig.description?.sdp, "v=0 test");
+  assert.equal(sig.gen, 1);
+  await B.call("rtc.signal", { to: A.id, gen: 1, candidate: { candidate: "candidate:1 1 udp 1 1.2.3.4 5 typ host", sdpMid: "0", sdpMLineIndex: 0 } });
+  const cand = await A.waitFor<Events["rtc.signal"]>("rtc.signal", (d) => d.from === B.id);
+  assert.equal(cand.candidate?.sdpMid, "0");
+  await A.call("rtc.signal", { to: "nobody-here", gen: 1, candidate: null }); // left meanwhile: ignored
+  await rejects(A.call("rtc.signal", { to: B.id, gen: 1, description: { type: "pranswer", sdp: "x" } }), "bad_request");
+  const outsider = new Client((await reg("Disarida")).token, "desktop");
+  await outsider.connect();
+  await rejects(outsider.call("rtc.signal", { to: A.id, gen: 1, candidate: null }), "bad_request");
+  outsider.ws.close();
+  ok("rtc.signal reaches the other person; strangers and bad descriptions rejected");
+
+  // Camera state (media itself is P2P): guests may turn it on (VIDEO by default).
+  const cam = await G.call<VoiceState>("voice.update", { camera: true });
+  assert.equal(cam.camera, true);
+  await A.waitFor<VoiceState>("voice.state", (v) => v.userId === G.id && v.camera);
+  await G.call("voice.update", { camera: false });
+  ok("camera on/off reaches everyone");
+
+  const live = await A.call<VoiceState>("stream.start", { width: 1280, height: 720, fps: 30, audio: false, codec: "video/h264" });
+  assert.equal(live.stream?.codec, "video/h264");
   assert.equal(live.stream?.controllable, true);
   for (const c of [B, W, G]) await c.call("stream.watch", { userId: A.id, watching: true });
   ok("streamer live (controllable), three viewers");
@@ -160,20 +184,17 @@ try {
   assert.equal(A.count("remote.input"), 1);
   ok("stream stop ends control; later input is dropped");
 
-  // --- tunnel-mode browser screen share: works, but cannot be controlled ---
+  // --- browser screen share: needs STREAM (guests only through a role), cannot be controlled ---
+  await rejects(G.call("stream.start", { width: 1280, height: 720, fps: 15, audio: true }), "forbidden");
   const role2 = await A.call<{ id: string }>("role.create", { guildId: gs.guild.id, name: "Yayin", perms: P.STREAM });
   await A.call("member.setRoles", { guildId: gs.guild.id, userId: G.id, roleIds: [role.id, role2.id] });
   await G.waitFor<{ myPerms: number }>("perms.update", (d) => (d.myPerms & P.STREAM) !== 0);
-  // Stream audio rides the tunnel too (stereo Opus); kind must match the source.
-  await rejects(G.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen-audio" }), "bad_request");
-  await G.call("media.produce", { transportId: "ws", kind: "audio", rtpParameters: {}, source: "screen-audio" });
-  await G.call("media.produce", { transportId: "ws", kind: "video", rtpParameters: {}, source: "screen" });
   const gl = await G.call<VoiceState>("stream.start", { width: 1280, height: 720, fps: 15, audio: true });
   assert.equal(gl.stream?.controllable, false);
   await B.call("stream.watch", { userId: G.id, watching: true });
   await rejects(B.call("remote.request", { userId: G.id }), "forbidden");
   await G.call("stream.stop", {});
-  ok("tunnel-mode browser can screen share; browser streams are not controllable");
+  ok("browser can screen share with a role; browser streams are not controllable");
 
   // --- direct messages ---
   const dm = await A.call<{ id: string; userIds: string[] }>("dm.open", { userId: B.id });

@@ -44,7 +44,7 @@ function VoiceUserRow({ channelId, userId, muted, deafened, live, camera, onVolu
 
 /** Connection panel shown above the user row while in voice. */
 export function VoiceBar({ onShare }: { onShare: () => void }) {
-  const v = useVoice(useShallow((x) => ({ guildId: x.guildId, channelId: x.channelId, status: x.status, sharing: !!x.sharing, transport: x.transport, camera: !!x.camera, diag: x.audioDiag })));
+  const v = useVoice(useShallow((x) => ({ guildId: x.guildId, channelId: x.channelId, status: x.status, sharing: !!x.sharing, camera: !!x.camera })));
   const channel = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.channels.find((c) => c.id === v.channelId) : undefined));
   const guildName = useStore((st) => (v.guildId ? st.guilds[v.guildId]?.guild.name : ""));
   const selectChannel = useStore((st) => st.selectChannel);
@@ -59,10 +59,8 @@ export function VoiceBar({ onShare }: { onShare: () => void }) {
           <div className={cx(s.barTitle, !ok && s.warn)}>
             <Icon name="signal" size={16} />
             {ok ? t("voice.connected") : v.status === "reconnecting" ? t("voice.reconnecting") : t("voice.connecting")}
-            {ok && v.transport === "ws" && <span className={s.tunnelTag} title={t("voice.tunnelModeDesc")}>{t("voice.tunnelMode")}</span>}
             {ok && <CallTimer guildId={v.guildId!} channelId={v.channelId!} className={s.barTimer} />}
           </div>
-          {ok && v.transport === "ws" && v.diag && <div className={s.audioDiag}>{t("voice.audioDiag", { n: v.diag.dropouts, ms: v.diag.holdMs })}</div>}
           <button className={s.barChan} onClick={() => selectChannel(v.guildId!, v.channelId!)}>{channel?.name ?? ""} / {guildName}</button>
         </div>
         <button className={cx(s.barBtn, s.hangup)} style={{ width: 34, padding: 0 }} aria-label={t("voice.leave")} title={t("voice.leave")} onClick={() => void voice.leave()}>

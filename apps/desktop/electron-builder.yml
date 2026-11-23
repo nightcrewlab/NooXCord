@@ -19,7 +19,6 @@ files:
   - "!node_modules/@nooxcord/native/{Cargo.toml,Cargo.lock,build.rs,index.d.ts}"
 asar: true
 asarUnpack:
-  - node_modules/mediasoup/worker/**
   - "**/*.node"
 
 extraResources:

@@ -3,8 +3,8 @@
 
 LangString nxOldWindows 1055 "NooXCord Windows 10 sürüm 2004 (derleme 19041) veya daha yenisini gerektirir. Bu sürümde sistem sesi yakalama ve bazı özellikler çalışmayabilir.$\r$\n$\r$\nYine de kurulsun mu?"
 LangString nxOldWindows 1033 "NooXCord needs Windows 10 version 2004 (build 19041) or newer. System audio capture and some features may not work on this version.$\r$\n$\r$\nInstall anyway?"
-LangString nxDeleteData 1055 "Kullanıcı verileri de silinsin mi?$\r$\n(Oturumlar, ayarlar ve bu bilgisayarda barındırılan sunucunun veritabanı, yüklenen dosyalar ve yedekler: %APPDATA%\NooXCord)"
-LangString nxDeleteData 1033 "Also delete user data?$\r$\n(Sessions, settings and the database, uploads and backups of the server hosted on this computer: %APPDATA%\NooXCord)"
+LangString nxDeleteData 1055 "Kullanıcı verileri de silinsin mi?$\r$\n(Oturumlar, ayarlar ve kayıtlar: %APPDATA%\NooXCord)"
+LangString nxDeleteData 1033 "Also delete user data?$\r$\n(Sessions, settings and logs: %APPDATA%\NooXCord)"
 
 !macro customInit
   ${IfNot} ${AtLeastBuild} 19041

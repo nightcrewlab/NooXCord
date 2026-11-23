@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@nooxcord/native": "workspace:^",
-    "@nooxcord/server": "workspace:^",
     "electron-updater": "^6.8.11"
   }
 }
