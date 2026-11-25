@@ -2,7 +2,7 @@
 
 > **Geliştirici:** NooXRii · **Platform:** Windows 10 (2004 / build 19041+) ve Windows 11 masaüstü + mobil/masaüstü web tarayıcı istemcisi
 > **Tür:** Discord benzeri sesli/görüntülü sohbet ve ekran paylaşımı uygulaması; sunucu Render.com'da, veriler Turso'da, medya P2P
-> **Durum:** Faz 6 (Render + Turso + P2P, ADR 0003, 2026-11-23) — kod tamam ve testli (`pnpm test` 4 paket, `pnpm test:voice` 29 kontrol); **kalan: Render servisi + Turso veritabanı kurulumu ve gerçek iki ağdan P2P testi (kullanıcıda)**. Eski yerel-host sürümü (Faz 0–5: mediasoup, tünel, Hamachi) kullanıcıda yedekli; aşağıdaki tarihçe notları onu anlatır. Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
+> **Durum:** Faz 6 (Render + Turso + P2P, ADR 0003, 2026-11-23) — kod tamam ve testli (`pnpm test` 4 paket, `pnpm test:voice` 32 kontrol); **kalan: Render servisi + Turso veritabanı kurulumu ve gerçek iki ağdan P2P testi (kullanıcıda)**. Eski yerel-host sürümü (Faz 0–5: mediasoup, tünel, Hamachi) kullanıcıda yedekli; aşağıdaki tarihçe notları onu anlatır. Repo + auto-update: `github.com/nightcrewlab/NooXCord` (§17.18). Bu dosya projenin tek doğruluk kaynağıdır; bir karar değişirse önce burası güncellenir. Mimari kararlar `docs/adr/` altında.
 
 ---
 
@@ -77,7 +77,7 @@ NooXCord; sunucusu (**Host**) Render.com'un ücretsiz web servisinde sürekli a�
 - **Mesh:** kanaldaki her kişi çifti arasında tek `RTCPeerConnection`. Teklifi küçük `userId`'li taraf verir; her teklif yeni bir `gen` taşır ve eski bağlantının yerine geçer (kopan bağlantı böyle yeniden kurulur: artan aralıkla, en fazla 30 sn). Karşı tarafın teklifinden önce gelen ICE adayları beklenir, kendi teklifinden önce bulunan adaylar teklif gidince gönderilir.
 - Her bağlantıda sabit **4 transceiver**: 0 mikrofon · 1 kamera · 2 ekran · 3 ekran sesi. Parçalar `replaceTrack` ile değişir → yeniden müzakere yok. Kamera her zaman gider (görünürlük `VoiceState.camera` ile); ekran + ekran sesi yalnızca yayının izleyicilerine (`StreamInfo.viewers`, sunucu yayar).
 - Opus: mikrofon DTX, ekran sesi stereo 128 kbps (SDP `fmtp` ayarı, `tuneOpus`). Alınan seste `jitterBufferTarget` 80 ms (yayın sesi 120). Sunucunun susturduğu (`suppressed`) kişinin sesi alıcıda kısılır, kendi istemcisi de göndermez.
-- ICE: STUN (Google + Cloudflare) + isteğe bağlı TURN (`NX_ICE_SERVERS` JSON, `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL` veya `CLOUDFLARE_TURN_KEY_ID`/`CLOUDFLARE_TURN_API_TOKEN`; `ice.ts`), `voice.join` yanıtıyla istemciye gider.
+- ICE: STUN (Google + Cloudflare) + isteğe bağlı TURN (`NX_ICE_SERVERS` JSON, `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL` veya `CLOUDFLARE_TURN_KEY_ID`/`CLOUDFLARE_TURN_API_TOKEN`; `ice.ts`), `voice.join` yanıtıyla istemciye gider. Ayarlar → Ses → **"IP adresimi gizle"** (`relayOnly`): bağlantılar `iceTransportPolicy: "relay"` ile yalnızca TURN'den geçer; sunucuda TURN yoksa etkisizdir (bağlanamamak yerine normal yola döner), sonraki sese katılışta geçerli olur.
 - iOS: `AudioContext` ve `getUserMedia` dokunma olayının içinde, ilk `await`'ten önce başlatılır (değişmedi).
 
 ### 2.4 Bant genişliği gerçeği
@@ -128,7 +128,7 @@ pnpm dev            # Electron + Vite HMR (sunucu seçicide http://localhost:478
 pnpm dev:host       # yalnızca sunucu (tsx watch, yerel veritabanı; TURSO_* verilirse Turso) → http://localhost:47820 (web istemcisini de sunar; önce client build)
 pnpm dev:web        # yalnızca web istemcisi (Vite :5173, VITE_NX_HOST ile host seçilir; varsayılan localhost:47820)
 pnpm typecheck      # tüm paketler
-pnpm test           # sunucu uçtan uca (23) + uzaktan kontrol, DM, P2P sinyal (18) + Turso yansıtma (6, yerel libSQL dosyasıyla) + link önizleme SSRF / resim proxy
+pnpm test           # sunucu uçtan uca (24) + uzaktan kontrol, DM, P2P sinyal (18) + Turso yansıtma (6, yerel libSQL dosyasıyla) + link önizleme SSRF / resim proxy
 pnpm build          # client (vite) + sunucu bundle (esbuild → packages/server/dist/server.mjs) + desktop main/preload
 pnpm start          # node packages/server/dist/server.mjs (Render'daki gibi; ayarlar ortam değişkenlerinden, bkz. server/src/dev.ts)
 pnpm brand          # assets/brand/*.svg → icon.ico, favicon, PWA ikonları
@@ -141,7 +141,7 @@ NX_SELFTEST=1 electron apps/desktop        # safeStorage (NX_UITEST_HOST ile sun
 NX_SELFTEST=ui NX_UITEST_HOST=http://127.0.0.1:47820 NX_SHOT=shot.png electron apps/desktop   # arayüz + file:// → host HTTP/WS
 # 3 kullanıcı P2P mesh, 2 yayın (biri sesli), herkes izliyor, kameralar, izlemeyi bırak/yayın bitti/ayrıl/yeniden katıl.
 # Sunucu bundle'ını Electron'un Node'uyla kendisi başlatır (47850); NX_UITEST_HOST=... ile dış sunucu
-pnpm test:voice        # = client + server build + NX_SELFTEST=voice electron apps/desktop  (29 kontrol, tiyatro görünümü ve sığma + RNNoise/GTCRN dahil; NX_SHOT=... ekran görüntüsü)
+pnpm test:voice        # = client + server build + NX_SELFTEST=voice electron apps/desktop  (32 kontrol: tiyatro görünümü ve sığma, ping + bağlantı istatistikleri, yatay telefon düzeni, RNNoise/GTCRN; NX_SHOT=... ekran görüntüsü — gizli pencere yalnızca ilk düzeni yakalar, sonradan açılan diyalog/sekme görüntüye girmez)
 # UI testi giriş yapıp bir betik çalıştırabilir: NX_UITEST_TOKEN=<token> NX_UITEST_JS="<js>" (ör. ayarlar sayfasını açmak)
 # Güncelleme köşe kartı: NX_UITEST_UPDATE=downloading|ready (sahte durum, sürüm 9.9.9)
 ```
@@ -255,6 +255,7 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 - Engellenen kombinasyonlar: `Ctrl+Alt+Del` (zaten mümkün değil), `Win+L`, ayar ile ek kombinasyonlar.
 - Yönetici (UAC) yetkili pencerelere girdi gönderilemez (Windows UIPI) — bu bilinen sınırlama UI'da açıklanır; uygulama yönetici olarak çalıştırılmaz.
 - Hareketsizlik zaman aşımı (varsayılan 10 dk) ve tüm kontrol oturumları host'ta loglanır.
+- **Onay yayıncının kendi makinesinde de aranır** (`media/remote.ts` `granted`): sunucu `controllerId` duyursa bile istemci yalnızca bu oturumda kendisinin "Kabul / Her zaman / Kontrolü ver" dediği kişinin girdisini işler; onaylamadığı bir kontrolcüyü reddedip `remote.stop` gönderir. Böylece yalnızca katıldığın (ör. bir davet bağlantısıyla açılan) yabancı bir sunucu klavyeni kimseye veremez.
 
 ---
 
@@ -281,7 +282,10 @@ Amaç: yayına sistem sesi gider ama **NooXCord'un çaldığı sesler (diğer ki
 Özgün, koyu ve modern; Discord'un düzenini kopyalamaz.
 - **Görsel dil (2026-11-10):** logonun iki öğesi her yerde tekrar eder — *squircle* (avatarlar, sunucu simgeleri, boş durum ikonları) ve *ses dalgası halkaları* (boş durum / sese katıl / giriş arka planı). Paneller üstten hafif ışık alan kartlardır; seçili kanal ve ayar sekmesi turuncu şerit + soldan sağa sönen vurgu; diyalogların üst kenarında ince turuncu çizgi; sesli kanal kontrolleri tam genişlik çubuk değil ortada **yüzen dock**; katılımcılar sahnenin ortasında toplanır; kullanıcı satırı ve ses bağlantı çubuğu panel içinde ayrı "pod"lardır.
 - **Düzen:** Solda dar "host/sunucu rayı" (yuvarlatılmış kare ikonlar) → kanal paneli → içerik. Sesli kanal paneli içerikte **sahne (stage)** gibi açılır: üstte yayın thumbnail'ları, altta katılımcı kartları. Sağda açılır/kapanır üye paneli.
-- **Mobil (< 768px):** alt sekme çubuğu (Sunucular / Sohbet / Ses / Profil), kaydırarak açılan çekmeceler, büyük dokunma hedefleri (min. 44px), sesli kanal için tam ekran "çağrı" görünümü.
+- **Mobil** (`features/layout/screen.ts`; aynı sorgular CSS'te): *dar* (< 768px) **veya** *kısa* (yükseklik ≤ 500px, yani yan tutulan telefon — eskiden 800+ px genişlik yüzünden sıkışık masaüstü düzeni açılıyordu; 500, masaüstü penceresinin en küçük içerik yüksekliğinin altında). Alt sekme çubuğu (Sunucular / Sohbet / Ses / Profil), büyük dokunma hedefleri (min. 44px).
+  - **Dik:** izlenen yayın üstte kendi oranında (16:9), kalan alanda kişiler sarılan ızgara; yayın kartları tek sütun.
+  - **Yatay telefon** (`orientation: landscape` + yükseklik ≤ 500 + genişlik ≥ 560; alt sınır, klavyesi açılan dik telefonu dışarıda tutar): sekme çubuğu solda dikey ray, arama kontrolleri sağda dikey dock, yayın kalan yüksekliğin tamamını alır; kanal paneli iki sütun (kanallar | ses çubuğu + kullanıcı satırı); bekleme sahnesinde yayın kartları solda, kişiler yanında; giriş ekranı logo + form yan yana; başlıklar 42px.
+  - **Dokunmatik:** yayın döşemesinin çubuğu (tam ekran, izlemeyi bırak…) hover ister → dokununca 4 sn görünür, gizliyken dokunuşu yutmaz; düğmeler 40px. Yazı alanları 16px (altında iOS odakta sayfayı yakınlaştırır). `overscroll-behavior: none` (aşağı çekip yenileme aramayı düşürürdü). Sohbet listesi boyutu değişince (döndürme, klavye) en alttaysa en altta kalır.
 
 ### 9.2 Renk token'ları (`packages/client/src/styles/tokens.css`)
 ```css
@@ -359,6 +363,9 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 - Host (tünel ile internete açık!): rate limit (`@fastify/rate-limit`), giriş denemesi kilidi, `helmet`, tüm girdiler zod ile doğrulanır, yükleme boyut limiti (varsayılan 50 MB, ayarlanabilir), MIME sniff, dosyalar rastgele adla `uploads/` altında, path traversal koruması.
 - Link önizleme (unfurl) host'ta yapılır: **SSRF koruması** (özel/yerel IP blokları reddedilir), zaman aşımı, boyut limiti.
 - Mesaj içeriği: Markdown alt kümesi, HTML her zaman escape edilir (XSS).
+- WebSocket çerçeveleri güvenilmezdir: işleyicideki her hata o çerçeveyle sınırlı kalır (`index.ts` `onFrame`; eskiden `null` ya da sayı token'lı bir `auth` çerçevesi yakalanmayan rejection ile **bütün sunucuyu düşürüyordu**), yöntem adları yalnızca kendi anahtarlarından aranır (`Object.hasOwn`; `toString` vb. "internal" hatası veriyordu). `dev.ts` ayrıca `unhandledRejection`'ı loglayıp çalışmaya devam eder.
+- Hız sınırı anahtarı `CF-Connecting-IP` (Render'ın önündeki Cloudflare her zaman kendisi yazar), yoksa `req.ip`: `trustProxy` ile `X-Forwarded-For`'un ilk girdisi istemcinin uydurabildiği değerdi.
+- SSRF adres denetimi `net.BlockList` ile ayrıştırılmış adres üzerinden yapılır (`unfurl.ts`): IPv4'ü içinde taşıyan IPv6 biçimleri (`::ffff:7f00:1`, IPv4-uyumlu, NAT64, 6to4, Teredo) dahil. Metin karşılaştırması `http://[::ffff:127.0.0.1]/`'i (URL ayrıştırıcı onaltılığa çevirir) geçiriyordu.
 - Uzaktan kontrol kuralları §7.3.
 
 ### 12.3 Diğer gerekli özellikler (eklenenler)
@@ -373,7 +380,7 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 - Veritabanı yedekleri: Turso'nun kendi zaman içinde geri dönüşü (point-in-time); uygulama içi yedekleme kaldırıldı (ADR 0003).
 - Loglar: `%APPDATA%/NooXCord/logs` (dönen dosyalar): `main.log` (ana süreç hataları), sunucu çıktısı Render panelindeki loglarda (bağlanma/kopma, sese katılma, yayın, Turso yansıtma hataları), "Hata raporu klasörünü aç" butonu.
 - Erişilebilirlik: klavye ile gezinme, odak halkaları, ARIA etiketleri, yeterli kontrast.
-- Ses/yayın bağlantı istatistikleri paneli (ping, paket kaybı, bitrate, codec, taşıma yolu).
+- **Ping göstergesi + bağlantı paneli** (`features/voice/ConnectionStats.tsx`, `engine.peerStats()`, `useCallStats`): ses çubuğunda ve sahne başlığında kendi pingin (yeşil < 100 ms, sarı < 200, kırmızı; bağlanamayan kişi varsa uyarı). Medya P2P olduğu için iki ayrı gecikme var: *ses pingi* = kanaldaki kişilere ortalama gidiş-dönüş (rozet bunu gösterir), *sunucu pingi* = WS ping/pong (yalnızken rozet bunu gösterir; Ayarlar → Bağlantı'da da var). Rozete tıklayınca kişi başı: yol (Aynı ağ / Doğrudan / Aktarma-TURN + UDP/TCP), ping, kayıp %, dalgalanma, giden/gelen bit hızı, gelen/giden görüntü (codec + çözünürlük + fps), TURN var mı. Sesteyken 2 sn'de bir örneklenir (gizli pencerede atlanır).
 
 ---
 
@@ -387,7 +394,7 @@ Kurallar: Electron `backgroundThrottling` açık, gizli pencerede render yok, b�
 | **3 — Ağ & Web** | Ayarlar → Bağlantı: port + canlı kontrol (IPv4/IPv6, kullanan süreç) + boş port öner + yeniden başlat ✅, LAN/Hamachi adresleri + Hamachi servis aç/kapa (UAC) ✅, tünel: Cloudflare Quick Tunnel + Dev Tunnels (indir+imza kontrolü, GitHub girişi, sabit URL, yenile, aç/kapat), kopyala/QR/Ctrl+Shift+L/bildirim ✅, misafir girişi + misafir şifresi + misafir kısıtları ✅, mobil arayüz (alt sekmeler) ✅, NXM-WS tünel modu (ses+mikrofon+yayın izleme, WebRTC başarısızsa otomatik geçiş) ✅, overlay özel tam ekran ipucu ✅, link önizleme DNS sabitleme + resim proxy ✅ | Tünel modunda sese katılma + 2 yayın izleme ✅ (`pnpm test:voice`, C kullanıcısı) · gerçek telefon + tünel testi ✅ (NooXRii, 2026-11-07) — **Faz 3 TAMAMLANDI** |
 | **4 — Kontrol & Cila** | Uzaktan kontrol (istek/kabul/her zaman/sağ tık ver, kırmızı çerçeve + rozet — yakalamadan hariç, panik kısayolu, yerel girdi 2 sn öncelik, Win tuşu engeli, pencere paylaşımında odak şartı, 10 dk boşta bitiş, host logu) ✅, DM (migration 2, `dm.open`, yalnızca ortak sunucudakiler) ✅, bildirimler (DM + @bahsetme, kanal/DM sessize alma, rahatsız etmeyin, görev çubuğu yanıp sönme) ✅, tepsi (sustur/sağırlaştır, kapatınca tepsiye, Windows ile başlat) ✅, auto-update (`electron-updater`, yalnızca kurulu uygulama) ✅, günlük DB yedeği (son 7, migration öncesi kopya, dışa/içe aktar, geri yükle) ✅, İngilizce + ana süreç metinleri i18n'de ✅. RNNoise → Faz 5 | Sunucu tarafı §7.3 kuralları test edildi ✅ (`pnpm test`, misafir/tarayıcı reddi, yalnızca kontrolcü girdisi, bırak/geri al/izlemeyi bırak/yayın bitti) · **gerçek iki PC'de SendInput + panik + çerçeve testi ⏳ kullanıcıda** |
 | **5 — Paketleme & Deneysel** | NSIS installer (kullanıcı başına, klasör seçimi, TR/EN, Windows < 19041 uyarısı, kaldırırken veri silme sorusu, `nooxcord://`) ✅, VC++ runtime uygulama yanında ✅, uygulama içi güvenlik duvarı kuralı ✅, lisans/üçüncü taraf bildirimleri ✅, README (SmartScreen) ✅ · imzalama ⏳ (sertifika yok), auto-update beslemesi (GitHub Releases) ✅, RNNoise + GTCRN ✅, opsiyonel exclusive fullscreen overlay hook ⏳ | Paketlenmiş uygulama `NX_SELFTEST=1` + `voice` (16) ✅ · **temiz Windows 10 VM'de setup → çalıştır ⏳ kullanıcıda** |
-| **6 — Render + Turso + P2P** (ADR 0003) | Sunucu tek bundle + `render.yaml` ✅, Turso yansıtma (yazma sırası, transaction grubu, açılışta kurulum, migration sonrası tam yükleme, cascade tetikleyicileri) ✅, dosyalar veritabanında ✅, mediasoup → P2P mesh (4 sabit transceiver, `rtc.signal`, `gen` ile yeniden kurma, STUN/TURN) ✅, masaüstünden yerel host/tünel/Hamachi/port/güvenlik duvarı/yedekleme kaldırıldı ✅, varsayılan sunucu (`VITE_NX_DEFAULT_HOST`) ✅ | `pnpm test` (23 + 18 + 6 + unfurl) ✅ · `pnpm test:voice` 29 ✅ · **Render + Turso kurulumu ve iki farklı ağdan gerçek P2P testi ⏳ kullanıcıda** |
+| **6 — Render + Turso + P2P** (ADR 0003) | Sunucu tek bundle + `render.yaml` ✅, Turso yansıtma (yazma sırası, transaction grubu, açılışta kurulum, migration sonrası tam yükleme, cascade tetikleyicileri) ✅, dosyalar veritabanında ✅, mediasoup → P2P mesh (4 sabit transceiver, `rtc.signal`, `gen` ile yeniden kurma, STUN/TURN) ✅, masaüstünden yerel host/tünel/Hamachi/port/güvenlik duvarı/yedekleme kaldırıldı ✅, varsayılan sunucu (`VITE_NX_DEFAULT_HOST`) ✅ | `pnpm test` (24 + 18 + 6 + unfurl) ✅ · `pnpm test:voice` 32 ✅ · **Render + Turso kurulumu ve iki farklı ağdan gerçek P2P testi ⏳ kullanıcıda** |
 
 ---
 
@@ -467,4 +474,5 @@ Geliştirme makinesinde gereken araçlar: Node.js LTS, pnpm, Rust (stable, `x86_
 31. **NAT:** simetrik NAT / mobil CGNAT'ta STUN yetmez → TURN gerekir (`CLOUDFLARE_TURN_*` veya `TURN_*`). Ayarlanmadıysa o kişiyle bağlantı "failed" kalır ve uyarı çıkar. Gerçek iki ağ testi ⏳.
 32. **Turso yansıtma:** yazmalar asenkron gider; sunucu çökerse son birkaç yüz ms kaybolabilir. Ağ hatasında artan aralıkla yeniden dener; SQL hatası veren grup atlanıp loglanır (yerel ile Turso ayrışabilir → bir sonraki açılışta Turso esas alınır). Turso'da NooXCord şeması olmayan dolu bir veritabanı reddedilir.
 33. **Render uykusu:** 15 dk trafiksiz kalınca uyur; ilk bağlanan ~1 dk bekler. Uyanırken yerel dosya Turso'dan yeniden kurulur (veri büyüdükçe açılış uzar; dosyalar dahil).
-34. **IP görünürlüğü:** P2P'de kanaldaki kişiler birbirinin IP adresini görür. İstenirse yalnızca TURN (`iceTransportPolicy: "relay"`) seçeneği eklenebilir.
+34. **IP görünürlüğü:** P2P'de kanaldaki kişiler birbirinin IP adresini görür. Önlem: "IP adresimi gizle" ayarı (§2.3) — yalnızca TURN; sunucuda TURN yoksa etkisiz.
+35. **2026-11-25 inceleme turu:** §12.2'deki üç sunucu düzeltmesi + kayıt yarışında 500 yerine 409, giriş-kilidi ve yazıyor haritalarının süpürülmesi. İstemci: @bahsetme vurgusu Türkçe harfle biten adlarda çalışmıyordu (`\b` ASCII; artık `notify.mentions`), tarihler arayüz dilini izliyor, gönderilemeyen mesajda **Tekrar dene / Sil**, mobilde üye listesi hiç görünmüyordu (1100px kuralı telefonu da gizliyordu), "en yeni mesaja git" düğmesi basılıyken yarım genişlik sağa kayıyordu (ortalama `transform` ile yapılmıştı, `:active` onu eziyordu). Gerçek telefonda (iOS Safari + Android Chrome) yeni mobil düzenin denenmesi ⏳ kullanıcıda.

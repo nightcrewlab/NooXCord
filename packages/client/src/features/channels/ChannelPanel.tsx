@@ -148,7 +148,7 @@ export function ChannelPanel({ guildId }: { guildId: string }) {
   );
 
   return (
-    <aside className={s.card}>
+    <aside className={cx(s.card, s.navPanel)}>
       <button className={s.guildHead} onClick={guildMenu} aria-haspopup="menu">
         <span className={s.guildName}>{gs.guild.name}</span>
         <Icon name="chevron-down" size={18} />

@@ -11,8 +11,10 @@ import { useStore } from "../../state/store";
 import { Avatar, Button, IconButton, Spinner, cx, useMenu } from "../../ui";
 import { RemoteSurface } from "../remote/Remote";
 import chat from "../chat/chat.module.css";
+import { usePhoneLandscape } from "../layout/screen";
 import layout from "../layout/layout.module.css";
 import { CallTimer, LiveBadge, StreamVideo, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
+import { PingButton } from "./ConnectionStats";
 import s from "./voice.module.css";
 
 /** Main area for a voice channel: streams on top, participants below, call controls at the bottom. */
@@ -40,6 +42,7 @@ export function VoiceStage({ guildId, channel, onShare }: { guildId: string; cha
         <Icon name="speaker" size={22} />
         <span className={chat.headName}>{channel.name}</span>
         <CallTimer guildId={guildId} channelId={channel.id} />
+        {here && v.status === "connected" && <PingButton icon />}
         <span style={{ flex: 1 }} />
         {!theater && <IconButton icon="users" label={t("members.toggle")} aria-pressed={showMembers} onClick={toggleMembers} />}
       </header>
@@ -139,6 +142,7 @@ function StripPerson({ state, isMe, onVolume }: { state: VoiceState; isMe: boole
   const speaking = useIsSpeaking(state.channelId, state.userId);
   const remoteCam = useVoice((x) => (isMe ? undefined : x.cams[state.userId]));
   const myCam = useVoice((x) => (isMe ? x.camera : null));
+  const compact = usePhoneLandscape();
   if (!user) return null;
   const cam = isMe ? (myCam ? voice.localCamera() : null) : remoteCam ?? null;
   const live = !!state.stream && !isMe;
@@ -156,7 +160,7 @@ function StripPerson({ state, isMe, onVolume }: { state: VoiceState; isMe: boole
           <span className={s.stripThumb} style={thumb ? { backgroundImage: `url("${thumb}")` } : undefined}>{!thumb && <Icon name="monitor" size={24} />}</span>
           <span className={s.stripWatch}><Icon name="eye" size={18} />{t("stream.watch")}</span>
         </>
-      ) : cam ? <CamVideo stream={cam} mirror={isMe && myCam?.facing === "user"} /> : <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={48} /></span>}
+      ) : cam ? <CamVideo stream={cam} mirror={isMe && myCam?.facing === "user"} /> : <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={compact ? 28 : 48} /></span>}
       <span className={s.stripIcons}>
         {(state.muted || state.suppressed) && <Icon name="mic-off" size={14} label={t("voice.mute")} />}
         {state.deafened && <Icon name="headphones-off" size={14} label={t("voice.deafen")} />}
@@ -177,6 +181,7 @@ function Person({ state, onVolume, isMe }: { state: VoiceState; onVolume: (e: Re
   const speaking = useIsSpeaking(state.channelId, state.userId);
   const remoteCam = useVoice((x) => (isMe ? undefined : x.cams[state.userId]));
   const myCam = useVoice((x) => (isMe ? x.camera : null));
+  const compact = usePhoneLandscape();
   const [big, setBig] = useState(false);
   if (!user) return null;
   const cam = isMe ? (myCam ? voice.localCamera() : null) : remoteCam ?? null;
@@ -202,7 +207,7 @@ function Person({ state, onVolume, isMe }: { state: VoiceState; onVolume: (e: Re
         {(state.muted || state.suppressed) && <Icon name="mic-off" size={16} label={state.suppressed ? t("voice.suppressed") : t("voice.mute")} />}
         {state.deafened && <Icon name="headphones-off" size={16} label={t("voice.deafen")} />}
       </span>
-      <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={76} /></span>
+      <span className={cx(s.ring, speaking && s.ringOn)}><Avatar user={user} size={compact ? 52 : 76} /></span>
       <div className={s.personName}>
         <span>{user.nickname}{isMe ? ` (${t("voice.you")})` : ""}</span>
         {state.stream && <LiveBadge />}
@@ -387,6 +392,15 @@ function WatchTile({ userId, w, state, big, onPick }: { userId: string; w: Watch
   const vol = useVoiceSettings((st) => st.volumes[`stream:${userId}`] ?? 1);
   const ref = useRef<HTMLDivElement>(null);
   const [pseudo, setPseudo] = useState(false);
+  // Touch screens have no hover: a tap shows the bar for a few seconds; using it keeps it up.
+  const [bar, setBar] = useState(false);
+  const barTimer = useRef(0);
+  const showBar = () => {
+    setBar(true);
+    window.clearTimeout(barTimer.current);
+    barTimer.current = window.setTimeout(() => setBar(false), 4000);
+  };
+  useEffect(() => () => window.clearTimeout(barTimer.current), []);
   useEffect(() => {
     if (!pseudo) return;
     const key = (e: KeyboardEvent) => e.key === "Escape" && setPseudo(false);
@@ -398,10 +412,10 @@ function WatchTile({ userId, w, state, big, onPick }: { userId: string; w: Watch
   // Any client may control (browser and phone too) when a role allows it; only desktop streamers can be controlled.
   const canAsk = big && live && !!state?.stream?.controllable && has(useStore.getState().guilds[state.guildId]?.myPerms ?? 0, P.REQUEST_REMOTE_CONTROL);
   return (
-    <div ref={ref} className={cx(s.tile, big && s.big, onPick && !rc.controlling && s.tileClickable, pseudo && s.pseudoFs)} onClick={() => { if (!rc.controlling && !pseudo && !(document as FsDoc).fullscreenElement && !(document as FsDoc).webkitFullscreenElement) onPick?.(); }}>
+    <div ref={ref} className={cx(s.tile, big && s.big, onPick && !rc.controlling && s.tileClickable, pseudo && s.pseudoFs)} onClick={() => { showBar(); if (!rc.controlling && !pseudo && !(document as FsDoc).fullscreenElement && !(document as FsDoc).webkitFullscreenElement) onPick?.(); }}>
       {w && live ? <StreamVideo stream={w.stream} muted={deafened} volume={vol} /> : <div className={s.tileCenter}><Spinner />{t("stream.loading")}</div>}
       {rc.controlling && live && <RemoteSurface tileRef={ref} />}
-      <div className={s.tileBar} onClick={(e) => e.stopPropagation()}>
+      <div className={cx(s.tileBar, bar && s.tileBarOn)} onClick={(e) => { e.stopPropagation(); showBar(); }}>
         <div className={s.tileName}>{state?.stream && <LiveBadge />}<span>{user?.nickname}</span></div>
         {big && w?.hasAudio && (
           <input className={s.tileVol} type="range" min={0} max={100} value={Math.round(vol * 100)} aria-label={t("voice.volume")}

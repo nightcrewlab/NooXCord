@@ -21,7 +21,7 @@ export function DmPanel() {
   const list = Object.values(dms).sort((a, b) => (b.lastMessageId ?? b.id).localeCompare(a.lastMessageId ?? a.id));
 
   return (
-    <aside className={s.card}>
+    <aside className={cx(s.card, s.navPanel)}>
       <div className={s.guildHead} style={{ cursor: "default" }}>
         <span className={s.guildName}>{t("dm.title")}</span>
       </div>

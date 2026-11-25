@@ -7,6 +7,7 @@ import { platform } from "../../platform";
 import { useStore } from "../../state/store";
 import { Avatar, cx } from "../../ui";
 import { CallTimer, LiveBadge, useChannelVoice, useIsSpeaking, useVolumePopover } from "./common";
+import { PingButton } from "./ConnectionStats";
 import { cameraSupported, toggleCamera } from "./VoiceStage";
 import s from "./voice.module.css";
 
@@ -58,7 +59,8 @@ export function VoiceBar({ onShare }: { onShare: () => void }) {
         <div className={s.barStatus}>
           <div className={cx(s.barTitle, !ok && s.warn)}>
             <Icon name="signal" size={16} />
-            {ok ? t("voice.connected") : v.status === "reconnecting" ? t("voice.reconnecting") : t("voice.connecting")}
+            <span className={s.barLabel}>{ok ? t("voice.connected") : v.status === "reconnecting" ? t("voice.reconnecting") : t("voice.connecting")}</span>
+            {ok && <PingButton />}
             {ok && <CallTimer guildId={v.guildId!} channelId={v.channelId!} className={s.barTimer} />}
           </div>
           <button className={s.barChan} onClick={() => selectChannel(v.guildId!, v.channelId!)}>{channel?.name ?? ""} / {guildName}</button>

@@ -18,6 +18,8 @@ export interface ChannelMessages {
 export interface PendingMessage extends Message {
   pending: true;
   failed?: boolean;
+  /** What was sent, so a failed message can be sent again. */
+  send?: { replyTo?: string; attachmentIds?: string[] };
 }
 
 export type Screen = "hosts" | "auth" | "app";
@@ -34,6 +36,8 @@ interface State {
   http: HostHttp | null;
   conn: HostConnection | null;
   connStatus: ConnStatus | "idle";
+  /** Round trip to the host in ms (null while unknown). */
+  ping: number | null;
 
   me: SelfUser | null;
   users: Record<string, PublicUser>;
@@ -63,6 +67,9 @@ interface Actions {
   selectChannel(guildId: string, channelId: string): void;
   loadMessages(channelId: string, older?: boolean): Promise<void>;
   sendMessage(channelId: string, content: string, opts?: { replyTo?: string; attachmentIds?: string[]; preview?: Message["attachments"] }): Promise<void>;
+  /** A message that could not be sent: try again, or drop it from the list. */
+  retryMessage(channelId: string, nonce: string): Promise<void>;
+  discardPending(channelId: string, nonce: string): void;
   markRead(channelId: string): void;
   toggleMembers(): void;
   toast(text: string, kind?: Toast["kind"]): void;
@@ -80,6 +87,7 @@ const initial: State = {
   http: null,
   conn: null,
   connStatus: "idle",
+  ping: null,
   me: null,
   users: {},
   guilds: {},
@@ -290,6 +298,24 @@ export const useStore = create<Store>()((set, get) => {
     set((s) => (s.guilds[id] ? { guilds: { ...s.guilds, [id]: fn(s.guilds[id]!) } } : {}));
   }
 
+  /** Sends a pending message; the "message.create" event then replaces the optimistic entry. */
+  async function deliver(p: PendingMessage): Promise<void> {
+    const { channelId, nonce } = p;
+    const fail = (msg: string) => {
+      set((s) => ({ pending: { ...s.pending, [channelId]: (s.pending[channelId] ?? []).map((x) => (x.nonce === nonce ? { ...x, failed: true } : x)) } }));
+      get().toast(msg, "error");
+    };
+    const conn = get().conn;
+    if (!conn) return fail(t("err.sendFailed"));
+    try {
+      await conn.call("message.send", { channelId, content: p.content, replyTo: p.send?.replyTo, attachmentIds: p.send?.attachmentIds, nonce });
+    } catch (e) {
+      // The answer got lost but the message arrived (it is in the list already): nothing failed.
+      if (!get().pending[channelId]?.some((x) => x.nonce === nonce)) return;
+      fail(e instanceof RpcError ? e.message : t("err.sendFailed"));
+    }
+  }
+
   function startConnection(http: HostHttp) {
     get().conn?.close();
     const conn = new HostConnection(http);
@@ -305,7 +331,8 @@ export const useStore = create<Store>()((set, get) => {
         get().toast(t("conn.sessionExpired"), "error");
       }
     });
-    set({ conn, connStatus: "connecting" });
+    conn.onPing((ms) => { if (get().conn === conn) set({ ping: ms }); });
+    set({ conn, connStatus: "connecting", ping: null });
     conn.connect();
   }
 
@@ -409,15 +436,21 @@ export const useStore = create<Store>()((set, get) => {
       const optimistic: PendingMessage = {
         id: `pending-${nonce}`, channelId, authorId: me.id, content, replyTo: opts.replyTo ?? null,
         attachments: opts.preview ?? [], embeds: [], createdAt: Date.now(), editedAt: null, nonce, pending: true,
+        send: { replyTo: opts.replyTo, attachmentIds: opts.attachmentIds },
       };
       set((s) => ({ pending: { ...s.pending, [channelId]: [...(s.pending[channelId] ?? []), optimistic] } }));
-      try {
-        await conn.call("message.send", { channelId, content, replyTo: opts.replyTo, attachmentIds: opts.attachmentIds, nonce });
-        // the message.create event replaces the optimistic entry
-      } catch (e) {
-        set((s) => ({ pending: { ...s.pending, [channelId]: (s.pending[channelId] ?? []).map((p) => (p.nonce === nonce ? { ...p, failed: true } : p)) } }));
-        get().toast(e instanceof RpcError ? e.message : t("err.sendFailed"), "error");
-      }
+      await deliver(optimistic);
+    },
+
+    async retryMessage(channelId, nonce) {
+      const p = get().pending[channelId]?.find((x) => x.nonce === nonce);
+      if (!p?.failed) return;
+      set((s) => ({ pending: { ...s.pending, [channelId]: (s.pending[channelId] ?? []).map((x) => (x.nonce === nonce ? { ...x, failed: false } : x)) } }));
+      await deliver(p);
+    },
+
+    discardPending(channelId, nonce) {
+      set((s) => ({ pending: { ...s.pending, [channelId]: (s.pending[channelId] ?? []).filter((x) => x.nonce !== nonce) } }));
     },
 
     markRead(channelId) {

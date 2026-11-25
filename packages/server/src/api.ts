@@ -23,12 +23,19 @@ export class Api {
   constructor(private db: Db, private store: Store, private hub: Hub, private blobs: Blobs) {}
 
   async call<M extends MethodName>(userId: string, method: M, raw: unknown): Promise<MethodResults[M]> {
+    // Own keys only: "toString" or "constructor" are on every object but are not methods.
+    if (!Object.hasOwn(Methods, method) || !Object.hasOwn(this.handlers, method)) fail("bad_request", "Bilinmeyen işlem.");
     const schema = Methods[method];
-    if (!schema) fail("bad_request", "Bilinmeyen işlem.");
     const parsed = schema.safeParse(raw);
     if (!parsed.success) fail("bad_request", parsed.error.issues[0]?.message ?? "Geçersiz istek.");
     const h = (this.handlers as Record<string, Handler>)[method]!;
     return (await h(userId, parsed.data as never)) as MethodResults[M];
+  }
+
+  /** Drops typing throttle entries nobody needs any more. */
+  sweep(): void {
+    const now = Date.now();
+    for (const [k, at] of this.typingAt) if (now - at > 60_000) this.typingAt.delete(k);
   }
 
   // ---------- helpers ----------

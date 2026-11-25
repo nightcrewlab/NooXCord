@@ -1,8 +1,21 @@
-import { t } from "../i18n";
+import { getLang, t } from "../i18n";
 
-const timeFmt = new Intl.DateTimeFormat("tr-TR", { hour: "2-digit", minute: "2-digit" });
-const dateFmt = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "long", year: "numeric" });
-const fullFmt = new Intl.DateTimeFormat("tr-TR", { dateStyle: "full", timeStyle: "short" });
+// Dates follow the interface language (they were Turkish even with the English interface).
+const LOCALE = { tr: "tr-TR", en: "en-GB" } as const;
+function formats() {
+  const locale = LOCALE[getLang()];
+  return {
+    locale,
+    time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }),
+    date: new Intl.DateTimeFormat(locale, { day: "numeric", month: "long", year: "numeric" }),
+    full: new Intl.DateTimeFormat(locale, { dateStyle: "full", timeStyle: "short" }),
+  };
+}
+let cached = formats();
+const fmt = () => (cached.locale === LOCALE[getLang()] ? cached : (cached = formats()));
+const timeFmt = { format: (ts: number) => fmt().time.format(ts) };
+const dateFmt = { format: (ts: number) => fmt().date.format(ts) };
+const fullFmt = { format: (ts: number) => fmt().full.format(ts) };
 
 const dayStart = (ts: number) => new Date(ts).setHours(0, 0, 0, 0);
 

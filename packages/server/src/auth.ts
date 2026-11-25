@@ -30,7 +30,8 @@ export async function verifyPassword(pw: string, stored: string): Promise<boolea
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /** Simple per-login lockout: 5 failures -> 5 minutes. */
-const failures = new Map<string, { count: number; until: number }>();
+const failures = new Map<string, { count: number; until: number; at: number }>();
+const FAILURE_TTL = 15 * 60_000;
 
 export class Auth {
   constructor(private db: Db, private store: Store) {}
@@ -41,7 +42,13 @@ export class Auth {
     if (this.db.get("SELECT 1 FROM users WHERE email = ?", b.email)) fail("conflict", "Bu e-posta ile kayıtlı bir hesap var.");
     const hash = await hashPassword(b.password);
     const id = newId();
-    this.db.run("INSERT INTO users (id, nickname, email, pass_hash, created_at) VALUES (?, ?, ?, ?, ?)", id, b.nickname, b.email, hash, Date.now());
+    try {
+      this.db.run("INSERT INTO users (id, nickname, email, pass_hash, created_at) VALUES (?, ?, ?, ?, ?)", id, b.nickname, b.email, hash, Date.now());
+    } catch (e) {
+      // Two sign-ups with the same name raced past the checks above while their passwords were hashed.
+      if (/UNIQUE/i.test(String((e as Error).message))) fail("conflict", "Bu kullanıcı adı veya e-posta alınmış.");
+      throw e;
+    }
     const token = this.createSession(id, userAgent);
     return { token, user: this.store.selfUser(this.store.userRow(id)!) };
   }
@@ -54,8 +61,9 @@ export class Auth {
     const row = this.db.get<UserRow>("SELECT * FROM users WHERE (email = ?1 OR nickname = ?1) AND guest = 0", b.login);
     const ok = row?.pass_hash ? await verifyPassword(b.password, row.pass_hash) : (await hashPassword(b.password), false);
     if (!row || !ok) {
-      const cur = failures.get(key) ?? { count: 0, until: 0 };
+      const cur = failures.get(key) ?? { count: 0, until: 0, at: 0 };
       cur.count++;
+      cur.at = Date.now();
       if (cur.count >= 5) { cur.until = Date.now() + 5 * 60_000; cur.count = 0; }
       failures.set(key, cur);
       fail("unauthorized", "E-posta/kullanıcı adı veya şifre hatalı.");
@@ -107,6 +115,12 @@ export class Auth {
     if (!s || s.expires_at < now) return null;
     if (now - s.last_used_at > SLIDE_AFTER) this.db.run("UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?", now, now + SESSION_TTL, s.id);
     return s.user_id;
+  }
+
+  /** Forgets finished lockouts and stale failure counts (the map is keyed by whatever login was typed). */
+  sweep(): void {
+    const now = Date.now();
+    for (const [k, f] of failures) if (f.until < now && now - f.at > FAILURE_TTL) failures.delete(k);
   }
 
   logout(token: string): void {

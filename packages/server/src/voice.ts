@@ -65,12 +65,12 @@ export class Voice {
   }
 
   async call<M extends MethodName>(conn: Conn, method: M, raw: unknown): Promise<MethodResults[M]> {
+    if (!Object.hasOwn(Methods, method) || !Object.hasOwn(this.handlers, method)) fail("bad_request", "Bilinmeyen işlem.");
     const schema = Methods[method];
     const parsed = schema.safeParse(raw);
     if (!parsed.success) fail("bad_request", parsed.error.issues[0]?.message ?? "Geçersiz istek.");
-    const h = (this.handlers as Record<string, (c: Conn, p: never) => unknown>)[method];
-    if (!h) fail("bad_request", "Bilinmeyen işlem.");
-    return (await h!(conn, parsed.data as never)) as MethodResults[M];
+    const h = (this.handlers as Record<string, (c: Conn, p: never) => unknown>)[method]!;
+    return (await h(conn, parsed.data as never)) as MethodResults[M];
   }
 
   /** Voice states of a guild, for GuildState. */

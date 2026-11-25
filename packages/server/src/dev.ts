@@ -19,6 +19,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const env = process.env;
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 
+// A bug in one request must not take everyone's chat and calls down with it: log it and keep serving.
+process.on("unhandledRejection", (e) => console.error(new Date().toISOString(), "[host] unhandled rejection:", e));
+
 let remote: import("@libsql/client").Client | undefined;
 if (env.TURSO_DATABASE_URL) {
   // The web client needs no native module (fetch only), so the bundle runs anywhere.

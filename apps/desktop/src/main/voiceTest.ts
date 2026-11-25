@@ -216,6 +216,32 @@ export async function voiceSelfTest(): Promise<void> {
     c.setSize(1280, 800);
     check("theater: stream tiles fit the stage at any window size", fitResults.every((x) => x.endsWith(":ok")), fitResults.join(" | "));
 
+    // A phone held sideways (wide but short, CLAUDE.md 9.1): tabs become a rail on the left, the call
+    // controls a column on the right, and the watched streams still fit what is left.
+    c.setContentSize(820, 380);
+    let phone = "";
+    for (let i = 0; i < 25 && phone !== "ok"; i++) {
+      await sleep(200);
+      phone = await js<string>(c, `(() => {
+        const tabs = document.querySelector("[class*=_mTabs_]"); if (!tabs) return "no tab bar " + innerWidth + "x" + innerHeight;
+        if (!document.querySelector("main [class*=_theaterMain_]")) { tabs.querySelectorAll("button")[2].click(); return "opening the voice tab"; }
+        const t = tabs.getBoundingClientRect(), dock = document.querySelector("[class*=_controls_]");
+        if (!(t.height > t.width && t.left < 20)) return "tabs not on the side";
+        if (!dock || getComputedStyle(dock).flexDirection !== "column") return "controls not in a column";
+        const d = dock.getBoundingClientRect();
+        return d.bottom <= innerHeight + 1 && d.right <= innerWidth + 1 ? "ok" : "controls off screen";
+      })()`);
+    }
+    const phoneFit = phone === "ok" ? await fits() : "-";
+    await shot("phone-landscape");
+    c.setSize(1280, 800);
+    let desktopBack = false;
+    for (let i = 0; i < 25 && !desktopBack; i++) {
+      await sleep(200);
+      desktopBack = await js<boolean>(c, `!document.querySelector("[class*=_mTabs_]") && !!document.querySelector("main [class*=_theaterMain_]")`);
+    }
+    check("phone landscape: side tabs, controls column, streams fit; back to desktop", phone === "ok" && phoneFit === "ok" && desktopBack, `${phone} / fit ${phoneFit} / desktop ${desktopBack}`);
+
     // An unwatched stream sits in the strip with its preview; clicking it watches it again.
     await c.webContents.executeJavaScript(`window.__nx.voice.unwatch(${JSON.stringify(idb)})`);
     await sleep(800);
@@ -229,6 +255,28 @@ export async function voiceSelfTest(): Promise<void> {
     check("viewer count on A's stream", viewers === 2, `${viewers}`);
     const sends = await linksOf(a);
     check("A's screen goes to both viewers", sends[idb]?.screen === true && sends[idc]?.screen === true, JSON.stringify(sends));
+
+    // Ping and connection statistics (CLAUDE.md §12.3): C is connected to A and B and watches both streams.
+    type Peer = { state: string; path: string | null; rttMs: number | null; downKbps: number | null; lossPct: number | null; videoIn: string | null };
+    await js(c, `window.__nx.voice.peerStats()`);
+    await sleep(1300); // rates are differences between two samples
+    const peerStats = await js<Peer[]>(c, `window.__nx.voice.peerStats()`);
+    const hostPing = await js<number | null>(c, `window.__nx.useStore.getState().ping`);
+    const statsOk = peerStats.length === 2 && peerStats.every((p) => p.state === "connected" && !!p.path && (p.rttMs ?? 0) >= 1 && (p.downKbps ?? 0) > 0 && /\d+p\d+/.test(p.videoIn ?? ""));
+    check("statistics: path, ping, bitrate and video per person; ping to the host", statsOk && typeof hostPing === "number" && hostPing >= 1 && hostPing < 5000, `host ${hostPing} ms ${JSON.stringify(peerStats)}`);
+    const chip = await js<string | null>(c, `(() => { const b = document.querySelector("[class*=_ping_]"); if (!b) return null; b.click(); return b.textContent; })()`);
+    await sleep(700);
+    const panelRows = await js<number>(c, `document.querySelectorAll("[class*=_statPeer_]").length`);
+    if (process.env.NX_SHOT) {
+      // A hidden window's capture leaves out anything behind a backdrop filter: drop it for the picture.
+      await js(c, `(() => { const d = document.querySelector("[role=dialog]"); if (d) d.parentElement.style.backdropFilter = "none"; })()`);
+      await sleep(400);
+    }
+    await shot("stats");
+    await js(c, `window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+    await sleep(200);
+    const panelClosed = await js<number>(c, `document.querySelectorAll("[class*=_statPeer_]").length`);
+    check("ping chip opens the connection panel", /\d+ ms/.test(chip ?? "") && panelRows === 2 && panelClosed === 0, `"${chip}" ${panelRows} ${panelClosed}`);
 
     // Speaking detection: fake mics beep; each client reports its own voice gate.
     let spoke = false;

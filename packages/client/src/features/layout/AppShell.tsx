@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import type { Channel } from "@nooxcord/shared";
 import { Icon } from "@nooxcord/icons";
 import { t } from "../../i18n";
@@ -16,6 +16,7 @@ import { VoiceStage } from "../voice/VoiceStage";
 import { DmPanel } from "../dm/DmPanel";
 import { openShareModal, useShareModal } from "../voice/common";
 import s from "./layout.module.css";
+import { useMobile } from "./screen";
 
 export function AppShell() {
   const guest = useStore((st) => !!st.me?.guest);
@@ -94,15 +95,7 @@ export function AppShell() {
   );
 }
 
-// ---------- mobile (< 768 px, CLAUDE.md §9.1) ----------
-
-const MQ = "(max-width: 767px)";
-const subscribeMq = (cb: () => void) => {
-  const m = window.matchMedia(MQ);
-  m.addEventListener("change", cb);
-  return () => m.removeEventListener("change", cb);
-};
-export const useMobile = (): boolean => useSyncExternalStore(subscribeMq, () => window.matchMedia(MQ).matches);
+// ---------- mobile (CLAUDE.md §9.1; which screens count as mobile: ./screen) ----------
 
 type MobileTab = "servers" | "chat" | "voice";
 

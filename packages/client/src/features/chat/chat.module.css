@@ -22,6 +22,7 @@
 .msg.first { margin-top: 12px; padding-top: 4px; }
 .msg.mention { background: linear-gradient(90deg, rgba(255, 122, 69, .13), rgba(255, 179, 71, .04)); box-shadow: inset 3px 0 0 var(--nx-accent); }
 .msg.pending { opacity: .55; }
+.msg.failed { opacity: 1; }
 .msg.failed .text { color: #ff7088; }
 .gutter { display: flex; justify-content: center; }
 .hoverTime { visibility: hidden; font-size: 11px; color: var(--nx-text-3); line-height: 22px; }
@@ -40,6 +41,8 @@
 
 .tools { position: absolute; right: 8px; top: -14px; display: none; gap: 2px; padding: 3px; background: var(--nx-bg-2); border: 1px solid var(--nx-edge); border-radius: 12px; box-shadow: 0 6px 18px rgba(0, 0, 0, .35); z-index: 2; }
 .msg:hover .tools { display: flex; }
+/* a message that was not sent: retry / discard stay visible (no hover on touch screens) */
+.tools.toolsShown { display: flex; }
 
 .atts { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; align-items: flex-start; }
 .img { display: block; border-radius: var(--nx-radius-m); overflow: hidden; background: var(--nx-bg-2); cursor: zoom-in; border: 0; padding: 0; }
@@ -59,7 +62,9 @@
 .editBox { display: flex; flex-direction: column; gap: 4px; }
 .editHint { font-size: 12px; color: var(--nx-text-3); }
 
-.jump { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; }
+/* Centred with margins, not a transform: the button's pressed state sets its own transform, which
+   replaced translateX(-50%) and threw the button half its width to the right while it was held. */
+.jump { position: absolute; left: 0; right: 0; bottom: 12px; width: max-content; max-width: calc(100% - 24px); margin: 0 auto; z-index: 3; }
 
 /* composer */
 .composer { flex: none; padding: 0 14px 14px; }
@@ -94,3 +99,12 @@
 .lightbox img { max-width: 92vw; max-height: 88vh; border-radius: 8px; box-shadow: 0 20px 60px rgba(0, 0, 0, .6); }
 .lightboxBar { position: fixed; top: 16px; right: 16px; display: flex; gap: 8px; }
 @keyframes fade { from { opacity: 0 } }
+
+@media (pointer: coarse) {
+  .textarea { font-size: 16px; } /* under 16 px iOS zooms the page on focus */
+}
+@media (orientation: landscape) and (max-height: 500px) and (min-width: 560px) {
+  .head { height: 42px; padding: 0 8px 0 14px; }
+  .composer { padding: 0 8px 8px; }
+  .welcome { padding-top: 8px; }
+}

@@ -110,9 +110,29 @@
 .mTabOn { color: var(--nx-accent); background: var(--nx-tint); }
 .mTabIcon { position: relative; display: grid; }
 .mLive { position: absolute; right: -4px; top: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--nx-speaking); border: 2px solid var(--nx-bg-1); }
-@media (max-width: 767px) {
-  .chan { height: 44px; }
-}
 
 .dmItem { gap: 10px; padding-top: 6px; padding-bottom: 6px; }
 .dmEmpty { padding: 12px 8px; color: var(--nx-text-3); font-size: 13px; line-height: 1.5; }
+
+/* ---------- touch and phones ---------- */
+@media (max-width: 767px), (max-height: 500px) {
+  .chan { height: 44px; }
+}
+/* A phone held sideways: the tab bar becomes a rail on the left (height is what is scarce), and the
+   channel panel puts the voice bar and the user row beside the channel list instead of under it. */
+@media (orientation: landscape) and (max-height: 500px) and (min-width: 560px) {
+  .mShell { flex-direction: row; padding-top: 0; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  .mTabs { order: -1; width: 62px; grid-template-columns: 1fr; grid-template-rows: repeat(4, minmax(0, 1fr)); margin: 6px 0 calc(6px + env(safe-area-inset-bottom)) 6px; border-radius: 18px; }
+  .mTab { min-height: 0; font-size: 10px; border-radius: 14px; }
+  .mBody { padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); }
+  .mNav { grid-template-columns: 60px minmax(0, 1fr); }
+  .mNav .railItem { width: 60px; }
+  .mNav .rail { gap: 8px; }
+  .navPanel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 38%); grid-template-rows: auto minmax(0, 1fr) auto; }
+  .navPanel > .guildHead { grid-column: 1 / -1; grid-row: 1; height: 44px; }
+  .navPanel > .channels { grid-column: 1; grid-row: 2 / 4; border-right: 1px solid var(--nx-edge); }
+  .navPanel > .me { grid-column: 2; grid-row: 3; }
+  /* the voice bar (the only other child) */
+  .navPanel > :not(.guildHead):not(.channels):not(.me) { grid-column: 2; grid-row: 2; align-self: end; }
+  .emptyIcon { display: none; }
+}

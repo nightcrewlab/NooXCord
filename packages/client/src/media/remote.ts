@@ -38,6 +38,12 @@ class RemoteControl {
   private conn: HostConnection | null = null;
   private off: (() => void) | null = null;
   private always = new Set<string>();
+  /**
+   * Viewers I said yes to (accept, "always", or "give control") since control last ended. The host
+   * announces who controls my stream, but input is injected only for someone approved on this PC:
+   * a host I merely joined (a join link opens any address) cannot hand my keyboard to anyone.
+   */
+  private granted = new Set<string>();
   private queue: RemoteInputEvent[] = [];
   private lastMove: RemoteInputEvent | null = null;
   private raf = 0;
@@ -101,7 +107,17 @@ class RemoteControl {
       if (!v.stream) useRemote.setState({ requests: [] });
       const cur = useRemote.getState().controlledBy;
       if (controller === cur) return;
+      if (controller && !this.granted.has(controller)) {
+        console.warn("[remote] the host named a controller that was not approved here; refused");
+        if (cur) {
+          useRemote.setState({ controlledBy: null });
+          void platform.remote?.end();
+        }
+        void this.conn?.call("remote.stop", { streamerId: me }).catch(() => {});
+        return;
+      }
       useRemote.setState({ controlledBy: controller });
+      if (!controller) this.granted.clear(); // the next session needs its own yes
       if (controller) {
         void platform.remote?.begin(t("remote.frame", { user: this.name(controller) })).then((r) => {
           if (!r.ok) {
@@ -125,6 +141,7 @@ class RemoteControl {
 
   reset(): void {
     if (useRemote.getState().controlledBy) void platform.remote?.end();
+    this.granted.clear();
     this.queue = [];
     useRemote.setState({ requests: [], asked: null, controlling: null, controlledBy: null });
   }
@@ -173,7 +190,11 @@ class RemoteControl {
   async respond(userId: string, allow: boolean, always = false): Promise<void> {
     useRemote.setState((s) => ({ requests: s.requests.filter((x) => x !== userId) }));
     if (always) this.always.add(userId);
-    await this.conn?.call("remote.respond", { userId, allow }).catch((e: Error) => this.toast(e.message, "error"));
+    if (allow) this.granted.add(userId);
+    await this.conn?.call("remote.respond", { userId, allow }).catch((e: Error) => {
+      this.granted.delete(userId);
+      this.toast(e.message, "error");
+    });
   }
 
   give(userId: string): Promise<void> {

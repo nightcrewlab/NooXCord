@@ -8,4 +8,4 @@
 .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; font-size: 14px; }
 .crown { color: var(--nx-warn); display: inline-flex; }
 @media (max-width: 1100px) { .panel { display: none; } }
-@media (max-width: 767px) { .panel { width: auto; } }
+@media (max-width: 767px), (max-height: 500px) { .panel { display: flex; width: auto; } }

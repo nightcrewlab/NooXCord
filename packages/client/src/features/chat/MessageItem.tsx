@@ -79,6 +79,12 @@ export const MessageItem = memo(function MessageItem(p: MessageItemProps) {
         )}
         {msg.embeds.map((e, i) => <EmbedView key={i} e={e} />)}
       </div>
+      {pending && (msg as PendingMessage).failed && (
+        <div className={cx(s.tools, s.toolsShown)}>
+          <IconButton icon="refresh" size={18} label={t("common.retry")} onClick={() => void useStore.getState().retryMessage(msg.channelId, msg.nonce!)} />
+          <IconButton icon="trash" size={18} label={t("common.delete")} onClick={() => useStore.getState().discardPending(msg.channelId, msg.nonce!)} />
+        </div>
+      )}
       {!pending && !p.editing && (
         <div className={s.tools}>
           <IconButton icon="reply" size={18} label={t("chat.reply")} onClick={() => p.onReply(msg)} />

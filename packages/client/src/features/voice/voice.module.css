@@ -244,3 +244,97 @@
   background: rgba(5, 6, 9, .55); color: #fff; font-size: 12px; font-weight: 700; opacity: 0; transition: opacity var(--nx-fast);
 }
 .stripItem:hover .stripWatch { opacity: 1; }
+
+/* ping chip (voice bar, stage header) and the connection panel behind it */
+.ping { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 6px; border: 1px solid transparent; background: var(--nx-bg-3); color: var(--nx-text-2); font: 600 11px var(--nx-font); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer; }
+.ping:hover { border-color: var(--nx-edge); }
+.pingGood { color: var(--nx-speaking); }
+.pingOk { color: var(--nx-warn); }
+.pingBad { color: #ff7088; }
+.barLabel { overflow: hidden; text-overflow: ellipsis; }
+.statTop { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.statBox { padding: 12px 14px; border-radius: var(--nx-radius-m); background: var(--nx-bg-2); border: 1px solid var(--nx-line); min-width: 0; }
+.statLabel { font: 700 11px/1 var(--nx-font); letter-spacing: .06em; text-transform: uppercase; color: var(--nx-text-3); }
+.statValue { margin-top: 8px; font: 700 20px var(--nx-font-display); font-variant-numeric: tabular-nums; color: var(--nx-text-1); }
+.statHint { margin-top: 6px; font-size: 12px; line-height: 1.4; color: var(--nx-text-3); }
+.statTitle { margin: 18px 0 8px; font: 700 11px/1 var(--nx-font); letter-spacing: .06em; text-transform: uppercase; color: var(--nx-text-2); }
+.statPeers { display: flex; flex-direction: column; gap: 8px; }
+.statPeer { padding: 10px 12px; border-radius: var(--nx-radius-m); background: var(--nx-bg-2); border: 1px solid var(--nx-line); }
+.statPeerHead { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.statPeerName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.statPath { flex: none; padding: 2px 8px; border-radius: 6px; background: var(--nx-bg-3); font: 600 12px var(--nx-font); white-space: nowrap; }
+.statGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px 12px; margin-top: 10px; }
+.statCell { min-width: 0; }
+.statCell dt { font-size: 11px; color: var(--nx-text-3); }
+.statCell dd { margin: 2px 0 0; font: 600 13px var(--nx-font); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.statNote { margin-top: 12px; padding: 10px 12px; border-radius: var(--nx-radius-m); background: var(--nx-bg-2); border: 1px solid var(--nx-line); color: var(--nx-text-2); font-size: 13px; line-height: 1.45; display: flex; gap: 10px; }
+.statNote > svg { flex: none; margin-top: 1px; }
+.statNote.warnNote { border-color: rgba(245, 196, 81, .35); }
+
+/* ---------- touch ---------- */
+/* No hover on a touch screen: a tap on the stream shows its bar for a few seconds (WatchTile), and
+   while it is hidden its buttons must not swallow that tap. */
+.tileBar.tileBarOn { opacity: 1; }
+@media (hover: none) {
+  .tileBar:not(.tileBarOn) { pointer-events: none; }
+  .cardWatch { display: none; } /* the card has its own Watch button */
+}
+@media (pointer: coarse) {
+  .tileBtn { width: 40px; height: 40px; border-radius: 10px; }
+  .tileBar { gap: 6px; padding: 10px 8px 8px; }
+  .ping { height: 26px; padding: 0 9px; font-size: 12px; }
+}
+@media (pointer: coarse) and (max-width: 520px) {
+  .tileVol { display: none; } /* phones have volume keys; the row is for the buttons */
+}
+
+/* ---------- phone, upright: the stream keeps its own shape at the top, people fill the rest ---------- */
+@media (max-width: 767px) and (orientation: portrait) {
+  .stageScroll { padding: 12px; gap: 12px; }
+  .cards { grid-template-columns: 1fr; }
+  .person { width: calc(50% - 6px); padding: 20px 8px 12px; }
+  .personCam, .personCam.speaking { width: 100%; }
+  .theaterMain { flex: 0 1 auto; max-height: 68%; overflow-y: auto; padding: 6px 6px 0; display: block; }
+  .theater .watchFocus, .theater .watchGrid { height: auto; }
+  .theater .watchGrid { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; overflow: visible; }
+  .theater .tile.big, .theater .watchGrid > .tile { height: auto; min-height: 0; aspect-ratio: 16 / 9; border-radius: 12px; }
+  .strip, .strip.stripHidden { flex: 1 1 0; min-height: 76px; display: flex; flex-direction: column; }
+  .stripRow { flex: 1; min-height: 0; flex-wrap: wrap; align-content: flex-start; overflow-x: hidden; overflow-y: auto; }
+  .controls { gap: 6px; margin: 4px 8px 10px; }
+  .ctrl { width: 46px; }
+  .ctrl.hang { width: 56px; margin-left: 2px; }
+}
+
+/* ---------- phone, sideways: the call controls are a column on the right; the stream gets the height ---------- */
+@media (orientation: landscape) and (max-height: 500px) and (min-width: 560px) {
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); }
+  .stage.theater { grid-template-rows: minmax(0, 1fr) auto auto; }
+  .stage > .stageScroll, .stage > .join { grid-column: 1; grid-row: 1; }
+  /* streams on the left, people beside them (stacked, the first stream card alone filled the height) */
+  .stageScroll { padding: 10px; gap: 12px; flex-direction: row; align-items: flex-start; }
+  .stageScroll > section { flex: 1 1 0; min-width: 0; }
+  .stageScroll > section:not(:last-child) { flex: 0 0 min(230px, 36%); }
+  .stageScroll > section:last-child > .sectionTitle { margin-bottom: 8px; }
+  .theaterMain { grid-column: 1; grid-row: 1; padding: 6px 0 0 6px; }
+  .ownBar { grid-column: 1; grid-row: 2; margin: 6px 0 0 6px; padding: 4px 8px; }
+  .strip { grid-column: 1; grid-row: 3; padding: 16px 6px 4px; }
+  .stripHidden { padding: 16px 6px 2px; }
+  .stripItem { width: 78px; height: 56px; gap: 2px; border-radius: 10px; }
+  .stripCam { width: 100px; }
+  .stripName { font-size: 10px; }
+  .controls {
+    grid-column: 2; grid-row: 1 / -1; align-self: center; flex-direction: column; justify-content: flex-start;
+    gap: 6px; margin: 6px; padding: 6px; border-radius: 20px; max-width: none; max-height: calc(100% - 12px); overflow-y: auto; scrollbar-width: none;
+  }
+  .controls::-webkit-scrollbar { display: none; }
+  .ctrl { flex: none; width: 46px; height: 42px; border-radius: 14px; }
+  .ctrl.hang { width: 46px; margin: 4px 0 0; }
+  .person { width: clamp(120px, 23%, 170px); padding: 14px 8px 10px; gap: 8px; }
+  .personCam, .personCam.speaking { width: clamp(180px, 31%, 260px); }
+  .cards { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .join { gap: 8px; padding: 10px; }
+  .join::before { top: 50%; }
+  .joinIcon { display: none; }
+  .joinTitle { font-size: 20px; }
+  .bar { margin: 6px 6px 0; padding: 8px; gap: 6px; }
+}

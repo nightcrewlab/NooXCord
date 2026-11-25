@@ -29,6 +29,11 @@ export interface VoiceSettings {
   streamAudio: boolean;
   /** Screen stream codec preference (P2P: automatic = H.264). */
   streamCodec: StreamCodec;
+  /**
+   * Hide my IP address from the people I talk to: connect only through the host's TURN relay
+   * (ignored while the host has none). Costs some latency.
+   */
+  relayOnly: boolean;
   /** Theater view (watching a stream): the participant strip under it is collapsed. */
   stripHidden: boolean;
   overlay: boolean;
@@ -54,6 +59,7 @@ const defaults: VoiceSettings = {
   contentHint: "motion",
   streamAudio: true,
   streamCodec: "auto",
+  relayOnly: false,
   stripHidden: false,
   overlay: true,
   voiceSounds: true,

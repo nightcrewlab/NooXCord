@@ -30,6 +30,25 @@ export interface WatchedStream {
   hasAudio: boolean;
 }
 
+/** Connection quality to one person in the call (statistics panel). */
+export interface PeerStats {
+  userId: string;
+  state: LinkState;
+  /** local: same network · direct: straight over the internet · relay: through the TURN server. */
+  path: "local" | "direct" | "relay" | null;
+  protocol: string | null;
+  /** Round trip to this person in ms. */
+  rttMs: number | null;
+  /** Share of their packets that never arrived since the last sample, in percent. */
+  lossPct: number | null;
+  jitterMs: number | null;
+  upKbps: number | null;
+  downKbps: number | null;
+  /** Video I receive from / send to them right now ("H264 1080p60"); null while none flows. */
+  videoIn: string | null;
+  videoOut: string | null;
+}
+
 export interface ShareOptions {
   preset: StreamPreset;
   /** Desktop: desktopCapturer source id. Web: the browser's own picker. */
@@ -83,6 +102,13 @@ export const useVoice = create<VoiceUi>()(() => ({
 
 const setV = (p: Partial<VoiceUi> | ((s: VoiceUi) => Partial<VoiceUi>)) => useVoice.setState(p);
 
+/**
+ * Connection quality while in a call, sampled every 2 s (its own store: it changes far more often
+ * than the call state). `ping` is the average round trip to the people in the call, null while alone.
+ */
+export const useCallStats = create<{ peers: PeerStats[]; ping: number | null }>()(() => ({ peers: [], ping: null }));
+const STATS_MS = 2000;
+
 const MIC = 0, CAM = 1, SCREEN = 2, SCREEN_AUDIO = 3;
 const KINDS = ["audio", "video", "video", "audio"] as const;
 
@@ -119,6 +145,8 @@ class VoiceEngine {
   /** Everyone else in my channel. */
   private states = new Map<string, VoiceState>();
   private links = new Map<string, Link>();
+  /** Counters of the previous statistics sample per person (rates are differences). */
+  private statPrev = new Map<string, { gen: number; at: number; sent: number; recv: number; lost: number; got: number }>();
   private retries = new Map<string, number>();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -135,6 +163,7 @@ class VoiceEngine {
   private sysAudio: PcmTrack | null = null;
   private shareOpts: ShareOptions | null = null;
   private shareHealth: ReturnType<typeof setInterval> | null = null;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
 
   private camStream: MediaStream | null = null;
   private camFacing: "user" | "environment" = "user";
@@ -202,6 +231,7 @@ class VoiceEngine {
     this.joined = true;
     setV({ status: "connected", links: Object.fromEntries(res.peers.map((p) => [p.userId, "connecting" as LinkState])) });
     platform.media?.setInCall(true).catch(() => {});
+    this.startStats();
     for (const p of res.peers) this.meet(p.userId);
     const early = this.early;
     this.early = [];
@@ -213,6 +243,7 @@ class VoiceEngine {
     const wasIn = !!useVoice.getState().channelId;
     if (notifyServer && wasIn) await this.conn?.call("voice.leave", {}).catch(() => {});
     this.closeLinks();
+    this.stopStats();
     this.stopScreenLocal();
     this.stopCameraLocal();
     this.closeMic();
@@ -340,7 +371,10 @@ class VoiceEngine {
 
   private makeLink(userId: string, offerer: boolean, gen: number): Link {
     this.closeLink(userId);
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers as RTCIceServer[], bundlePolicy: "max-bundle" });
+    // "Hide my IP": only relayed candidates, so the other side sees the TURN server's address, never mine.
+    // Without a TURN server on the host nothing could connect that way, so the setting waits for one.
+    const relay = voiceSettings().relayOnly && this.hasRelay();
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers as RTCIceServer[], bundlePolicy: "max-bundle", iceTransportPolicy: relay ? "relay" : "all" });
     const link: Link = { userId, offerer, gen, pc, tx: [], ready: false, pending: [], outbox: offerer ? [] : null, audioEl: null, sendsScreen: false, lostTimer: null };
     pc.onicecandidate = (e) => {
       if (this.links.get(userId) !== link || !e.candidate) return;
@@ -358,10 +392,16 @@ class VoiceEngine {
     return link;
   }
 
+  /** Did the host hand out a TURN relay for this call? */
+  hasRelay(): boolean {
+    return this.iceServers.some((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]).some((u) => /^turns?:/i.test(u)));
+  }
+
   private closeLink(userId: string) {
     const link = this.links.get(userId);
     if (!link) return;
     this.links.delete(userId);
+    this.statPrev.delete(userId);
     if (link.lostTimer) clearTimeout(link.lostTimer);
     if (link.audioEl) {
       link.audioEl.pause();
@@ -1202,6 +1242,105 @@ class VoiceEngine {
     return Object.fromEntries([...this.links.values()].map((l) => [l.userId, { state: l.pc.connectionState, screen: l.sendsScreen }]));
   }
 
+  /** Keeps useCallStats current while in a call (nobody looks at it in a hidden window: skipped there). */
+  private startStats() {
+    this.statsTimer ??= setInterval(() => { if (document.visibilityState !== "hidden") void this.refreshStats(); }, STATS_MS);
+  }
+
+  private statsBusy = false;
+  /** One sample now (the connection panel asks for it when it opens). */
+  async refreshStats(): Promise<void> {
+    if (this.statsBusy || !this.statsTimer) return;
+    this.statsBusy = true;
+    try {
+      const peers = await this.peerStats();
+      if (!this.statsTimer) return;
+      const rtts = peers.filter((p) => p.state === "connected" && p.rttMs !== null).map((p) => p.rttMs!);
+      useCallStats.setState({ peers, ping: rtts.length ? Math.round(rtts.reduce((a, b) => a + b, 0) / rtts.length) : null });
+    } finally {
+      this.statsBusy = false;
+    }
+  }
+
+  private stopStats() {
+    if (this.statsTimer) clearInterval(this.statsTimer);
+    this.statsTimer = null;
+    useCallStats.setState({ peers: [], ping: null });
+  }
+
+  /**
+   * Connection quality per person, for the statistics panel: how the two of us are connected (same
+   * network / direct / TURN relay), round trip, packet loss, bitrate and the video codec in use.
+   * Rates are differences to the previous call, so the first sample has none.
+   */
+  async peerStats(): Promise<PeerStats[]> {
+    const ui = useVoice.getState().links;
+    const out: PeerStats[] = [];
+    for (const link of [...this.links.values()]) {
+      const row: PeerStats = {
+        userId: link.userId, state: ui[link.userId] ?? "connecting", path: null, protocol: null, rttMs: null, lossPct: null, jitterMs: null,
+        upKbps: null, downKbps: null, videoIn: null, videoOut: null,
+      };
+      out.push(row);
+      const report = await link.pc.getStats().catch(() => null);
+      if (!report || this.links.get(link.userId) !== link) continue;
+      type Stat = Record<string, unknown> & { type: string; id: string };
+      const byId = new Map<string, Stat>();
+      report.forEach((x: Stat) => byId.set(x.id, x));
+      const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+      const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+      const all = [...byId.values()];
+
+      // The candidate pair in use: named by the transport; older Firefox marks it "selected" instead.
+      const viaTransport = all.find((x) => x.type === "transport" && str(x.selectedCandidatePairId));
+      const pair = (viaTransport && byId.get(viaTransport.selectedCandidatePairId as string))
+        ?? all.find((x) => x.type === "candidate-pair" && (x.selected === true || (x.nominated === true && x.state === "succeeded")));
+      let sent = 0, recv = 0;
+      if (pair) {
+        const local = byId.get(str(pair.localCandidateId) ?? ""), remote = byId.get(str(pair.remoteCandidateId) ?? "");
+        const lt = str(local?.candidateType), rt = str(remote?.candidateType);
+        if (lt && rt) row.path = lt === "relay" || rt === "relay" ? "relay" : lt === "host" && rt === "host" ? "local" : "direct";
+        row.protocol = str(local?.relayProtocol) ?? str(local?.protocol);
+        const rtt = num(pair.currentRoundTripTime);
+        if (rtt !== null) row.rttMs = Math.max(1, Math.round(rtt * 1000));
+        sent = num(pair.bytesSent) ?? 0;
+        recv = num(pair.bytesReceived) ?? 0;
+      }
+
+      let lost = 0, got = 0, jitter: number | null = null;
+      const video = (x: Stat): string | null => {
+        const fps = Math.round(num(x.framesPerSecond) ?? 0), h = num(x.frameHeight);
+        if (!fps || !h) return null; // negotiated but nothing flowing
+        const codec = str(byId.get(str(x.codecId) ?? "")?.mimeType)?.replace(/^video\//i, "").toUpperCase();
+        return `${codec ? `${codec} ` : ""}${h}p${fps}`;
+      };
+      for (const x of all) {
+        if (x.type === "inbound-rtp") {
+          lost += Math.max(0, num(x.packetsLost) ?? 0);
+          got += num(x.packetsReceived) ?? 0;
+          if (x.kind === "audio" && (num(x.packetsReceived) ?? 0) > 0) jitter = Math.max(jitter ?? 0, (num(x.jitter) ?? 0) * 1000);
+          if (x.kind === "video") row.videoIn = [row.videoIn, video(x)].filter(Boolean).join(" + ") || null;
+        } else if (x.type === "outbound-rtp" && x.kind === "video") {
+          row.videoOut = [row.videoOut, video(x)].filter(Boolean).join(" + ") || null;
+        }
+      }
+      if (jitter !== null) row.jitterMs = Math.round(jitter);
+
+      const now = performance.now();
+      const prev = this.statPrev.get(link.userId);
+      const fresh = !prev || prev.gen !== link.gen;
+      if (!fresh && now - prev.at >= 250) {
+        const sec = (now - prev.at) / 1000;
+        row.upKbps = Math.max(0, Math.round(((sent - prev.sent) * 8) / 1000 / sec));
+        row.downKbps = Math.max(0, Math.round(((recv - prev.recv) * 8) / 1000 / sec));
+        const dLost = Math.max(0, lost - prev.lost), dGot = Math.max(0, got - prev.got);
+        if (dLost + dGot > 0) row.lossPct = Math.round((dLost * 1000) / (dLost + dGot)) / 10;
+      }
+      if (fresh || now - prev.at >= 250) this.statPrev.set(link.userId, { gen: link.gen, at: now, sent, recv, lost, got });
+    }
+    return out;
+  }
+
   /** Debug/test helper: byte and frame counters over every connection. */
   async stats(): Promise<{ sendBytes: number; recvBytes: number; framesDecoded: number; audioRecvBytes: number }> {
     let sendBytes = 0, recvBytes = 0, framesDecoded = 0, audioRecvBytes = 0;
@@ -1239,7 +1378,7 @@ useStore.subscribe((s, prev) => {
 });
 
 // Dev/test hook (used by the Electron voice self-test).
-(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useVoiceSettings, useStore, remote, useRemote, denoise, meter };
+(window as unknown as { __nx?: unknown }).__nx = { voice, useVoice, useCallStats, useVoiceSettings, useStore, remote, useRemote, denoise, meter };
 
 const MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight"]);
 /** Shortcut string of a key press ("Ctrl+Shift+KeyM"); null while only modifiers are held. */

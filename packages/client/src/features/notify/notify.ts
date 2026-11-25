@@ -37,10 +37,21 @@ export const useNotify = create<NotifyPrefs & { set(p: Partial<NotifyPrefs>): vo
   },
 }));
 
-/** Does this text mention the nickname as @nickname (case-insensitive, whole word)? */
+/**
+ * Does this text mention the nickname as @nickname (case-insensitive, whole word)? Unicode aware: a
+ * plain \b treats "ş" or "ı" as a word break, so names ending in such a letter never matched.
+ */
+const mentionRes = new Map<string, RegExp>();
 export function mentions(content: string, nickname: string): boolean {
-  const esc = nickname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^\\p{L}\\p{N}_])@${esc}(?![\\p{L}\\p{N}_])`, "iu").test(content);
+  if (!content.includes("@")) return false;
+  let re = mentionRes.get(nickname);
+  if (!re) {
+    const esc = nickname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    re = new RegExp(`(^|[^\\p{L}\\p{N}_])@${esc}(?![\\p{L}\\p{N}_])`, "iu");
+    if (mentionRes.size > 50) mentionRes.clear();
+    mentionRes.set(nickname, re);
+  }
+  return re.test(content);
 }
 
 export const notificationsSupported = (): boolean => typeof Notification !== "undefined";

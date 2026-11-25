@@ -99,7 +99,10 @@ export class HostConnection {
   private canSplit = false;
   private splitQueue: Promise<void> = Promise.resolve();
   private closedByUser = false;
+  private pingListeners = new Set<(ms: number | null) => void>();
   status: ConnStatus = "connecting";
+  /** Round trip to the host in ms, smoothed over the last pings; null until the first answer. */
+  ping: number | null = null;
 
   constructor(readonly http: HostHttp) {}
 
@@ -111,6 +114,17 @@ export class HostConnection {
   onStatus(fn: (s: ConnStatus) => void): () => void {
     this.statusListeners.add(fn);
     return () => this.statusListeners.delete(fn);
+  }
+
+  onPing(fn: (ms: number | null) => void): () => void {
+    this.pingListeners.add(fn);
+    return () => this.pingListeners.delete(fn);
+  }
+
+  private setPing(ms: number | null) {
+    if (ms === this.ping) return;
+    this.ping = ms;
+    for (const fn of this.pingListeners) fn(ms);
   }
 
   private setStatus(s: ConnStatus) {
@@ -147,7 +161,15 @@ export class HostConnection {
       let f: ServerFrame;
       try { f = JSON.parse(ev.data as string); } catch { return; }
       if (f.t === "ping") return ws.send('{"t":"pong"}');
-      if (f.t === "pong") { this.pingAt = 0; return; }
+      if (f.t === "pong") {
+        if (this.pingAt) {
+          // Measured from the oldest unanswered ping, so a slow answer counts in full.
+          const ms = Math.max(1, Date.now() - this.pingAt);
+          this.setPing(this.ping === null ? ms : Math.round(this.ping * 0.6 + ms * 0.4));
+        }
+        this.pingAt = 0;
+        return;
+      }
       if (f.t === "res") {
         const p = this.pending.get(f.id);
         if (!p) return;
@@ -168,6 +190,7 @@ export class HostConnection {
     };
     ws.onclose = (ev) => {
       clearInterval(this.pingTimer);
+      if (this.ws === ws) this.setPing(null);
       for (const [, p] of this.pending) {
         clearTimeout(p.timer);
         p.reject(new RpcError("network", t("err.disconnected")));

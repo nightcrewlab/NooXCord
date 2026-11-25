@@ -31,6 +31,8 @@ body {
   color: var(--nx-text-1);
   font: 15px/1.45 var(--nx-font);
   -webkit-font-smoothing: antialiased; overflow: hidden;
+  /* Phones: no pull-to-refresh (a reload would drop the call), no grey flash or double-tap zoom on buttons. */
+  overscroll-behavior: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation;
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--nx-accent); outline-offset: 2px; }

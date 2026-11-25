@@ -25,15 +25,33 @@ export function extractUrls(text: string, max = 3): string[] {
   return out;
 }
 
-function isPrivate(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split(".").map(Number) as [number, number];
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224 || a === 25; // 25.x = Hamachi
+/*
+ * Addresses the host must never fetch from: loopback, private and link-local ranges, CGNAT, multicast,
+ * and every IPv6 form that carries an IPv4 address inside (mapped, compatible, NAT64, 6to4, Teredo).
+ * net.BlockList compares parsed addresses, so "::ffff:7f00:1" and "::ffff:127.0.0.1" are both 127.0.0.1
+ * (comparing text let the hex spelling of a mapped loopback address through).
+ */
+const blocked = new net.BlockList();
+for (const [addr, bits] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12],
+  ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3],
+  ["25.0.0.0", 8], // Hamachi
+] as const) blocked.addSubnet(addr, bits, "ipv4");
+for (const [addr, bits] of [
+  ["::", 96], // unspecified, loopback, IPv4-compatible
+  ["64:ff9b::", 96], ["64:ff9b:1::", 48], // NAT64
+  ["100::", 64], ["2001::", 32], ["2001:db8::", 32], ["2002::", 16], // discard, Teredo, documentation, 6to4
+  ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8],
+] as const) blocked.addSubnet(addr, bits, "ipv6");
+
+export function isPrivate(ip: string): boolean {
+  const family = net.isIP(ip);
+  if (!family) return true; // not an address at all: refuse
+  try {
+    return blocked.check(ip, family === 4 ? "ipv4" : "ipv6");
+  } catch {
+    return true;
   }
-  const v = ip.toLowerCase();
-  if (v.startsWith("::ffff:")) return isPrivate(v.slice(7));
-  return v === "::1" || v === "::" || v.startsWith("fc") || v.startsWith("fd") || v.startsWith("fe80");
 }
 
 type LookupCb = (err: Error | null, address: string | LookupAddress[], family?: number) => void;

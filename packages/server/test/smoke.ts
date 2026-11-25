@@ -203,6 +203,21 @@ try {
   ok("guest password and guest switch enforced");
   G.ws.close();
 
+  // --- hostile frames (the host runs in this process: a frame that crashed it would end the test) ---
+  const junk = ["null", "5", '"x"', "[]", "{}", "~1null", '{"t":"req","id":1,"m":"guild.create","d":{"name":"x"}}', '{"t":"rc"}'];
+  for (const badToken of ["5", "{}", "null", '"nope"']) {
+    const raw = new WebSocket(base.replace("http", "ws") + "/ws");
+    await new Promise((r) => raw.on("open", r));
+    for (const f of junk) raw.send(f);
+    raw.send(`{"t":"auth","d":{"token":${badToken}}}`);
+    assert.equal(await new Promise<number>((r) => raw.on("close", r)), 4001, `auth with token ${badToken}`);
+  }
+  for (const f of [...junk.slice(0, 6), '{"t":"req","id":900007,"m":5,"d":{}}', '{"t":"rc","to":5}']) A.ws.send(f);
+  // Names that exist on every object are not methods.
+  for (const m of ["toString", "constructor", "__proto__", "voice.nope", "nope"]) await assert.rejects(A.call(m as MethodName, {}), /Bilinmeyen işlem/, m);
+  assert.equal((await A.call<Message[]>("message.list", { channelId: text.id })).length > 0, true);
+  ok("malformed frames are dropped, before and after sign-in");
+
   // --- persistence ---
   A.ws.close();
   await host.close();

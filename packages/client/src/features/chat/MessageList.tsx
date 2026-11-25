@@ -7,6 +7,7 @@ import { formatDay, sameDay } from "../../lib/format";
 import { DM_HOME, useStore, type PendingMessage } from "../../state/store";
 import { Button, Spinner, useConfirm } from "../../ui";
 import { useUserMenu } from "../members/useUserMenu";
+import { mentions } from "../notify/notify";
 import s from "./chat.module.css";
 import { MessageItem } from "./MessageItem";
 
@@ -101,6 +102,19 @@ export function MessageList({ channel, gs, onReply, editing, setEditing }: { cha
     prevTotal.current = total;
   }, [rows, virt]);
 
+  // The list itself changed size (a phone was turned, or its keyboard opened): stay on the newest message.
+  const lastRow = useRef(0);
+  lastRow.current = rows.length - 1;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (atBottom.current && lastRow.current >= 0) virt.scrollToIndex(lastRow.current, { align: "end" });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [virt]);
+
   useEffect(() => {
     if (atBottom.current && document.hasFocus()) markRead(channel.id);
   }, [rows.length, channel.id, markRead]);
@@ -124,7 +138,7 @@ export function MessageList({ channel, gs, onReply, editing, setEditing }: { cha
   }, [channel.id, hasMore, cm?.loaded, cm?.loading, loadMessages, markRead]);
 
   const canManage = has(gs.myPerms, P.MANAGE_MESSAGES);
-  const mentionRe = useMemo(() => (me ? new RegExp(`@${me.nickname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i") : null), [me]);
+  const myName = me?.nickname;
 
   const onDelete = useCallback(async (m: Message) => {
     if (!(await confirm({ title: t("chat.delete"), body: t("chat.deleteConfirm"), confirm: t("common.delete"), danger: true }))) return;
@@ -158,7 +172,7 @@ export function MessageList({ channel, gs, onReply, editing, setEditing }: { cha
                     authorColor={roleColor(gs, row.msg.authorId)}
                     replyTo={row.msg.replyTo ? replyPreview(byId.get(row.msg.replyTo), users) : null}
                     canDelete={row.msg.authorId === me?.id || canManage}
-                    mentioned={!!mentionRe && row.msg.authorId !== me?.id && mentionRe.test(row.msg.content)}
+                    mentioned={!!myName && row.msg.authorId !== me?.id && mentions(row.msg.content, myName)}
                     editing={editing === row.msg.id}
                     onReply={onReply}
                     onEdit={onEdit}

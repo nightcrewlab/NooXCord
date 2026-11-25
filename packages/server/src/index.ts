@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { IncomingHttpHeaders } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -65,6 +66,17 @@ function sniffImage(buf: Buffer): string | null {
   return null;
 }
 
+/**
+ * Address of the client behind the hosting proxy. Render's edge is Cloudflare, which always overwrites
+ * CF-Connecting-IP, while X-Forwarded-For starts with whatever the client sent (so its first entry,
+ * which `trustProxy` reports, can be faked to dodge the rate limits).
+ */
+function clientIp(headers: IncomingHttpHeaders, fallback: string | undefined): string {
+  const cf = headers["cf-connecting-ip"];
+  if (typeof cf === "string" && cf.length > 0 && cf.length <= 45) return cf;
+  return fallback || "?";
+}
+
 export async function startHost(opts: HostOptions): Promise<RunningHost> {
   const log = opts.log ?? ((...a: unknown[]) => console.log(...a));
   fs.mkdirSync(opts.dataDir, { recursive: true });
@@ -113,7 +125,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     return reply.code(500).send({ code: "internal", msg: "Sunucu hatası." });
   });
 
-  await app.register(rateLimit, { global: false });
+  await app.register(rateLimit, { global: false, keyGenerator: (req) => clientIp(req.headers, req.ip) });
   await app.register(multipart, { limits: { fileSize: LIMITS.uploadMaxBytes, files: 1, fields: 4 } });
 
   const bearer = (req: FastifyRequest): string | undefined => {
@@ -292,7 +304,7 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
 
   wss.on("connection", (ws, req: import("node:http").IncomingMessage) => {
     const fwd = req.headers["x-forwarded-for"];
-    const ip = String(req.headers["cf-connecting-ip"] ?? (typeof fwd === "string" ? fwd.split(",")[0]!.trim() : null) ?? req.socket.remoteAddress ?? "?");
+    const ip = clientIp(req.headers, (typeof fwd === "string" ? fwd.split(",")[0]!.trim() : "") || req.socket.remoteAddress);
     let conn: Conn | null = null;
     let tokens = 40; // request budget, refilled 20/s
     const refill = setInterval(() => (tokens = Math.min(40, tokens + 20)), 1000);
@@ -301,7 +313,11 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     let parts: string[] = []; // a split client frame being reassembled (PART_SIZE)
     let partChars = 0;
 
-    ws.on("message", async (data) => {
+    // Anything a socket sends is untrusted, signed in or not: a frame that makes the handler throw must
+    // cost that frame only (an unhandled rejection here would take the whole host down).
+    ws.on("message", (data) => void onFrame(data).catch((e: unknown) => console.error("[ws] frame failed:", e)));
+
+    const onFrame = async (data: unknown): Promise<void> => {
       if (stopping) return;
       lastSeen = Date.now();
       let text = String(data);
@@ -316,11 +332,13 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
       }
       let f: ClientFrame;
       try { f = JSON.parse(text); } catch { return; }
+      if (!f || typeof f !== "object") return; // "null", a number, a string
       if (f.t === "ping") return ws.send('{"t":"pong"}');
       if (f.t === "pong") return;
       if (f.t === "auth") {
         if (conn) return;
-        const uid = auth.resolve(f.d?.token);
+        const token: unknown = f.d?.token;
+        const uid = typeof token === "string" ? auth.resolve(token) : null;
         if (!uid || !store.userRow(uid)) return ws.close(CLOSE.AUTH_FAILED, "auth failed");
         clearTimeout(authTimer);
         conn = { ws, userId: uid, lastSeen, desktop: f.d?.client === "desktop" };
@@ -342,20 +360,21 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
         return;
       }
       if (f.t === "rc") return void (conn && media.remoteInput(conn, f));
-      if (f.t !== "req" || !conn) return;
-      if (tokens-- <= 0) return hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: "rate_limited", msg: "Çok hızlı." } });
+      if (f.t !== "req" || !conn || typeof f.m !== "string") return;
+      const c = conn;
+      if (tokens-- <= 0) return hub.send(c, { t: "res", id: f.id, ok: false, e: { code: "rate_limited", msg: "Çok hızlı." } });
       try {
-        const d = media.isMediaMethod(f.m) ? await media.call(conn, f.m as MethodName, f.d) : await api.call(conn.userId, f.m as MethodName, f.d);
-        hub.send(conn, { t: "res", id: f.id, ok: true, d });
+        const d = media.isMediaMethod(f.m) ? await media.call(c, f.m as MethodName, f.d) : await api.call(c.userId, f.m as MethodName, f.d);
+        hub.send(c, { t: "res", id: f.id, ok: true, d });
       } catch (e) {
-        if (e instanceof AppError) hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: e.code, msg: e.message } });
+        if (e instanceof AppError) hub.send(c, { t: "res", id: f.id, ok: false, e: { code: e.code, msg: e.message } });
         else {
           app.log.error(e);
-          console.error(`[rpc] ${f.m} failed:`, e); // lands in host.log
-          hub.send(conn, { t: "res", id: f.id, ok: false, e: { code: "internal", msg: "Sunucu hatası." } });
+          console.error(`[rpc] ${f.m} failed:`, e); // lands in the host log
+          hub.send(c, { t: "res", id: f.id, ok: false, e: { code: "internal", msg: "Sunucu hatası." } });
         }
       }
-    });
+    };
 
     const ping = setInterval(() => {
       if (Date.now() - lastSeen > 15_000) {
@@ -385,6 +404,8 @@ export async function startHost(opts: HostOptions): Promise<RunningHost> {
     for (const a of old) db.run("DELETE FROM attachments WHERE id = ?", a.id);
     blobs.delete(old.map((a) => a.stored));
     db.run("DELETE FROM sessions WHERE expires_at < ?", Date.now());
+    auth.sweep();
+    api.sweep();
   }, 30 * 60_000);
 
   await app.listen({ port: opts.port, host: opts.bind ?? "0.0.0.0" });
