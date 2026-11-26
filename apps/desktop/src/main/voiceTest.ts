@@ -144,6 +144,8 @@ export async function voiceSelfTest(): Promise<void> {
     const seen = await js<number>(c, `window.__nx.useStore.getState().guilds[${G}].voice.length`);
     check("voice states broadcast to members", seen === 3, `C sees ${seen}`);
 
+    // A streams with VP9, B with the automatic choice; the viewers' own setting (automatic) must not matter.
+    await js(a, `window.__nx.useVoiceSettings.getState().set({ streamCodec: "vp9" })`);
     const sa = await shareCanvas(a, "#7a2e12");
     const sb = await shareCanvas(b, "#123a7a", true);
     check("A and B started streams", !!sa && !!sb, `${JSON.stringify(sa)} ${JSON.stringify(sb)}`);
@@ -257,13 +259,15 @@ export async function voiceSelfTest(): Promise<void> {
     check("A's screen goes to both viewers", sends[idb]?.screen === true && sends[idc]?.screen === true, JSON.stringify(sends));
 
     // Ping and connection statistics (CLAUDE.md §12.3): C is connected to A and B and watches both streams.
-    type Peer = { state: string; path: string | null; rttMs: number | null; downKbps: number | null; lossPct: number | null; videoIn: string | null };
+    type Peer = { userId: string; state: string; path: string | null; rttMs: number | null; downKbps: number | null; lossPct: number | null; videoIn: string | null };
     await js(c, `window.__nx.voice.peerStats()`);
     await sleep(1300); // rates are differences between two samples
     const peerStats = await js<Peer[]>(c, `window.__nx.voice.peerStats()`);
     const hostPing = await js<number | null>(c, `window.__nx.useStore.getState().ping`);
     const statsOk = peerStats.length === 2 && peerStats.every((p) => p.state === "connected" && !!p.path && (p.rttMs ?? 0) >= 1 && (p.downKbps ?? 0) > 0 && /\d+p\d+/.test(p.videoIn ?? ""));
     check("statistics: path, ping, bitrate and video per person; ping to the host", statsOk && typeof hostPing === "number" && hostPing >= 1 && hostPing < 5000, `host ${hostPing} ms ${JSON.stringify(peerStats)}`);
+    const fromA = peerStats.find((p) => p.userId === ida)?.videoIn ?? "", fromB = peerStats.find((p) => p.userId === idb)?.videoIn ?? "";
+    check("the streamer picks the codec (A: VP9, B: automatic = H.265 with a hardware encoder, else H.264)", /^VP9 /.test(fromA) && /^H26[45] /.test(fromB), `A ${fromA} | B ${fromB}`);
     const chip = await js<string | null>(c, `(() => { const b = document.querySelector("[class*=_ping_]"); if (!b) return null; b.click(); return b.textContent; })()`);
     await sleep(700);
     const panelRows = await js<number>(c, `document.querySelectorAll("[class*=_statPeer_]").length`);

@@ -10,7 +10,7 @@ import { Button, Modal, Spinner, cx } from "../../ui";
 import s from "./voice.module.css";
 
 const PRESETS = Object.keys(STREAM_PRESETS) as StreamPreset[];
-const CODECS: StreamCodec[] = ["auto", "av1", "vp9", "h264"];
+const CODECS: StreamCodec[] = ["auto", "h265", "h264", "av1", "vp9"];
 
 /** Pick a monitor/window (desktop) and a quality preset, then start streaming. */
 export function ShareModal({ onClose }: { onClose: () => void }) {
@@ -38,7 +38,8 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
 
   const list = (sources ?? []).filter((x) => x.kind === tab);
   const source = sources?.find((x) => x.id === picked);
-  const bitrate = STREAM_PRESETS[settings.streamPreset].bitrate;
+  const bitrate = settings.streamBitrate ?? STREAM_PRESETS[settings.streamPreset].bitrate;
+  const mbps = (bitrate / 1e6).toFixed(1);
 
   async function start() {
     setBusy(true);
@@ -49,6 +50,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
         sourceSize: source?.width && source.height ? { width: source.width, height: source.height, refreshRate: source.refreshRate } : undefined,
         contentHint: settings.contentHint,
         audio: settings.streamAudio,
+        bitrate: settings.streamBitrate ?? undefined,
       });
       onClose();
     } catch (e) {
@@ -65,7 +67,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       footer={
         <>
-          <span style={{ flex: 1, alignSelf: "center", fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.bandwidth", { mbps: (bitrate / 1e6).toFixed(1) })}</span>
+          <span style={{ flex: 1, alignSelf: "center", fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.bandwidth", { mbps })}</span>
           <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
           <Button variant="primary" icon="screen-share" loading={busy} disabled={desktop && !source} onClick={() => void start()}>{t("stream.start")}</Button>
         </>
@@ -112,11 +114,22 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
       </div>
 
       <div>
+        <div className={s.sectionTitle}>
+          {t("stream.bitrate")} · {settings.streamBitrate === null ? t("stream.bitrateAuto", { mbps }) : t("stream.bitrateValue", { mbps })}
+        </div>
+        {/* 0 = automatic (the preset's bitrate), then 0.5 Mbit/s steps up to 12. */}
+        <input className={s.bitrate} type="range" min={0} max={24} step={1} aria-label={t("stream.bitrate")}
+          value={settings.streamBitrate === null ? 0 : Math.round(settings.streamBitrate / 5e5)}
+          onChange={(e) => settings.set({ streamBitrate: Number(e.target.value) ? Number(e.target.value) * 5e5 : null })} />
+        <div style={{ marginTop: 6, fontSize: 12, color: "var(--nx-text-3)" }}>{t("stream.bitrateDesc")}</div>
+      </div>
+
+      <div>
         <div className={s.sectionTitle}>{t("stream.codec")}</div>
         <div className={s.presets}>
           {CODECS.map((c) => (
             <button key={c} className={cx(s.preset, settings.streamCodec === c && s.on)} onClick={() => settings.set({ streamCodec: c })}>
-              {c === "auto" ? t("stream.codecAuto") : c.toUpperCase().replace("H264", "H.264")}
+              {c === "auto" ? t("stream.codecAuto") : c.toUpperCase().replace(/^H26/, "H.26")}
             </button>
           ))}
         </div>

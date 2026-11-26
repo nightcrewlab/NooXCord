@@ -56,6 +56,8 @@ export interface ShareOptions {
   sourceSize?: { width: number; height: number; refreshRate: number | null };
   contentHint: "motion" | "detail";
   audio: boolean;
+  /** Video bitrate limit per viewer in bit/s; absent = the preset's own. */
+  bitrate?: number;
   /** Tests only: a ready-made video track instead of a capture. */
   testTrack?: MediaStreamTrack;
   /** Test only: stream audio instead of the system sound. */
@@ -162,6 +164,8 @@ class VoiceEngine {
   private screenStream: MediaStream | null = null;
   private sysAudio: PcmTrack | null = null;
   private shareOpts: ShareOptions | null = null;
+  /** Codecs I want to send my screen with, best first (decided when the share starts). */
+  private shareCodecs: string[] = [];
   private shareHealth: ReturnType<typeof setInterval> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -544,9 +548,13 @@ class VoiceEngine {
   private async tuneScreen(sender: RTCRtpSender | undefined) {
     const opts = this.shareOpts;
     if (!sender || !opts) return;
-    const preset = STREAM_PRESETS[opts.preset];
-    const fps = this.sharingFps();
-    await setEncoding(sender, { maxBitrate: preset.bitrate, maxFramerate: fps }, opts.contentHint === "detail" ? "maintain-resolution" : "maintain-framerate");
+    const enc = { maxBitrate: opts.bitrate ?? STREAM_PRESETS[opts.preset].bitrate, maxFramerate: this.sharingFps() };
+    const degradation = opts.contentHint === "detail" ? "maintain-resolution" : "maintain-framerate";
+    // The codec is the streamer's choice among what this viewer negotiated (without this the first
+    // codec of the viewer's description is used, i.e. the viewer's own preference).
+    const codec = negotiatedCodec(sender, this.shareCodecs);
+    if (codec && (await setEncoding(sender, { ...enc, codec }, degradation))) return;
+    await setEncoding(sender, enc, degradation);
   }
 
   private sharingFps(): number {
@@ -1031,6 +1039,7 @@ class VoiceEngine {
     }
     video.contentHint = opts.contentHint;
     video.addEventListener("ended", () => void this.stopScreen());
+    this.shareCodecs = screenSendOrder(voiceSettings().streamCodec);
 
     // Desktop system audio, NooXCord's own sound excluded (CLAUDE.md §6.3).
     let audioTrack = stream.getAudioTracks()[0] ?? null;
@@ -1055,7 +1064,7 @@ class VoiceEngine {
     const video = this.screenStream?.getVideoTracks()[0];
     if (!video || !this.conn) throw new Error(t("err.noVideo"));
     const st = video.getSettings();
-    const codec = screenCodecOrder(voiceSettings().streamCodec)[0]!;
+    const codec = this.shareCodecs[0] ?? screenCodecOrder(voiceSettings().streamCodec)[0]!;
     const state = await this.conn.call("stream.start", {
       width: Math.max(1, Math.round(st.width ?? 1280)),
       height: Math.max(1, Math.round(st.height ?? 720)),
@@ -1402,11 +1411,35 @@ function holdJitter(receiver: RTCRtpReceiver | undefined, ms: number): void {
 }
 
 /**
- * Screen codec order. Automatic: H.264 (hardware encoders and decoders nearly everywhere, iPhone
- * included), then VP8. A codec picked in settings goes first when the other side has it too.
+ * Screen codec order. Automatic: H.265 where both graphics cards do it (measured on an RTX 5060 Ti:
+ * hardware encoder and decoder; AV1 falls back to the software libaom encoder there), then H.264
+ * (hardware nearly everywhere, iPhone included), then VP8. A codec picked in settings goes first.
  */
 function screenCodecOrder(pref: StreamCodec): string[] {
-  return pref === "auto" || pref === "h264" ? ["video/h264", "video/vp8", "video/vp9"] : [`video/${pref}`, "video/h264", "video/vp8"];
+  const common = ["video/h264", "video/vp8", "video/vp9"];
+  return pref === "h264" ? common : [`video/${pref === "auto" ? "h265" : pref}`, ...common];
+}
+
+/**
+ * What I send my screen with: the codec order of my setting, limited to what this machine encodes.
+ * Chromium offers H.265 only with a hardware encoder, so "automatic" is H.265 on such a machine and
+ * H.264 elsewhere. A viewer that did not negotiate the first codec gets the next one.
+ */
+function screenSendOrder(pref: StreamCodec): string[] {
+  const order = screenCodecOrder(pref);
+  const mine = RTCRtpSender.getCapabilities?.("video")?.codecs.map((c) => c.mimeType.toLowerCase());
+  return mine ? order.filter((m) => mine.includes(m)) : order;
+}
+
+/** The first of these codecs this sender negotiated with the other side, as setParameters wants it. */
+function negotiatedCodec(sender: RTCRtpSender, order: string[]): RTCRtpCodec | null {
+  let codecs: RTCRtpCodecParameters[];
+  try { codecs = sender.getParameters().codecs ?? []; } catch { return null; }
+  for (const mime of order) {
+    const c = codecs.find((x) => x.mimeType.toLowerCase() === mime);
+    if (c) return { mimeType: c.mimeType, clockRate: c.clockRate, ...(c.sdpFmtpLine ? { sdpFmtpLine: c.sdpFmtpLine } : {}) };
+  }
+  return null;
 }
 
 /** Puts these codecs first for a video transceiver (the rest, rtx / red included, stay as fallbacks). */
@@ -1424,15 +1457,19 @@ function prefer(tr: RTCRtpTransceiver, order: string[]) {
   }
 }
 
-async function setEncoding(sender: RTCRtpSender | undefined, enc: Partial<RTCRtpEncodingParameters> & { networkPriority?: RTCPriorityType }, degradation?: RTCDegradationPreference): Promise<void> {
-  if (!sender) return;
+/** Resolves false when nothing was applied. */
+async function setEncoding(sender: RTCRtpSender | undefined, enc: Partial<RTCRtpEncodingParameters> & { networkPriority?: RTCPriorityType; codec?: RTCRtpCodec }, degradation?: RTCDegradationPreference): Promise<boolean> {
+  if (!sender) return false;
   try {
     const p = sender.getParameters();
-    if (!p.encodings?.length) return;
+    if (!p.encodings?.length) return false;
     p.encodings[0] = { ...p.encodings[0], ...enc };
     if (degradation) (p as RTCRtpSendParameters & { degradationPreference?: RTCDegradationPreference }).degradationPreference = degradation;
     await sender.setParameters(p);
-  } catch { /* not negotiated yet / unsupported: defaults */ }
+    return true;
+  } catch { /* not negotiated yet / unsupported: defaults */
+    return false;
+  }
 }
 
 /**

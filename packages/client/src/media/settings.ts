@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { StreamPreset } from "@nooxcord/shared";
 import type { NoiseMode } from "./denoise";
 
-export type StreamCodec = "auto" | "av1" | "vp9" | "h264";
+export type StreamCodec = "auto" | "h265" | "av1" | "vp9" | "h264";
 
 /** Per-device voice preferences, kept in localStorage. */
 export interface VoiceSettings {
@@ -27,8 +27,10 @@ export interface VoiceSettings {
   streamPreset: StreamPreset;
   contentHint: "motion" | "detail";
   streamAudio: boolean;
-  /** Screen stream codec preference (P2P: automatic = H.264). */
+  /** Screen stream codec (automatic = H.265 with a hardware encoder, else H.264). */
   streamCodec: StreamCodec;
+  /** Stream video bitrate limit per viewer in bit/s; null = the quality preset's own. */
+  streamBitrate: number | null;
   /**
    * Hide my IP address from the people I talk to: connect only through the host's TURN relay
    * (ignored while the host has none). Costs some latency.
@@ -59,6 +61,7 @@ const defaults: VoiceSettings = {
   contentHint: "motion",
   streamAudio: true,
   streamCodec: "auto",
+  streamBitrate: null,
   relayOnly: false,
   stripHidden: false,
   overlay: true,

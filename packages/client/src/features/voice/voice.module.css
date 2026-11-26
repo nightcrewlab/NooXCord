@@ -160,6 +160,7 @@
 .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
 .preset { padding: 8px 10px; border-radius: var(--nx-radius-m); border: 1px solid var(--nx-line); background: var(--nx-bg-2); color: var(--nx-text-2); font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
 .preset.on { border-color: var(--nx-accent); color: var(--nx-text-1); background: rgba(255, 122, 69, .08); }
+.bitrate { display: block; width: 100%; margin: 0; accent-color: var(--nx-accent); cursor: pointer; }
 .row { display: flex; align-items: center; gap: 10px; }
 .check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
 .check input { margin-top: 3px; accent-color: var(--nx-accent); width: 16px; height: 16px; }
